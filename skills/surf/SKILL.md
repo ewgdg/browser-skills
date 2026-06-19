@@ -19,6 +19,7 @@ Use `surf-agent` for all browser operations. It owns a Chrome window per thread 
 - Do not call `new` before `go`; `go` creates/reuses the thread window automatically.
 - If login, CAPTCHA, consent, FedCM, or other anti-automation UI blocks progress, stop and ask the user to handle it in the managed window, then resume after they confirm.
 - Close temporary sessions when done; `reset` only forgets state and can leave a window open.
+- For subagent fan-out, use a unique thread prefix per run (for example `review-42-a`) and sweep it with `close-matching 'review-42-*'`.
 
 ## Base command
 
@@ -39,6 +40,17 @@ Browser commands are passed through to `surf` inside the managed thread window.
 uv run surf-agent --thread main go https://example.com
 uv run surf-agent --thread main page.read --compact --depth 2
 uv run surf-agent --thread main close
+```
+
+### Subagent fan-out cleanup
+
+```bash
+# Each subagent gets one unique thread under a run prefix.
+uv run surf-agent --thread run-42-a go https://example.com/a
+uv run surf-agent --thread run-42-b go https://example.com/b
+
+# Parent/subagent cleanup closes only remembered surf-agent windows matching the thread glob.
+uv run surf-agent close-matching 'run-42-*'
 ```
 
 ### Click known UI
@@ -75,6 +87,8 @@ uv run surf-agent --thread main state      # current thread/window/page state; r
 uv run surf-agent list                     # remembered threads; removes stale cache entries
 uv run surf-agent --thread main new        # replace/create the thread window; use only when forcing a fresh window
 uv run surf-agent --thread main close      # close remembered thread window; use for cleanup
+uv run surf-agent close-all                # close all remembered thread windows
+uv run surf-agent close-matching 'run-*'   # close remembered thread windows with matching thread names
 uv run surf-agent --thread main reset      # forget thread state without closing window; can leave orphan windows
 uv run surf-agent --thread main window-id  # print/create managed window id
 ```
@@ -126,8 +140,12 @@ Forbidden through `surf-agent`: web chat/client commands such as `chatgpt` and `
 
 Close temporary sessions when done. Do not use `reset` for cleanup unless you intentionally want to leave the browser window open but forget agent state.
 
+Use `close-matching` for batch cleanup. It matches remembered thread names, not page titles or arbitrary Chrome windows, so it should not close user-owned windows.
+
 ```bash
 uv run surf-agent --thread main close
+uv run surf-agent close-matching 'run-42-*'
+uv run surf-agent close-all
 ```
 
 

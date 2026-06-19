@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -30,7 +31,7 @@ FORBIDDEN_COMMANDS = {
     "window.new",
 }
 
-MANAGEMENT_COMMANDS = {"help", "state", "list", "id", "window-id", "new", "reset", "forget", "close"}
+MANAGEMENT_COMMANDS = {"help", "state", "list", "id", "window-id", "new", "reset", "forget", "close", "close-all", "close-matching"}
 DEFAULT_THREAD = "default"
 
 
@@ -79,7 +80,7 @@ class SurfAgent:
         if command in FORBIDDEN_COMMANDS:
             raise SurfAgentError(forbidden_message(command), exit_code=2)
         window = self.ensure_window()
-        proc = subprocess.run([self.surf_bin, "--window-id", str(window.window_id), *surf_args], check=False)
+        proc = self._subprocess_run([self.surf_bin, "--window-id", str(window.window_id), *surf_args], check=False)
         return proc.returncode
 
     def print_window_id(self, *, force_new: bool = False) -> None:
@@ -142,9 +143,53 @@ class SurfAgent:
         window = self._load_state()
         if not window:
             return 0
-        proc = subprocess.run([self.surf_bin, "window.close", str(window.window_id)], check=False)
+        proc = self._close_window(window.window_id)
         self.forget()
         return proc.returncode
+
+    def close_matching(self, pattern: str) -> int:
+        pattern = pattern.strip()
+        if not pattern:
+            raise SurfAgentError("close-matching requires a thread glob pattern", exit_code=2)
+
+        result: dict[str, Any] = {"pattern": pattern, "closed": [], "stale": [], "invalid": [], "failed": []}
+        if not self.state_dir.exists():
+            print(json.dumps(result, sort_keys=True))
+            return 0
+
+        windows = self._list_windows(allow_failure=True)
+        open_window_ids = {window_id(window) for window in windows}
+        open_window_ids.discard(None)
+
+        for state_file in sorted(self.state_dir.glob("*.json")):
+            thread = state_file.stem
+            if not fnmatch.fnmatchcase(thread, pattern):
+                continue
+            cached = load_state_file(state_file)
+            if cached is None:
+                unlink_missing_ok(state_file)
+                result["invalid"].append({"thread": thread})
+                continue
+            item = {"thread": thread, "window_id": cached.window_id}
+            if cached.window_id not in open_window_ids:
+                unlink_missing_ok(state_file)
+                result["stale"].append(item)
+                continue
+            proc = self._close_window(cached.window_id, quiet=True)
+            if proc.returncode == 0:
+                unlink_missing_ok(state_file)
+                result["closed"].append(item)
+            else:
+                result["failed"].append(item)
+
+        print(json.dumps(result, sort_keys=True))
+        return 1 if result["failed"] else 0
+
+    def _close_window(self, window_id: int, *, quiet: bool = False) -> subprocess.CompletedProcess[str]:
+        kwargs: dict[str, Any] = {"check": False}
+        if quiet:
+            kwargs.update({"text": True, "capture_output": True})
+        return self._subprocess_run([self.surf_bin, "window.close", str(window_id)], **kwargs)
 
     def _create_window(self) -> AgentWindow:
         before = self._list_windows(allow_failure=True)
@@ -210,7 +255,7 @@ class SurfAgent:
     def _run_json(self, args: Sequence[str]) -> Any:
         command = [self.surf_bin, *args, "--json"]
         try:
-            proc = subprocess.run(command, text=True, capture_output=True, check=False)
+            proc = self._subprocess_run(command, text=True, capture_output=True, check=False)
         except FileNotFoundError as exc:
             raise SurfAgentError("surf executable not found") from exc
         if proc.returncode != 0:
@@ -231,6 +276,9 @@ class SurfAgent:
         self.state_file.parent.mkdir(parents=True, exist_ok=True)
         payload = {"window_id": window.window_id, "tab_id": window.tab_id}
         self.state_file.write_text(json.dumps(payload, sort_keys=True) + "\n")
+
+    def _subprocess_run(self, command: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(command, **kwargs)
 
 
 def default_state_file(*, thread: str = DEFAULT_THREAD, state_dir: Path | None = None) -> Path:
@@ -405,6 +453,8 @@ def print_help(stream: Any) -> None:
         "  surf-agent list                             list threads and clean stale entries\n"
         "  surf-agent [--thread ID] new                replace/create thread window, print id\n"
         "  surf-agent [--thread ID] close              close remembered thread window\n"
+        "  surf-agent close-all                        close all remembered thread windows\n"
+        "  surf-agent close-matching <glob>            close remembered thread windows whose thread names match\n"
         "  surf-agent [--thread ID] reset              forget thread state\n"
         "  surf-agent [--thread ID] <surf command...>  run browser command in thread window\n\n"
         "Examples:\n"
@@ -412,7 +462,8 @@ def print_help(stream: Any) -> None:
         "  surf-agent list\n"
         "  surf-agent --thread main go https://example.com\n"
         "  surf-agent --thread main page.read --compact --depth 3\n"
-        "  surf-agent --thread docs screenshot --output /tmp/shot.png\n\n"
+        "  surf-agent --thread docs screenshot --output /tmp/shot.png\n"
+        "  surf-agent close-matching 'agent-run-*'\n\n"
         "State: skill-local .state/<thread>.json.\n"
         "Rules: no tab.new/tab.switch/tab.close/window.new through this helper.\n"
     )
@@ -444,6 +495,12 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if command == "close":
             return agent.close()
+        if command == "close-all":
+            return agent.close_matching("*")
+        if command == "close-matching":
+            if len(argv) < 2:
+                raise SurfAgentError("close-matching requires a thread glob pattern", exit_code=2)
+            return agent.close_matching(argv[1])
         if command == "--":
             argv = argv[1:]
         return agent.run_in_window(argv)
