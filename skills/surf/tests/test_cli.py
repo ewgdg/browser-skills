@@ -53,6 +53,18 @@ class SurfAgentWindowListingTests(unittest.TestCase):
         self.assertEqual(payload["title"], "Example")
         self.assertEqual(agent.calls, [["window.list"], ["--window-id", "123", "page.state"]])
 
+    def test_create_window_requests_unfocused_window(self):
+        agent = FakeAgent(
+            [
+                {"windows": []},
+                "Window 123 (tab 456)\nUse --window-id 123 to target this window",
+                {"windows": [{"id": 123, "tabCount": 1, "tabs": [{"id": 456}]}]},
+            ]
+        )
+
+        self.assertEqual(agent._create_window(), AgentWindow(123, 456))
+        self.assertEqual(agent.calls[1], ["window.new", "--unfocused"])
+
     def test_extract_window_id_accepts_surf_json_string_message(self):
         self.assertEqual(
             extract_window_id("Window 1009098599 (tab 1009098600)\nUse --window-id 1009098599 to target this window"),

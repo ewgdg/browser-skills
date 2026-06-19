@@ -152,7 +152,8 @@ class SurfAgent:
         before_ids.discard(None)
 
         # Open without URL so WM rules can identify/route the agent-owned window before navigation.
-        proc = self._run_json(["window.new"])
+        # Keep it unfocused so agent browsing does not steal focus from the user.
+        proc = self._run_json(["window.new", "--unfocused"])
         created_id = extract_window_id(proc)
         windows = self._list_windows(allow_failure=False)
 
