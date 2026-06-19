@@ -89,7 +89,7 @@ class SurfAgentTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue()), {"thread": "main", "open": False})
         self.assertEqual(fake.calls, [])
 
-    def test_state_reports_stale_cache_and_removes_file(self) -> None:
+    def test_state_treats_stale_cache_as_missing_and_removes_file(self) -> None:
         fake = FakeSubprocess()
         with tempfile.TemporaryDirectory() as tmp, patch("subprocess.run", fake.run):
             state = Path(tmp) / "state.json"
@@ -99,7 +99,7 @@ class SurfAgentTests(unittest.TestCase):
             with redirect_stdout(output):
                 agent.print_state(thread="main")
             state_exists = state.exists()
-        self.assertEqual(json.loads(output.getvalue()), {"thread": "main", "open": False, "cached_window_id": 101, "cached_tab_id": 501})
+        self.assertEqual(json.loads(output.getvalue()), {"thread": "main", "open": False})
         self.assertFalse(state_exists)
         self.assertEqual(fake.calls, [["surf", "window.list", "--tabs", "--json"]])
 
@@ -115,7 +115,7 @@ class SurfAgentTests(unittest.TestCase):
             state_exists = state.exists()
         self.assertTrue(state_exists)
 
-    def test_list_reports_open_threads_and_removes_stale_files(self) -> None:
+    def test_list_reports_open_threads_and_silently_removes_stale_files(self) -> None:
         fake = FakeSubprocess()
         fake.windows = [{"id": 101, "tabCount": 1, "tabs": [{"id": 501, "active": True, "url": "https://example.com", "title": "Example"}]}]
         with tempfile.TemporaryDirectory() as tmp, patch("subprocess.run", fake.run):
@@ -129,8 +129,7 @@ class SurfAgentTests(unittest.TestCase):
                 agent.print_list()
             payload = json.loads(output.getvalue())
             stale_exists = stale.exists()
-        self.assertEqual(payload["threads"], [{"thread": "main", "open": True, "window_id": 101, "tab_id": 501, "url": "https://example.com", "title": "Example"}])
-        self.assertEqual(payload["removed"], [{"thread": "stale", "cached_window_id": 202, "cached_tab_id": 601}])
+        self.assertEqual(payload, {"threads": [{"thread": "main", "open": True, "window_id": 101, "tab_id": 501, "url": "https://example.com", "title": "Example"}]})
         self.assertFalse(stale_exists)
 
     def test_list_preserves_files_when_window_list_fails(self) -> None:

@@ -94,12 +94,7 @@ class SurfAgent:
         current = find_window(windows, cached.window_id)
         if current is None:
             unlink_missing_ok(self.state_file)
-            print(
-                json.dumps(
-                    {"thread": thread, "open": False, "cached_window_id": cached.window_id, "cached_tab_id": cached.tab_id},
-                    sort_keys=True,
-                )
-            )
+            print(json.dumps({"thread": thread, "open": False}, sort_keys=True))
             return
 
         tabs = tabs_for_window(current)
@@ -116,27 +111,24 @@ class SurfAgent:
 
     def print_list(self) -> None:
         if not self.state_dir.exists():
-            print(json.dumps({"threads": [], "removed": []}, sort_keys=True))
+            print(json.dumps({"threads": []}, sort_keys=True))
             return
 
         windows = self._list_windows(allow_failure=False)
         threads: list[dict[str, Any]] = []
-        removed: list[dict[str, Any]] = []
         for state_file in sorted(self.state_dir.glob("*.json")):
             thread = state_file.stem
             cached = load_state_file(state_file)
             if cached is None:
                 unlink_missing_ok(state_file)
-                removed.append({"thread": thread})
                 continue
             current = find_window(windows, cached.window_id)
             if current is None:
                 unlink_missing_ok(state_file)
-                removed.append({"thread": thread, "cached_window_id": cached.window_id, "cached_tab_id": cached.tab_id})
                 continue
             threads.append(state_payload(thread=thread, cached=cached, current=current))
 
-        print(json.dumps({"threads": threads, "removed": removed}, sort_keys=True))
+        print(json.dumps({"threads": threads}, sort_keys=True))
 
     def forget(self) -> None:
         unlink_missing_ok(self.state_file)
