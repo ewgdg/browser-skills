@@ -17,16 +17,10 @@ class FakeSurfRunner:
 
     def run_json(self, args, timeout=30, **kwargs):
         self.commands.append((None, list(args)))
-        if args[0] == "tab.new":
+        if args == ["window.new"]:
             tab_id = self.next_tab_id
             self.next_tab_id += 1
-            url = args[1]
-            self.tabs.append({"id": tab_id, "windowId": 1, "active": True, "url": url})
-            return {"success": True, "tabId": tab_id, "windowId": 1}
-        if args == ["window.new", "https://chatgpt.com/", "--unfocused"]:
-            tab_id = self.next_tab_id
-            self.next_tab_id += 1
-            self.tabs.append({"id": tab_id, "windowId": 99, "active": True, "url": "https://chatgpt.com/"})
+            self.tabs.append({"id": tab_id, "windowId": 99, "active": True, "url": "about:blank", "title": "surf-agent"})
             return {"success": True, "tabId": tab_id, "windowId": 99}
         if args == ["window.close", "99"]:
             return {"success": True}
@@ -34,17 +28,26 @@ class FakeSurfRunner:
             return {"tabs": self.tabs}
         raise AssertionError(f"unexpected command: {args}")
 
+    def run_json_on_window(self, window_id, args, timeout=30):
+        self.commands.append((f"window:{window_id}", list(args)))
+        if args[0] == "navigate":
+            return {"success": True}
+        return self._handle_scoped_command(args)
+
     def run_json_on_tab(self, tab_id, args, timeout=30):
         self.commands.append((tab_id, list(args)))
+        return self._handle_scoped_command(args)
+
+    def _handle_scoped_command(self, args):
         if args[0] == "wait.load":
             return {"success": True}
         if args[0] != "js":
-            raise AssertionError(f"unexpected tab command: {args}")
+            raise AssertionError(f"unexpected scoped command: {args}")
         code = Path(args[2]).read_text(encoding="utf-8")
         if "hasPrompt" in code and "loginRequired" in code:
             self.js_events.append("status")
             return {"result": {"value": {"hasPrompt": True, "challenge": False, "loginRequired": False, "url": self.current_url}}}
-        if "desiredNorm" in code and "modelButtonSelectors" in code:
+        if "desiredNorm" in code and "findModelButton" in code:
             self.js_events.append("model")
             return {"result": {"value": {"ok": True, "selected": "High"}}}
         if "composer_missing" in code:
@@ -96,18 +99,20 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(result["session"]["policy"], "ephemeral")
         self.assertEqual(result["session"]["id"], "new-session-id")
         self.assertEqual(result["model"], "High")
-        self.assertEqual(surf.commands[0][1], ["window.new", "https://chatgpt.com/", "--unfocused"])
+        self.assertEqual(surf.commands[0][1], ["window.new"])
+        self.assertEqual(surf.commands[1], ("window:99", ["navigate", "https://chatgpt.com/"]))
+        self.assertNotIn("tab.new", [command[1][0] for command in surf.commands])
         self.assertEqual(surf.commands[-1][1], ["window.close", "99"])
 
     def test_ephemeral_closes_window_after_structured_failure(self):
         class LoginFake(FakeSurfRunner):
-            def run_json_on_tab(self, tab_id, args, timeout=30):
+            def _handle_scoped_command(self, args):
                 if args[0] == "wait.load":
                     return {"success": True}
                 code = Path(args[2]).read_text(encoding="utf-8")
                 if "hasPrompt" in code and "loginRequired" in code:
                     return {"result": {"value": {"hasPrompt": False, "challenge": False, "loginRequired": True}}}
-                return super().run_json_on_tab(tab_id, args, timeout)
+                return super()._handle_scoped_command(args)
 
         surf = LoginFake()
         with self.assertRaises(SkillError) as ctx:
@@ -131,7 +136,9 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(result["session"]["id"], "new-session-id")
         self.assertFalse(result["session"]["saved"])
         self.assertNotIn("name", result["session"])
-        self.assertEqual(surf.commands[0][1], ["tab.new", "https://chatgpt.com/"])
+        self.assertEqual(surf.commands[0][1], ["window.new"])
+        self.assertEqual(surf.commands[1], ("window:99", ["navigate", "https://chatgpt.com/"]))
+        self.assertNotIn("tab.new", [command[1][0] for command in surf.commands])
 
     def test_session_url_opens_supplied_conversation_url(self):
         surf = FakeSurfRunner()
@@ -142,7 +149,8 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         )
         self.assertEqual(result["response"], "assistant answer")
         self.assertTrue(result["session"]["reused"])
-        self.assertIn((None, ["tab.new", "https://chatgpt.com/c/existing"]), surf.commands)
+        self.assertIn(("window:99", ["navigate", "https://chatgpt.com/c/existing"]), surf.commands)
+        self.assertNotIn("tab.new", [command[1][0] for command in surf.commands])
 
     def test_current_uses_active_chatgpt_tab(self):
         surf = FakeSurfRunner()
@@ -169,15 +177,15 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
 
     def test_session_model_unavailable_is_classified(self):
         class ModelMissingFake(FakeSurfRunner):
-            def run_json_on_tab(self, tab_id, args, timeout=30):
+            def _handle_scoped_command(self, args):
                 if args[0] == "wait.load":
                     return {"success": True}
                 code = Path(args[2]).read_text(encoding="utf-8")
                 if "hasPrompt" in code and "loginRequired" in code:
                     return {"result": {"value": {"hasPrompt": True, "challenge": False, "loginRequired": False, "url": self.current_url}}}
-                if "desiredNorm" in code and "modelButtonSelectors" in code:
+                if "desiredNorm" in code and "findModelButton" in code:
                     return {"result": {"value": {"ok": False, "reason": "level_missing", "available": ["Instant", "Medium"]}}}
-                return super().run_json_on_tab(tab_id, args, timeout)
+                return super()._handle_scoped_command(args)
 
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session(
@@ -200,13 +208,13 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
 
     def test_login_status_is_classified(self):
         class LoginFake(FakeSurfRunner):
-            def run_json_on_tab(self, tab_id, args, timeout=30):
+            def _handle_scoped_command(self, args):
                 if args[0] == "wait.load":
                     return {"success": True}
                 code = Path(args[2]).read_text(encoding="utf-8")
                 if "hasPrompt" in code and "loginRequired" in code:
                     return {"result": {"value": {"hasPrompt": False, "challenge": False, "loginRequired": True}}}
-                return super().run_json_on_tab(tab_id, args, timeout)
+                return super()._handle_scoped_command(args)
 
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session(

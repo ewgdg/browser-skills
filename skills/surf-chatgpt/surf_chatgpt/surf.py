@@ -44,3 +44,6 @@ class SurfRunner:
 
     def run_json_on_tab(self, tab_id: int, args: Sequence[str], timeout: int = 30) -> Any:
         return self.run_json(args, timeout=timeout, global_args=["--tab-id", str(tab_id)])
+
+    def run_json_on_window(self, window_id: int, args: Sequence[str], timeout: int = 30) -> Any:
+        return self.run_json(args, timeout=timeout, global_args=["--window-id", str(window_id)])

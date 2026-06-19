@@ -42,6 +42,9 @@ def normalize_model_choice(model: str | None, thinking: str | None) -> ModelChoi
         model_surf_token = parsed.surf_model_token
         model_thinking_label = parsed.thinking_label
 
+    if thinking_label and model and _is_gpt55_family_selector(model) and not model_thinking_label and not model_surf_token:
+        model_thinking_label = thinking_label
+
     if thinking_label and model_thinking_label and thinking_label != model_thinking_label:
         raise SkillError(
             "invalid_args",
@@ -88,8 +91,16 @@ def normalize_model_selector(value: str | None) -> ModelChoice:
         if compact.endswith(suffix):
             return ModelChoice(thinking_label=label, requested_model=value)
 
+    if compact in {"gpt55", "gpt5", "chatgpt55", "chatgpt5"}:
+        return ModelChoice(requested_model=value)
+
     raise SkillError(
         "model_unavailable",
         f"unsupported ChatGPT model/thinking selector: {value}",
         hint="Use --thinking low|medium|high or --model gpt5.5:<level>.",
     )
+
+
+def _is_gpt55_family_selector(value: str) -> bool:
+    compact = "".join(ch for ch in value.strip().lower() if ch.isalnum())
+    return compact in {"gpt55", "gpt5", "chatgpt55", "chatgpt5"}

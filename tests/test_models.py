@@ -23,6 +23,7 @@ class ModelNormalizationTests(unittest.TestCase):
 
     def test_matching_model_and_thinking_allowed(self):
         self.assertEqual(normalize_model_choice("gpt5.5:high", "high").thinking_label, "High")
+        self.assertEqual(normalize_model_choice("gpt5.5", "medium").thinking_label, "Medium")
 
     def test_conflicting_model_and_thinking_rejected(self):
         with self.assertRaises(SkillError) as ctx:

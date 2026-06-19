@@ -14,20 +14,22 @@ class FakeSurfRunner:
 
     def run_json(self, args, timeout=30):
         self.commands.append(list(args))
-        if args == ["window.new", "https://chatgpt.com/", "--unfocused"]:
+        if args == ["window.new"]:
             return {"success": True, "tabId": 10, "windowId": 20}
         if args == ["window.close", "20"]:
             return {"success": True}
         raise AssertionError(f"unexpected command: {args}")
 
-    def run_json_on_tab(self, tab_id, args, timeout=30):
-        self.tab_commands.append((tab_id, list(args)))
+    def run_json_on_window(self, window_id, args, timeout=30):
+        self.tab_commands.append((window_id, list(args)))
+        if args[0] == "navigate":
+            return {"success": True}
         if args[0] == "wait.load":
             return {"success": True}
         if args[0] == "js":
             self.js_code = Path(args[2]).read_text(encoding="utf-8")
             return {"result": {"value": self.js_result}}
-        raise AssertionError(f"unexpected tab command: {args}")
+        raise AssertionError(f"unexpected window command: {args}")
 
 
 class WebSessionSearchTests(unittest.TestCase):
@@ -51,6 +53,8 @@ class WebSessionSearchTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["query"], "alpha")
         self.assertEqual([item["id"] for item in result["sessions"]], ["a", "b"])
+        self.assertEqual(surf.commands[0], ["window.new"])
+        self.assertEqual(surf.tab_commands[0], (20, ["navigate", "https://chatgpt.com/"]))
         self.assertEqual(surf.commands[-1], ["window.close", "20"])
         self.assertIn("Search", surf.js_code)
         self.assertIn("/c/", surf.js_code)

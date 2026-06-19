@@ -70,15 +70,15 @@ def ask_reusable_session(
 
     try:
         target = _resolve_target(runner, options)
-        _wait_load_best_effort(runner, target.tab_id)
-        _assert_chatgpt_ready(runner, target.tab_id)
-        selected_model = _select_model_level(runner, target.tab_id, options.thinking_label) if options.thinking_label else "current"
+        _wait_load_best_effort(runner, target)
+        _assert_chatgpt_ready(runner, target)
+        selected_model = _select_model_level(runner, target, options.thinking_label) if options.thinking_label else "current"
 
-        baseline = _read_snapshot(runner, target.tab_id)
-        _inject_prompt(runner, target.tab_id, prompt)
-        _send_prompt(runner, target.tab_id)
-        response = _wait_for_response(runner, target.tab_id, baseline, timeout_seconds=options.timeout)
-        url = _current_url(runner, target.tab_id)
+        baseline = _read_snapshot(runner, target)
+        _inject_prompt(runner, target, prompt)
+        _send_prompt(runner, target)
+        response = _wait_for_response(runner, target, baseline, timeout_seconds=options.timeout)
+        url = _current_url(runner, target)
 
         session_id = _session_id_from_url(url)
 
@@ -108,6 +108,15 @@ class BrowserTarget:
     window_id: int | None
     reused: bool
     close_after: bool = False
+    scope: str = "tab"
+
+    @property
+    def command_id(self) -> int:
+        if self.scope == "window":
+            if self.window_id is None:
+                raise SkillError("parse_error", "browser target missing window id")
+            return self.window_id
+        return self.tab_id
 
 
 @dataclass(frozen=True)
@@ -129,29 +138,33 @@ def _resolve_target(runner: SurfRunner, options: ReusableAskOptions) -> BrowserT
 
 
 def _open_ephemeral_chatgpt_target(runner: SurfRunner) -> BrowserTarget:
-    # Use a dedicated unfocused window so cleanup cannot close an unrelated user tab.
-    data = runner.run_json(["window.new", CHATGPT_HOME, "--unfocused"], timeout=30)
+    target = _open_background_window(runner, reused=False, close_after=True)
+    _navigate_window(runner, target, CHATGPT_HOME)
+    return target
+
+
+def _open_chatgpt_url(runner: SurfRunner, url: str, *, reused: bool) -> BrowserTarget:
+    target = _open_background_window(runner, reused=reused, close_after=False)
+    _navigate_window(runner, target, url)
+    return target
+
+
+def _open_background_window(runner: SurfRunner, *, reused: bool, close_after: bool) -> BrowserTarget:
+    # No URL: surf opens its neutral surf-agent page first, letting window rules keep it unfocused.
+    data = runner.run_json(["window.new"], timeout=30)
     tab_id = _extract_int(data, "tabId", "tab_id", "id", "_resolvedTabId")
     window_id = _extract_int(data, "windowId", "window_id")
     if tab_id is None:
         raise SkillError("parse_error", "surf window.new JSON missing tab id")
-    return BrowserTarget(tab_id=tab_id, window_id=window_id, reused=False, close_after=True)
+    if window_id is None:
+        raise SkillError("parse_error", "surf window.new JSON missing window id")
+    return BrowserTarget(tab_id=tab_id, window_id=window_id, reused=reused, close_after=close_after, scope="window")
 
 
-def _open_chatgpt_url(runner: SurfRunner, url: str, *, reused: bool) -> BrowserTarget:
-    data = runner.run_json(["tab.new", url], timeout=30)
-    tab_id = _extract_int(data, "tabId", "tab_id", "id", "_resolvedTabId")
-    window_id = _extract_int(data, "windowId", "window_id")
-    if tab_id is None:
-        # Some surf versions return a tab object/list instead of {tabId}.
-        tabs = _as_tab_list(data)
-        chatgpt_tabs = [tab for tab in tabs if _is_chatgpt_url(str(tab.get("url", "")))]
-        if chatgpt_tabs:
-            tab_id = _coerce_int(chatgpt_tabs[-1].get("id") or chatgpt_tabs[-1].get("tabId"))
-            window_id = _coerce_int(chatgpt_tabs[-1].get("windowId") or chatgpt_tabs[-1].get("window_id"))
-    if tab_id is None:
-        raise SkillError("parse_error", "surf tab.new JSON missing tab id")
-    return BrowserTarget(tab_id=tab_id, window_id=window_id, reused=reused)
+def _navigate_window(runner: SurfRunner, target: BrowserTarget, url: str) -> None:
+    if target.window_id is None:
+        raise SkillError("parse_error", "browser target missing window id")
+    runner.run_json_on_window(target.window_id, ["navigate", url], timeout=30)
 
 
 def _close_target_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
@@ -209,16 +222,16 @@ def _as_tab_list(data: Any) -> list[dict[str, Any]]:
     return []
 
 
-def _wait_load_best_effort(runner: SurfRunner, tab_id: int) -> None:
+def _wait_load_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
     try:
-        runner.run_json_on_tab(tab_id, ["wait.load", "--timeout", "30000"], timeout=35)
+        _run_json_on_target(runner, target, ["wait.load", "--timeout", "30000"], timeout=35)
     except SkillError as exc:
         if exc.type not in {"timeout", "ui_changed"}:
             raise
 
 
-def _assert_chatgpt_ready(runner: SurfRunner, tab_id: int) -> None:
-    status = _run_js_file(runner, tab_id, _status_js(), timeout=15)
+def _assert_chatgpt_ready(runner: SurfRunner, target: BrowserTarget) -> None:
+    status = _run_js_file(runner, target, _status_js(), timeout=15)
     if not isinstance(status, dict):
         raise SkillError("parse_error", "ChatGPT status script returned unexpected data")
     if status.get("challenge"):
@@ -229,11 +242,11 @@ def _assert_chatgpt_ready(runner: SurfRunner, tab_id: int) -> None:
         raise SkillError("ui_changed", "ChatGPT prompt composer not found")
 
 
-def _select_model_level(runner: SurfRunner, tab_id: int, thinking_label: str | None) -> str:
+def _select_model_level(runner: SurfRunner, target: BrowserTarget, thinking_label: str | None) -> str:
     if not thinking_label:
         return "current"
     desired_label = thinking_label
-    result = _run_js_file(runner, tab_id, _select_model_level_js(desired_label), timeout=20)
+    result = _run_js_file(runner, target, _select_model_level_js(desired_label), timeout=20)
     if not isinstance(result, dict):
         raise SkillError("parse_error", "ChatGPT model selection script returned unexpected data")
     if result.get("ok"):
@@ -246,19 +259,19 @@ def _select_model_level(runner: SurfRunner, tab_id: int, thinking_label: str | N
     raise SkillError("model_unavailable", f"ChatGPT thinking level {desired_label!r} unavailable.{suffix}")
 
 
-def _inject_prompt(runner: SurfRunner, tab_id: int, prompt: str) -> None:
-    result = _run_js_file(runner, tab_id, _inject_prompt_js(prompt), timeout=30)
+def _inject_prompt(runner: SurfRunner, target: BrowserTarget, prompt: str) -> None:
+    result = _run_js_file(runner, target, _inject_prompt_js(prompt), timeout=30)
     if not isinstance(result, dict) or not result.get("ok"):
         raise SkillError("ui_changed", "failed to inject prompt into ChatGPT composer")
     if int(result.get("textLength") or 0) <= 0:
         raise SkillError("ui_changed", "ChatGPT composer did not retain injected prompt")
 
 
-def _send_prompt(runner: SurfRunner, tab_id: int) -> None:
+def _send_prompt(runner: SurfRunner, target: BrowserTarget) -> None:
     deadline = time.time() + 8
     last_status: Any = None
     while time.time() < deadline:
-        result = _run_js_file(runner, tab_id, _send_prompt_js(), timeout=10)
+        result = _run_js_file(runner, target, _send_prompt_js(), timeout=10)
         last_status = result
         status = result.get("status") if isinstance(result, dict) else None
         if status == "clicked":
@@ -269,8 +282,8 @@ def _send_prompt(runner: SurfRunner, tab_id: int) -> None:
     raise SkillError("ui_changed", f"ChatGPT send button not ready: {last_status}")
 
 
-def _read_snapshot(runner: SurfRunner, tab_id: int) -> dict[str, Any]:
-    result = _run_js_file(runner, tab_id, _snapshot_js(), timeout=15)
+def _read_snapshot(runner: SurfRunner, target: BrowserTarget) -> dict[str, Any]:
+    result = _run_js_file(runner, target, _snapshot_js(), timeout=15)
     if not isinstance(result, dict):
         raise SkillError("parse_error", "ChatGPT snapshot script returned unexpected data")
     return _normalize_snapshot(result)
@@ -278,7 +291,7 @@ def _read_snapshot(runner: SurfRunner, tab_id: int) -> dict[str, Any]:
 
 def _wait_for_response(
     runner: SurfRunner,
-    tab_id: int,
+    target: BrowserTarget,
     baseline: dict[str, Any],
     *,
     timeout_seconds: int,
@@ -290,7 +303,7 @@ def _wait_for_response(
     stable_cycles = 0
 
     while time.time() < deadline:
-        snapshot = _read_snapshot(runner, tab_id)
+        snapshot = _read_snapshot(runner, target)
         latest = snapshot.get("latest") or {}
         current_text = latest.get("text") or ""
         has_new_content = _is_new_assistant_content(snapshot, baseline)
@@ -357,13 +370,13 @@ def _is_new_assistant_content(snapshot: dict[str, Any], baseline: dict[str, Any]
     return bool(latest.get("text")) and latest.get("text") != baseline_latest.get("text")
 
 
-def _current_url(runner: SurfRunner, tab_id: int) -> str:
+def _current_url(runner: SurfRunner, target: BrowserTarget) -> str:
     last_url: str | None = None
     # New conversations usually rewrite `/` to `/c/<id>` after first answer; give it a brief
     # chance so named sessions persist the continuity URL, not just the ChatGPT home URL.
     deadline = time.time() + 5
     while time.time() < deadline:
-        result = _run_js_file(runner, tab_id, "return location.href;", timeout=10)
+        result = _run_js_file(runner, target, "return location.href;", timeout=10)
         if isinstance(result, str) and _is_chatgpt_url(result):
             last_url = result
             if _is_conversation_url(result):
@@ -371,16 +384,22 @@ def _current_url(runner: SurfRunner, tab_id: int) -> str:
         time.sleep(0.3)
     if last_url:
         return last_url
-    tab = _find_tab_by_id(runner, tab_id)
+    tab = _find_tab_by_id(runner, target.tab_id)
     if tab and _is_chatgpt_url(str(tab.get("url", ""))):
         return str(tab["url"])
     raise SkillError("parse_error", "could not read ChatGPT conversation URL")
 
 
-def _run_js_file(runner: SurfRunner, tab_id: int, code: str, *, timeout: int) -> Any:
+def _run_json_on_target(runner: SurfRunner, target: BrowserTarget, args: list[str], *, timeout: int) -> Any:
+    if target.scope == "window":
+        return runner.run_json_on_window(target.command_id, args, timeout=timeout)
+    return runner.run_json_on_tab(target.command_id, args, timeout=timeout)
+
+
+def _run_js_file(runner: SurfRunner, target: BrowserTarget, code: str, *, timeout: int) -> Any:
     path = _write_temp_js(code)
     try:
-        data = runner.run_json_on_tab(tab_id, ["js", "--file", path], timeout=timeout)
+        data = _run_json_on_target(runner, target, ["js", "--file", path], timeout=timeout)
         return _unwrap_js_result(data)
     finally:
         try:
@@ -425,17 +444,17 @@ return (() => {{
 
 
 def _select_model_level_js(desired_label: str) -> str:
-    return f"""
+    return rf"""
 return (async () => {{
   const desired = {json.dumps(desired_label)};
   const desiredNorm = desired.toLowerCase();
-  const modelButtonSelectors = [
-    '[data-testid="model-switcher-dropdown-button"]',
-    'button[aria-label*="model" i]',
-    'button[aria-haspopup="menu"]'
-  ];
   function sleep(ms) {{ return new Promise((resolve) => setTimeout(resolve, ms)); }}
   function textOf(node) {{ return (node?.innerText || node?.textContent || node?.getAttribute?.('aria-label') || '').trim(); }}
+  function isVisible(node) {{
+    const rect = node?.getBoundingClientRect?.();
+    const style = node ? window.getComputedStyle(node) : null;
+    return Boolean(rect && rect.width > 0 && rect.height > 0 && style?.visibility !== 'hidden' && style?.display !== 'none');
+  }}
   function dispatchClickSequence(target) {{
     const types = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
     for (const type of types) {{
@@ -449,24 +468,62 @@ return (async () => {{
   function visibleItems() {{
     const nodes = Array.from(document.querySelectorAll('[role="menu"] [role="menuitemradio"], [role="menu"] [role="menuitem"], [role="menu"] button, [data-radix-menu-content] [role="menuitemradio"], [data-radix-menu-content] [role="menuitem"], [data-radix-menu-content] button'));
     return nodes
-      .map((node) => ({{ node, label: textOf(node).replace(/\\s+/g, ' ').trim() }}))
+      .filter(isVisible)
+      .map((node) => ({{ node, label: textOf(node).replace(/\s+/g, ' ').trim() }}))
       .filter((item) => item.label);
   }}
-  let button = null;
-  for (const selector of modelButtonSelectors) {{
-    const candidates = Array.from(document.querySelectorAll(selector));
-    button = candidates.find((candidate) => /instant|medium|high|gpt|model/i.test(textOf(candidate))) || button || candidates[0] || null;
-    if (button) break;
+  function modelButtonScore(node) {{
+    if (!isVisible(node)) return -1;
+    const label = textOf(node).replace(/\s+/g, ' ').trim();
+    const aria = (node.getAttribute?.('aria-label') || '').toLowerCase();
+    const testid = (node.getAttribute?.('data-testid') || '').toLowerCase();
+    const haystack = `${{label}} ${{aria}} ${{testid}}`;
+    const lower = haystack.toLowerCase();
+    let score = 0;
+    if (testid.includes('model-switcher')) score += 100;
+    if (/\b(instant|medium|high)\b/i.test(label)) score += 80;
+    if (/gpt[- ]?5\.?5|\b5\.5\b|intelligence|model/i.test(haystack)) score += 70;
+    if (aria.includes('model')) score += 50;
+    if (node.closest('main, form')) score += 20;
+    const rect = node.getBoundingClientRect();
+    if (rect.top > window.innerHeight * 0.45) score += 10;
+    if (/share|archive|delete|rename|pin chat|group chat/i.test(label)) score -= 200;
+    return lower.includes('model') || /\b(instant|medium|high)\b/i.test(label) || /gpt[- ]?5\.?5|\b5\.5\b|intelligence/i.test(haystack) ? score : -1;
   }}
-  if (!button) return {{ ok: false, reason: 'model_button_missing', available: [] }};
-  dispatchClickSequence(button);
+  function findModelButton() {{
+    const selectors = [
+      '[data-testid="model-switcher-dropdown-button"]',
+      'button[aria-label*="model" i]',
+      'button[aria-haspopup="menu"]',
+      'button[aria-expanded]',
+      '[role="button"]'
+    ];
+    const seen = new Set();
+    const candidates = [];
+    for (const selector of selectors) {{
+      for (const node of Array.from(document.querySelectorAll(selector))) {{
+        if (seen.has(node)) continue;
+        seen.add(node);
+        const score = modelButtonScore(node);
+        if (score >= 0) candidates.push({{ node, score, label: textOf(node) }});
+      }}
+    }}
+    candidates.sort((a, b) => b.score - a.score);
+    return candidates[0] || null;
+  }}
+
+  document.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }}));
+  await sleep(100);
+  const candidate = findModelButton();
+  if (!candidate) return {{ ok: false, reason: 'model_button_missing', available: [] }};
+  dispatchClickSequence(candidate.node);
   await sleep(350);
 
   let items = visibleItems();
   let match = items.find((item) => item.label.toLowerCase() === desiredNorm);
   if (!match) {{
     // Some ChatGPT layouts put Intelligence under a GPT-5.5 submenu. Click/hover that row, then retry.
-    const submenu = items.find((item) => /gpt[- ]?5\\.?5/i.test(item.label) || /intelligence/i.test(item.label));
+    const submenu = items.find((item) => /gpt[- ]?5\.?5/i.test(item.label) || /intelligence/i.test(item.label));
     if (submenu) {{
       submenu.node.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true, cancelable: true, view: window }}));
       dispatchClickSequence(submenu.node);
@@ -475,7 +532,7 @@ return (async () => {{
       match = items.find((item) => item.label.toLowerCase() === desiredNorm);
     }}
   }}
-  if (!match) return {{ ok: false, reason: 'level_missing', desired, available: items.map((item) => item.label).slice(0, 20) }};
+  if (!match) return {{ ok: false, reason: 'level_missing', desired, button: candidate.label, available: items.map((item) => item.label).slice(0, 20) }};
   dispatchClickSequence(match.node);
   await sleep(250);
   return {{ ok: true, selected: desired }};

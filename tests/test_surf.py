@@ -25,6 +25,16 @@ class SurfWrapperTests(unittest.TestCase):
         data = SurfRunner(runner=fake_run).run_json_on_tab(123, ["js", "--file", "/tmp/x.js"])
         self.assertEqual(data["result"]["value"], "ok")
 
+    def test_run_json_on_window_places_global_window_id_before_command(self):
+        def fake_run(command, **kwargs):
+            self.assertEqual(command[:3], ["surf", "--window-id", "456"])
+            self.assertEqual(command[3:5], ["navigate", "https://chatgpt.com/"])
+            self.assertIn("--json", command)
+            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"success": True}), stderr="")
+
+        data = SurfRunner(runner=fake_run).run_json_on_window(456, ["navigate", "https://chatgpt.com/"])
+        self.assertTrue(data["success"])
+
     def test_nonzero_login_classified(self):
         def fake_run(command, **kwargs):
             return subprocess.CompletedProcess(command, 1, stdout="", stderr="Error: ChatGPT login required")

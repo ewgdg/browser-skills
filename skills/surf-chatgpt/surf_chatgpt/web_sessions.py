@@ -23,8 +23,8 @@ def search_web_sessions(query: str, *, limit: int = 10, surf: SurfRunner | None 
     runner = surf or SurfRunner()
     target = _open_temp_chatgpt_window(runner)
     try:
-        _wait_load_best_effort(runner, target.tab_id)
-        result = _run_js_file(runner, target.tab_id, _search_sessions_js(clean_query, limit), timeout=35)
+        _wait_load_best_effort(runner, target)
+        result = _run_js_file(runner, target, _search_sessions_js(clean_query, limit), timeout=35)
         if not isinstance(result, dict):
             raise SkillError("parse_error", "ChatGPT session search returned unexpected data")
         return _result_to_payload(clean_query, result, limit)
@@ -33,18 +33,23 @@ def search_web_sessions(query: str, *, limit: int = 10, surf: SurfRunner | None 
 
 
 class _Target:
-    def __init__(self, tab_id: int, window_id: int | None):
+    def __init__(self, tab_id: int, window_id: int):
         self.tab_id = tab_id
         self.window_id = window_id
 
 
 def _open_temp_chatgpt_window(runner: SurfRunner) -> _Target:
-    data = runner.run_json(["window.new", CHATGPT_HOME, "--unfocused"], timeout=30)
+    # No URL: surf opens its neutral surf-agent page first, letting window rules keep it unfocused.
+    data = runner.run_json(["window.new"], timeout=30)
     tab_id = _extract_int(data, "tabId", "tab_id", "id", "_resolvedTabId")
     window_id = _extract_int(data, "windowId", "window_id")
     if tab_id is None:
         raise SkillError("parse_error", "surf window.new JSON missing tab id")
-    return _Target(tab_id=tab_id, window_id=window_id)
+    if window_id is None:
+        raise SkillError("parse_error", "surf window.new JSON missing window id")
+    target = _Target(tab_id=tab_id, window_id=window_id)
+    runner.run_json_on_window(target.window_id, ["navigate", CHATGPT_HOME], timeout=30)
+    return target
 
 
 def _close_temp_target(runner: SurfRunner, target: _Target) -> None:
@@ -58,9 +63,9 @@ def _close_temp_target(runner: SurfRunner, target: _Target) -> None:
         pass
 
 
-def _wait_load_best_effort(runner: SurfRunner, tab_id: int) -> None:
+def _wait_load_best_effort(runner: SurfRunner, target: _Target) -> None:
     try:
-        runner.run_json_on_tab(tab_id, ["wait.load", "--timeout", "30000"], timeout=35)
+        runner.run_json_on_window(target.window_id, ["wait.load", "--timeout", "30000"], timeout=35)
     except SkillError as exc:
         if exc.type not in {"timeout", "ui_changed"}:
             raise
@@ -110,10 +115,10 @@ def _normalize_sessions(raw: Any, limit: int) -> list[dict[str, str]]:
     return sessions
 
 
-def _run_js_file(runner: SurfRunner, tab_id: int, code: str, *, timeout: int) -> Any:
+def _run_js_file(runner: SurfRunner, target: _Target, code: str, *, timeout: int) -> Any:
     path = _write_temp_js(code)
     try:
-        data = runner.run_json_on_tab(tab_id, ["js", "--file", path], timeout=timeout)
+        data = runner.run_json_on_window(target.window_id, ["js", "--file", path], timeout=timeout)
         return _unwrap_js_result(data)
     finally:
         try:
