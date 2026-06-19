@@ -67,16 +67,14 @@ When blocked, show evidence, pause, and resume only after the user confirms.
 ```bash
 uv run surf-agent --thread main go https://x.com/explore
 uv run surf-agent --thread main page.read --compact --depth 2 || true
-uv run surf-agent --thread main screenshot --output /tmp/surf-blocked.png
 uv run surf-agent --thread main focus
 ```
 
-Tell the user: "I focused the managed browser window. Please complete the blocker there, then tell me when done."
+Tell the user: "Please complete the blocker there, then tell me when done."
 
 After the user confirms:
 
 ```bash
-uv run surf-agent --thread main page.state
 uv run surf-agent --thread main page.read --compact --depth 2
 ```
 
