@@ -16,6 +16,9 @@ Use `surf-agent` for all browser operations. It owns a Chrome window per thread 
 - Parallel agents must use unique thread ids unless intentionally sharing one window.
 - Do not manage tabs directly.
 - Do not operate on user-owned browser windows.
+- Do not call `new` before `go`; `go` creates/reuses the thread window automatically.
+- If login, CAPTCHA, consent, FedCM, or other anti-automation UI blocks progress, stop and ask the user to handle it in the managed window, then resume after they confirm.
+- Close temporary sessions when done; `reset` only forgets state and can leave a window open.
 
 ## Base command
 
@@ -29,16 +32,36 @@ Browser commands are passed through to `surf` inside the managed thread window.
 
 ## Starter workflows
 
+### Open, read, and clean up
+
+```bash
+# `go` creates the thread window if missing; no separate `new` needed.
+uv run surf-agent --thread main go https://example.com
+uv run surf-agent --thread main page.read --compact --depth 2
+uv run surf-agent --thread main close
+```
+
 ### Click known UI
 
 ```bash
+uv run surf-agent --thread main go https://example.com
 uv run surf-agent --thread main locate.role button --name "Sign in" --action click
 uv run surf-agent --thread main page.state
+```
+
+### Human-in-the-loop unblock
+
+```bash
+uv run surf-agent --thread main go https://x.com/explore
+# If blocked by login/CAPTCHA/consent/FedCM, ask the user to complete it in the managed window.
+uv run surf-agent --thread main wait 2
+uv run surf-agent --thread main page.read --compact --depth 2
 ```
 
 ### Read large pages cheaply
 
 ```bash
+uv run surf-agent --thread main go https://example.com
 uv run surf-agent --thread main page.read --compact --depth 2
 uv run surf-agent --thread main search "error"
 ```
@@ -50,16 +73,16 @@ uv run surf-agent --thread main search "error"
 ```bash
 uv run surf-agent --thread main state      # current thread/window/page state; removes stale cache; does not open a window
 uv run surf-agent list                     # remembered threads; removes stale cache entries
-uv run surf-agent --thread main new        # replace/create the thread window
-uv run surf-agent --thread main close      # close remembered thread window
-uv run surf-agent --thread main reset      # forget thread state without closing window
+uv run surf-agent --thread main new        # replace/create the thread window; use only when forcing a fresh window
+uv run surf-agent --thread main close      # close remembered thread window; use for cleanup
+uv run surf-agent --thread main reset      # forget thread state without closing window; can leave orphan windows
 uv run surf-agent --thread main window-id  # print/create managed window id
 ```
 
 ### Navigate and read
 
 ```bash
-uv run surf-agent --thread main go https://example.com  # creates/reuses thread window automatically
+uv run surf-agent --thread main go https://example.com  # creates/reuses thread window automatically; no `new` first
 uv run surf-agent --thread main back
 uv run surf-agent --thread main forward
 uv run surf-agent --thread main page.read --compact --depth 3
@@ -101,7 +124,7 @@ Forbidden through `surf-agent`: web chat/client commands such as `chatgpt` and `
 
 ## Session cleanup
 
-Close temporary sessions when done:
+Close temporary sessions when done. Do not use `reset` for cleanup unless you intentionally want to leave the browser window open but forget agent state.
 
 ```bash
 uv run surf-agent --thread main close
