@@ -16,7 +16,7 @@ Use `surf-agent` for all browser operations. It owns a Chrome window per thread 
 - Parallel agents must use unique thread ids unless intentionally sharing one window.
 - Do not manage tabs directly.
 - Do not operate on user-owned browser windows.
-- If login, CAPTCHA, consent, FedCM, or other anti-automation UI blocks progress, stop and ask the user to handle it in the managed window, then resume after they confirm.
+- If blocked, ask the user to handle it in the managed window, then resume.
 - Close temporary sessions when done; `reset` only forgets state and can leave a window open.
 - For subagent fan-out, use a unique thread prefix per run (for example `review-42-a`) and sweep it with `close-matching 'review-42-*'`.
 
@@ -64,7 +64,7 @@ uv run surf-agent --thread main page.state
 
 ```bash
 uv run surf-agent --thread main go https://x.com/explore
-# If blocked by login/CAPTCHA/consent/FedCM, ask the user to complete it in the managed window.
+# If blocked, ask the user to handle it in the managed window, then resume.
 uv run surf-agent --thread main wait 2
 uv run surf-agent --thread main page.read --compact --depth 2
 ```
