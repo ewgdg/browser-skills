@@ -17,7 +17,7 @@ Use `surf-agent` for all browser operations. It owns a Chrome window per thread 
 - Do not manage tabs directly.
 - Do not operate on user-owned browser windows.
 - If blocked, ask the user to handle it in the managed window, then resume.
-- Close temporary sessions when done; `reset` only forgets state and can leave a window open.
+- Close temporary sessions when done.
 - For subagent fan-out, use a unique thread prefix per run (for example `review-42-a`) and sweep it with `close-matching 'review-42-*'`.
 
 ## Base command
@@ -62,10 +62,20 @@ uv run surf-agent --thread main page.state
 
 ### Human-in-the-loop unblock
 
+When blocked, show evidence, pause, and resume only after the user confirms.
+
 ```bash
 uv run surf-agent --thread main go https://x.com/explore
-# If blocked, ask the user to handle it in the managed window, then resume.
-uv run surf-agent --thread main wait 2
+uv run surf-agent --thread main page.read --compact --depth 2 || true
+uv run surf-agent --thread main screenshot --output /tmp/surf-blocked.png
+```
+
+Tell the user: "The managed browser window is blocked. Please complete the blocker there, then tell me when done."
+
+After the user confirms:
+
+```bash
+uv run surf-agent --thread main page.state
 uv run surf-agent --thread main page.read --compact --depth 2
 ```
 
