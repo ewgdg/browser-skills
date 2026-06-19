@@ -16,7 +16,6 @@ Use `surf-agent` for all browser operations. It owns a Chrome window per thread 
 - Parallel agents must use unique thread ids unless intentionally sharing one window.
 - Do not manage tabs directly.
 - Do not operate on user-owned browser windows.
-- Do not call `new` before `go`; `go` creates/reuses the thread window automatically.
 - If login, CAPTCHA, consent, FedCM, or other anti-automation UI blocks progress, stop and ask the user to handle it in the managed window, then resume after they confirm.
 - Close temporary sessions when done; `reset` only forgets state and can leave a window open.
 - For subagent fan-out, use a unique thread prefix per run (for example `review-42-a`) and sweep it with `close-matching 'review-42-*'`.
@@ -96,7 +95,7 @@ uv run surf-agent --thread main window-id  # print/create managed window id
 ### Navigate and read
 
 ```bash
-uv run surf-agent --thread main go https://example.com  # creates/reuses thread window automatically; no `new` first
+uv run surf-agent --thread main go https://example.com  # creates/reuses thread window automatically
 uv run surf-agent --thread main back
 uv run surf-agent --thread main forward
 uv run surf-agent --thread main page.read --compact --depth 3
