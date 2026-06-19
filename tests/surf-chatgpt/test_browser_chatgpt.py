@@ -1,8 +1,20 @@
 import unittest
 from pathlib import Path
 
+import surf_chatgpt.browser_chatgpt as browser_chatgpt
 from surf_chatgpt.browser_chatgpt import ReusableAskOptions, _extract_int, ask_reusable_session
 from surf_chatgpt.errors import SkillError
+
+
+class FakeTime:
+    def __init__(self):
+        self.now = 1000.0
+
+    def time(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
 
 
 class FakeSurfRunner:
@@ -175,6 +187,104 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         )
         self.assertEqual(result["session"]["window_id"], 99)
         self.assertNotIn(["window.close", "99"], [command[1] for command in surf.commands])
+
+    def test_response_timeout_tracks_inactivity_not_total_elapsed_time(self):
+        class StreamingFake(FakeSurfRunner):
+            def __init__(self):
+                super().__init__()
+                self.parts = ["a", "ab", "abc", "abcd"]
+
+            def _handle_scoped_command(self, args):
+                if args[0] == "js":
+                    code = Path(args[2]).read_text(encoding="utf-8")
+                    if "stopVisible" in code and "candidates" in code and self.sent:
+                        text = self.parts.pop(0) if self.parts else "abcd"
+                        return {
+                            "result": {
+                                "value": {
+                                    "candidates": [
+                                        {
+                                            "isAssistant": True,
+                                            "text": text,
+                                            "messageId": "m1",
+                                            "hasFinishedActions": text == "abcd",
+                                        }
+                                    ],
+                                    "stopVisible": text != "abcd",
+                                }
+                            }
+                        }
+                return super()._handle_scoped_command(args)
+
+        fake_time = FakeTime()
+        original_time = browser_chatgpt.time
+        browser_chatgpt.time = fake_time
+        try:
+            result = ask_reusable_session(
+                "normal user prompt",
+                ReusableAskOptions(session_policy="new", start_new=True, timeout=1),
+                surf=StreamingFake(),
+            )
+        finally:
+            browser_chatgpt.time = original_time
+        self.assertEqual(result["response"], "abcd")
+        self.assertGreater(fake_time.now - 1000.0, 1)
+
+    def test_response_idle_timeout_refreshes_page_once(self):
+        class IdleFake(FakeSurfRunner):
+            def __init__(self):
+                super().__init__()
+                self.refreshes = 0
+
+            def _handle_scoped_command(self, args):
+                if args[0] == "tab.reload":
+                    self.refreshes += 1
+                    return {"success": True}
+                if args[0] == "js":
+                    code = Path(args[2]).read_text(encoding="utf-8")
+                    if "stopVisible" in code and "candidates" in code and self.sent and self.refreshes == 0:
+                        return {"result": {"value": {"candidates": [], "stopVisible": False}}}
+                return super()._handle_scoped_command(args)
+
+        fake_time = FakeTime()
+        original_time = browser_chatgpt.time
+        browser_chatgpt.time = fake_time
+        try:
+            result = ask_reusable_session(
+                "normal user prompt",
+                ReusableAskOptions(session_policy="new", start_new=True, timeout=2),
+                surf=IdleFake(),
+            )
+        finally:
+            browser_chatgpt.time = original_time
+        self.assertEqual(result["response"], "assistant answer")
+        self.assertIn("response_poll_refresh:idle_timeout", result["warnings"])
+
+    def test_response_polling_timeout_refreshes_page_once(self):
+        class SnapshotTimeoutFake(FakeSurfRunner):
+            def __init__(self):
+                super().__init__()
+                self.refreshes = 0
+
+            def _handle_scoped_command(self, args):
+                if args[0] == "tab.reload":
+                    self.refreshes += 1
+                    return {"success": True}
+                if args[0] == "js":
+                    code = Path(args[2]).read_text(encoding="utf-8")
+                    if "stopVisible" in code and "candidates" in code and self.sent and self.refreshes == 0:
+                        raise SkillError("timeout", "surf command timed out after 15s")
+                return super()._handle_scoped_command(args)
+
+        surf = SnapshotTimeoutFake()
+        result = ask_reusable_session(
+            "normal user prompt",
+            ReusableAskOptions(session_policy="new", start_new=True, timeout=5),
+            surf=surf,
+        )
+        self.assertEqual(result["response"], "assistant answer")
+        self.assertEqual(surf.refreshes, 1)
+        self.assertIn("response_poll_refresh:timeout", result["warnings"])
 
     def test_answer_survives_final_url_timeout(self):
         class UrlTimeoutFake(FakeSurfRunner):

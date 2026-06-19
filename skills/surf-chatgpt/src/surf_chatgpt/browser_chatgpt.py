@@ -80,7 +80,7 @@ def ask_reusable_session(
         _inject_prompt(runner, target, prompt)
         _send_prompt(runner, target)
         response = _wait_for_response(runner, target, baseline, timeout_seconds=options.timeout)
-        warnings: list[str] = []
+        warnings: list[str] = list(response.warnings)
         try:
             url = _current_url(runner, target)
         except SkillError as exc:
@@ -134,6 +134,7 @@ class BrowserTarget:
 class AssistantResponse:
     text: str
     message_id: str | None = None
+    warnings: tuple[str, ...] = ()
 
 
 def _resolve_target(runner: SurfRunner, options: ReusableAskOptions) -> BrowserTarget:
@@ -344,15 +345,31 @@ def _wait_for_response(
     *,
     timeout_seconds: int,
 ) -> AssistantResponse:
-    deadline = time.time() + timeout_seconds
+    inactivity_timeout = max(timeout_seconds, 1)
     baseline_latest = baseline.get("latest") or {}
     previous_text = baseline_latest.get("text") or ""
     stable_since = time.time()
     stable_cycles = 0
+    warnings: list[str] = []
 
+    previous_activity_signature = _snapshot_activity_signature(baseline)
+    last_activity_at = time.time()
     snapshot_timeouts = 0
+    refresh_after_timeout_done = False
 
-    while time.time() < deadline:
+    while True:
+        if time.time() - last_activity_at >= inactivity_timeout:
+            if refresh_after_timeout_done:
+                raise SkillError("timeout", f"ChatGPT response timed out after {inactivity_timeout}s without page activity")
+            _refresh_target_best_effort(runner, target)
+            _wait_load_best_effort(runner, target)
+            refresh_after_timeout_done = True
+            snapshot_timeouts = 0
+            last_activity_at = time.time()
+            warnings.append("response_poll_refresh:idle_timeout")
+            time.sleep(1.0)
+            continue
+
         try:
             snapshot = _read_snapshot(runner, target)
             snapshot_timeouts = 0
@@ -360,10 +377,22 @@ def _wait_for_response(
             if exc.type != "timeout":
                 raise
             snapshot_timeouts += 1
-            if snapshot_timeouts >= 3:
-                raise SkillError("timeout", "ChatGPT response polling timed out after repeated surf JS timeouts") from exc
+            if snapshot_timeouts >= 2 and not refresh_after_timeout_done:
+                _refresh_target_best_effort(runner, target)
+                _wait_load_best_effort(runner, target)
+                refresh_after_timeout_done = True
+                snapshot_timeouts = 0
+                last_activity_at = time.time()
+                warnings.append("response_poll_refresh:timeout")
+                time.sleep(1.0)
+                continue
             time.sleep(0.5)
             continue
+
+        current_activity_signature = _snapshot_activity_signature(snapshot)
+        if current_activity_signature != previous_activity_signature:
+            previous_activity_signature = current_activity_signature
+            last_activity_at = time.time()
 
         latest = snapshot.get("latest") or {}
         current_text = latest.get("text") or ""
@@ -385,11 +414,20 @@ def _wait_for_response(
             latest.get("hasFinishedActions") or stable_cycles >= 2 or stable_ms >= 1500
         )
         if complete:
-            return AssistantResponse(text=current_text, message_id=latest.get("messageId"))
+            return AssistantResponse(text=current_text, message_id=latest.get("messageId"), warnings=tuple(warnings))
 
         time.sleep(0.5)
 
-    raise SkillError("timeout", "ChatGPT response timed out")
+
+def _snapshot_activity_signature(snapshot: dict[str, Any]) -> tuple[Any, ...]:
+    latest = snapshot.get("latest") or {}
+    return (
+        snapshot.get("assistantCount", 0),
+        bool(snapshot.get("stopVisible")),
+        latest.get("messageId"),
+        latest.get("text") or "",
+        bool(latest.get("hasFinishedActions")),
+    )
 
 
 def _normalize_snapshot(raw: dict[str, Any]) -> dict[str, Any]:
@@ -429,6 +467,14 @@ def _is_new_assistant_content(snapshot: dict[str, Any], baseline: dict[str, Any]
     if latest.get("messageId") and baseline_latest.get("messageId"):
         return latest.get("messageId") != baseline_latest.get("messageId")
     return bool(latest.get("text")) and latest.get("text") != baseline_latest.get("text")
+
+
+def _refresh_target_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
+    try:
+        _run_json_on_target(runner, target, ["tab.reload"], timeout=15)
+    except SkillError:
+        # Refresh is recovery only. Keep original response wait error semantics if it fails.
+        pass
 
 
 def _tab_url_best_effort(runner: SurfRunner, target: BrowserTarget) -> str | None:
