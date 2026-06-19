@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -97,15 +98,14 @@ class SurfAgent:
             print(json.dumps({"thread": thread, "open": False}, sort_keys=True))
             return
 
-        tabs = tabs_for_window(current)
-        active_tab = next((tab for tab in tabs if tab.get("active")), tabs[0] if tabs else {})
+        page = self._page_state(cached.window_id)
         payload = {
             "thread": thread,
             "open": True,
             "window_id": cached.window_id,
-            "tab_id": tab_id(active_tab) if active_tab else cached.tab_id,
-            "url": active_tab.get("url") if active_tab else None,
-            "title": active_tab.get("title") if active_tab else None,
+            "tab_id": cached.tab_id,
+            "url": page.get("url"),
+            "title": page.get("title"),
         }
         print(json.dumps(payload, sort_keys=True))
 
@@ -126,7 +126,9 @@ class SurfAgent:
             if current is None:
                 unlink_missing_ok(state_file)
                 continue
-            threads.append(state_payload(thread=thread, cached=cached, current=current))
+            threads.append(
+                state_payload(thread=thread, cached=cached, page=self._page_state(cached.window_id))
+            )
 
         print(json.dumps({"threads": threads}, sort_keys=True))
 
@@ -187,12 +189,22 @@ class SurfAgent:
 
     def _list_windows(self, *, allow_failure: bool) -> list[dict[str, Any]]:
         try:
-            data = self._run_json(["window.list", "--tabs"])
+            # Avoid `window.list --tabs`: surf can emit truncated/malformed JSON when
+            # user-owned windows contain many tabs or very long URLs. `tabCount` is
+            # enough for one-tab validation; page metadata is fetched per owned window.
+            data = self._run_json(["window.list"])
         except SurfAgentError:
             if allow_failure:
                 return []
             raise
         return parse_windows(data)
+
+    def _page_state(self, window_id: int) -> dict[str, Any]:
+        try:
+            data = self._run_json(["--window-id", str(window_id), "page.state"])
+        except SurfAgentError:
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def _run_json(self, args: Sequence[str]) -> Any:
         command = [self.surf_bin, *args, "--json"]
@@ -284,16 +296,15 @@ def unlink_missing_ok(path: Path) -> None:
         pass
 
 
-def state_payload(*, thread: str, cached: AgentWindow, current: dict[str, Any]) -> dict[str, Any]:
-    tabs = tabs_for_window(current)
-    active_tab = next((tab for tab in tabs if tab.get("active")), tabs[0] if tabs else {})
+def state_payload(*, thread: str, cached: AgentWindow, page: dict[str, Any] | None = None) -> dict[str, Any]:
+    page = page or {}
     return {
         "thread": thread,
         "open": True,
         "window_id": cached.window_id,
-        "tab_id": tab_id(active_tab) if active_tab else cached.tab_id,
-        "url": active_tab.get("url") if active_tab else None,
-        "title": active_tab.get("title") if active_tab else None,
+        "tab_id": cached.tab_id,
+        "url": page.get("url"),
+        "title": page.get("title"),
     }
 
 
@@ -307,6 +318,10 @@ def extract_window_id(data: Any) -> int | None:
             value = extract_window_id(data.get(key))
             if value is not None:
                 return value
+    if isinstance(data, str):
+        match = re.search(r"(?:Window\s+|--window-id\s+)(\d+)", data)
+        if match:
+            return coerce_int(match.group(1))
     return None
 
 
