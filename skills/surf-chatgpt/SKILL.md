@@ -32,10 +32,11 @@ surf-chatgpt/
   SKILL.md
   pyproject.toml
   uv.lock
-  surf_chatgpt/
+  src/
+    surf_chatgpt/
 ```
 
-Tests are repo-only and are not part of the shipped skill payload.
+Tests live in the repository-level `tests/surf-chatgpt/` directory and are not part of the shipped skill payload.
 
 ## Commands
 
@@ -163,7 +164,7 @@ Non-browser checks:
 ```bash
 uv run surf-chatgpt --help
 uv run -m surf_chatgpt --help
-uv run python -m unittest discover -s ../../tests
+uv run python -m unittest discover -s ../../tests/surf-chatgpt
 uv run surf-chatgpt ask --format json < /dev/null; test $? -ne 0
 uv run surf-chatgpt ask --help | grep -q -- '--session' && ! uv run surf-chatgpt ask --help | grep -q -- '--thread'
 uv run surf-chatgpt session search --help | grep -q -- '--limit'

@@ -1,5 +1,5 @@
 {
-  "name": "surf-chatgpt-skill",
+  "name": "browser-skills",
   "version": "0.1.0",
   "private": true,
   "keywords": ["pi-package"],
@@ -7,9 +7,11 @@
     "skills": ["skills"]
   },
   "files": [
-    "skills/surf-chatgpt/SKILL.md",
-    "skills/surf-chatgpt/pyproject.toml",
-    "skills/surf-chatgpt/uv.lock",
-    "skills/surf-chatgpt/surf_chatgpt"
+    "README.md",
+    "skills/*/SKILL.md",
+    "skills/*/pyproject.toml",
+    "skills/*/uv.lock",
+    "skills/*/src/**/*.py",
+    "skills/*/scripts/**"
   ]
 }
