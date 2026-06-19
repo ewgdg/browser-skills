@@ -44,8 +44,7 @@ Run from this skill directory:
 
 ```bash
 printf 'Question...' | uv run surf-chatgpt ask
-printf 'Plan...' | uv run surf-chatgpt ask --mode critique --max-chars 3000
-printf 'Plan...' | uv run surf-chatgpt ask --mode redteam --format text
+printf 'Critique this plan: ...' | uv run surf-chatgpt ask --format text
 printf 'Question...' | uv run surf-chatgpt ask --thinking high
 printf 'Follow up...' | uv run surf-chatgpt ask --session '<session-id>' --model gpt5.5:medium
 printf 'Follow up...' | uv run surf-chatgpt ask --window-id '<window-id>'
@@ -56,23 +55,16 @@ uv run -m surf_chatgpt --help
 Default output is compact JSON:
 
 ```json
-{"ok":true,"source":"external-chatgpt-via-surf","mode":"critique","session":{"policy":"ephemeral"},"answer":"..."}
+{"ok":true,"source":"external-chatgpt-via-surf","session":{"policy":"ephemeral"},"answer":"..."}
 ```
 
-The local `source` label is for the caller/user only. The prompt sent to web ChatGPT does **not** include this label or mention surf, pi, local agents, browser automation, or bridge tooling.
+The local `source` label is for the caller/user only. The prompt sent to web ChatGPT is exactly stdin; this skill does not prepend mode, budget, safety, or bridge-tooling instructions.
 
 Errors are structured and nonzero:
 
 ```json
 {"ok":false,"source":"external-chatgpt-via-surf","error":{"type":"login_required","message":"ChatGPT login required","hint":"Open Chrome and log in to chatgpt.com, then retry."}}
 ```
-
-## Modes
-
-- `answer`: direct answer, minimal caveats.
-- `critique`: flaws, missing constraints, simpler alternatives, highest-value fixes.
-- `redteam`: failure modes, abuse cases, brittle assumptions.
-- `plan-review`: sequencing, hidden decisions, testability, scope creep, stop rules.
 
 ## Model / thinking selection
 
@@ -145,12 +137,11 @@ Search output shape:
 
 Planned but not implemented: `session recent` using ChatGPT web UI/sidebar. Do not claim it is available.
 
-## Output budget
+## Output cleanup
 
-- `--max-chars N` clamps returned answer. Default: 6000.
-- `--max-words N` optionally clamps by words before chars.
-- UI noise like `Copy`, `Good response`, and `Regenerate` is stripped.
+- UI noise like `Copy`, `Good response`, and `Regenerate` is stripped from extracted responses.
 - Code fences are preserved during whitespace cleanup when possible.
+- No output budget is enforced; callers should request brevity in stdin when needed.
 
 ## Prerequisites
 
@@ -169,7 +160,7 @@ uv run surf-chatgpt --help
 uv run -m surf_chatgpt --help
 uv run python -m unittest discover -s ../../tests/surf-chatgpt
 uv run surf-chatgpt ask --format json < /dev/null; test $? -ne 0
-uv run surf-chatgpt ask --help | grep -q -- '--session' && uv run surf-chatgpt ask --help | grep -q -- '--window-id' && ! uv run surf-chatgpt ask --help | grep -q -- '--thread'
+uv run surf-chatgpt ask --help | grep -q -- '--session' && uv run surf-chatgpt ask --help | grep -q -- '--window-id' && ! uv run surf-chatgpt ask --help | grep -E -- '(^|[ ,])--(thread|mode|max-chars|max-words)([ ,]|$)'
 uv run surf-chatgpt session search --help | grep -q -- '--limit'
 uv run surf-chatgpt session --help | grep -q 'current' && uv run surf-chatgpt session --help | grep -q 'search' && ! uv run surf-chatgpt session --help | grep -E 'bind|forget|list'
 ```
@@ -177,5 +168,5 @@ uv run surf-chatgpt session --help | grep -q 'current' && uv run surf-chatgpt se
 Optional live smoke only when user permits browser ChatGPT use:
 
 ```bash
-printf 'Reply with one word: ok' | uv run surf-chatgpt ask --ephemeral --max-chars 1000
+printf 'Reply with one word: ok' | uv run surf-chatgpt ask --ephemeral
 ```

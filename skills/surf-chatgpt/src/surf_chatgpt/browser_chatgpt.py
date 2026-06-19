@@ -45,7 +45,6 @@ FINISHED_SELECTOR = (
 
 @dataclass(frozen=True)
 class ReusableAskOptions:
-    mode: str
     session_policy: str
     session_url: str | None = None
     window_id: int | None = None

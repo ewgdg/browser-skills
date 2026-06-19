@@ -10,12 +10,15 @@ from . import SOURCE_LABEL
 from .client import AskOptions, ask_chatgpt
 from .errors import SkillError
 from .models import normalize_model_choice
-from .prompts import MODES
 from .surf import SurfRunner
 from .web_sessions import search_web_sessions
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
     def error(self, message: str) -> None:  # keep default --help behavior, structure parser failures
         raise SkillError("invalid_args", message, exit_code=2)
 
@@ -27,8 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", parser_class=JsonArgumentParser)
 
-    ask = subparsers.add_parser("ask", help="Ask ChatGPT through surf. Defaults to ephemeral one-shot mode.")
-    ask.add_argument("--mode", choices=MODES, default="answer")
+    ask = subparsers.add_parser("ask", help="Forward stdin to ChatGPT through surf. Defaults to ephemeral one-shot mode.")
     ask.add_argument("--ephemeral", action="store_true", help="Use a temporary controlled browser session. Default when no session option is given.")
     ask.add_argument("--session", help="Continue a ChatGPT session by conversation id or https://chatgpt.com/c/<id> URL.")
     ask.add_argument("--window-id", type=int, help="Continue in an existing one-tab surf window returned by --keep-open.")
@@ -38,8 +40,6 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--model", help="ChatGPT GPT-5.5 selector, e.g. gpt5.5:low, gpt5.5:medium, or gpt5.5:high. Top-level model tokens are rejected.")
     ask.add_argument("--thinking", choices=("low", "medium", "high"), help="ChatGPT GPT-5.5 thinking level. Maps low/medium/high to the web UI levels.")
     ask.add_argument("--timeout", type=int, default=2700, help="ChatGPT wait timeout in seconds. Default: 2700.")
-    ask.add_argument("--max-chars", type=int, default=6000, help="Maximum answer chars returned to pi. Default: 6000.")
-    ask.add_argument("--max-words", type=int, help="Optional maximum answer words returned to pi.")
     ask.add_argument("--format", choices=("json", "text"), default="json")
 
     session = subparsers.add_parser("session", help="Discover ChatGPT web sessions from the browser. No local alias state.")
@@ -103,7 +103,6 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
             "top-level --model values are not supported by the controlled browser path; use --thinking low|medium|high or --model gpt5.5:<level>",
         )
     options = AskOptions(
-        mode=args.mode,
         session_policy=session_policy,
         session_url=_normalize_session_url(args.session) if args.session else None,
         window_id=args.window_id,
@@ -113,8 +112,6 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
         requested_model=args.model,
         requested_thinking=args.thinking,
         timeout=args.timeout,
-        max_chars=args.max_chars,
-        max_words=args.max_words,
         start_new=args.new,
     )
     return ask_chatgpt(user_prompt, options)
@@ -145,10 +142,6 @@ def _validate_ask_args(args: argparse.Namespace) -> None:
         raise SkillError("invalid_args", "--window-id must be positive")
     if args.timeout <= 0:
         raise SkillError("invalid_args", "--timeout must be positive")
-    if args.max_chars <= 0:
-        raise SkillError("invalid_args", "--max-chars must be positive")
-    if args.max_words is not None and args.max_words <= 0:
-        raise SkillError("invalid_args", "--max-words must be positive")
 
 
 def _normalize_session_url(value: str) -> str:
@@ -268,7 +261,7 @@ def _emit(result: dict[str, Any], fmt: str, stdout: IO[str]) -> None:
     if "answer" in result:
         session = result.get("session") or {}
         window_suffix = f" | window_id={session.get('window_id')}" if session.get("window_id") is not None else ""
-        print(f"external ChatGPT via surf | mode={result.get('mode')} | session={session.get('policy')}{window_suffix}", file=stdout)
+        print(f"external ChatGPT via surf | session={session.get('policy')}{window_suffix}", file=stdout)
         print("---", file=stdout)
         print(result.get("answer", ""), file=stdout)
         return

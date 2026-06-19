@@ -15,8 +15,10 @@ class ClientTests(unittest.TestCase):
             "session": {"policy": "ephemeral", "id": "s1", "url": "https://chatgpt.com/c/s1", "reused": False},
         }
         with patch("surf_chatgpt.client.ask_reusable_session", return_value=raw) as mocked:
-            result = ask_chatgpt("question", AskOptions())
+            result = ask_chatgpt("question\n", AskOptions())
         self.assertEqual(result["answer"], "answer")
+        self.assertEqual(mocked.call_args.args[0], "question\n")
+        self.assertNotIn("mode", result)
         reusable_options = mocked.call_args.args[1]
         self.assertEqual(reusable_options.session_policy, "ephemeral")
         self.assertEqual(result["session"]["policy"], "ephemeral")

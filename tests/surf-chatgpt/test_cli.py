@@ -15,13 +15,15 @@ class CliValidationTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"]["type"], "empty_prompt")
 
-    def test_thread_flag_is_removed(self):
-        out = io.StringIO()
-        code = cli.main(["ask", "--thread", "t"], stdin=io.StringIO("x"), stdout=out)
-        self.assertNotEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["type"], "invalid_args")
-        self.assertIn("unrecognized arguments", payload["error"]["message"])
+    def test_prompt_shaping_flags_are_removed(self):
+        for flag in ("--thread", "--mode", "--max-chars", "--max-words"):
+            with self.subTest(flag=flag):
+                out = io.StringIO()
+                code = cli.main(["ask", flag, "x"], stdin=io.StringIO("x"), stdout=out)
+                self.assertNotEqual(code, 0)
+                payload = json.loads(out.getvalue())
+                self.assertEqual(payload["error"]["type"], "invalid_args")
+                self.assertIn("unrecognized arguments", payload["error"]["message"])
 
     def test_keep_open_requires_explicit_session_mode(self):
         out = io.StringIO()
@@ -209,7 +211,6 @@ class CliValidationTests(unittest.TestCase):
         fake = {
             "ok": True,
             "source": "external-chatgpt-via-surf",
-            "mode": "answer",
             "answer": "ok",
             "session": {"policy": "ephemeral", "window_id": 99},
         }

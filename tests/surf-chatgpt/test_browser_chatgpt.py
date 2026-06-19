@@ -92,7 +92,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(mode="answer", session_policy="ephemeral", timeout=5, thinking_label="High"),
+            ReusableAskOptions(session_policy="ephemeral", timeout=5, thinking_label="High"),
             surf=surf,
         )
         self.assertEqual(result["response"], "assistant answer")
@@ -118,7 +118,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session(
                 "x",
-                ReusableAskOptions(mode="answer", session_policy="ephemeral", timeout=5),
+                ReusableAskOptions(session_policy="ephemeral", timeout=5),
                 surf=surf,
             )
         self.assertEqual(ctx.exception.type, "login_required")
@@ -128,7 +128,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(mode="answer", session_policy="new", start_new=True, timeout=5),
+            ReusableAskOptions(session_policy="new", start_new=True, timeout=5),
             surf=surf,
         )
         self.assertEqual(result["response"], "assistant answer")
@@ -146,7 +146,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(mode="answer", session_policy="new", start_new=True, timeout=5, keep_open=True),
+            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, keep_open=True),
             surf=surf,
         )
         self.assertEqual(result["session"]["window_id"], 99)
@@ -156,7 +156,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "follow up",
-            ReusableAskOptions(mode="critique", session_policy="session", session_url="https://chatgpt.com/c/existing", timeout=5),
+            ReusableAskOptions(session_policy="session", session_url="https://chatgpt.com/c/existing", timeout=5),
             surf=surf,
         )
         self.assertEqual(result["response"], "assistant answer")
@@ -169,7 +169,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "follow up",
-            ReusableAskOptions(mode="critique", session_policy="session", session_url="https://chatgpt.com/c/existing", timeout=5, keep_open=True),
+            ReusableAskOptions(session_policy="session", session_url="https://chatgpt.com/c/existing", timeout=5, keep_open=True),
             surf=surf,
         )
         self.assertEqual(result["session"]["window_id"], 99)
@@ -181,7 +181,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf.current_url = "https://chatgpt.com/c/existing"
         result = ask_reusable_session(
             "follow up",
-            ReusableAskOptions(mode="answer", session_policy="window", window_id=99, timeout=5),
+            ReusableAskOptions(session_policy="window", window_id=99, timeout=5),
             surf=surf,
         )
         self.assertEqual(result["session"]["policy"], "window")
@@ -196,7 +196,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf.current_url = "https://chatgpt.com/c/current"
         result = ask_reusable_session(
             "follow up",
-            ReusableAskOptions(mode="answer", session_policy="current", timeout=5),
+            ReusableAskOptions(session_policy="current", timeout=5),
             surf=surf,
         )
         self.assertEqual(result["session"]["tab_id"], 55)
@@ -207,7 +207,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(mode="answer", session_policy="new", start_new=True, timeout=5, thinking_label="High"),
+            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, thinking_label="High"),
             surf=surf,
         )
         self.assertEqual(result["model"], "High")
@@ -228,7 +228,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session(
                 "x",
-                ReusableAskOptions(mode="answer", session_policy="new", start_new=True, timeout=5, thinking_label="High"),
+                ReusableAskOptions(session_policy="new", start_new=True, timeout=5, thinking_label="High"),
                 surf=ModelMissingFake(),
             )
         self.assertEqual(ctx.exception.type, "model_unavailable")
@@ -238,7 +238,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session(
                 "follow up",
-                ReusableAskOptions(mode="answer", session_policy="session", timeout=5),
+                ReusableAskOptions(session_policy="session", timeout=5),
                 surf=surf,
             )
         self.assertEqual(ctx.exception.type, "invalid_args")
@@ -257,7 +257,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session(
                 "x",
-                ReusableAskOptions(mode="answer", session_policy="new", start_new=True, timeout=5),
+                ReusableAskOptions(session_policy="new", start_new=True, timeout=5),
                 surf=LoginFake(),
             )
         self.assertEqual(ctx.exception.type, "login_required")
