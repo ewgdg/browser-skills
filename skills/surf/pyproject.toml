@@ -1,0 +1,13 @@
+[project]
+name = "surf-agent"
+version = "0.1.0"
+description = "Agent-scoped wrapper for generic surf browser control"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+surf-agent = "surf_agent.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
