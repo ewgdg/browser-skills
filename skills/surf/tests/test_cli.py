@@ -75,6 +75,17 @@ class SurfAgentWindowListingTests(unittest.TestCase):
         self.assertEqual(agent._create_window(), AgentWindow(123, 456))
         self.assertEqual(agent.calls[1], ["window.new", "--unfocused"])
 
+    def test_focus_uses_remembered_window(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps({"window_id": 123}))
+            fake_run = CloseRun()
+            agent = FakeAgent([], state_file=state_file)
+            agent._subprocess_run = fake_run
+
+            self.assertEqual(agent.focus(), 0)
+            self.assertEqual(fake_run.calls[0][0], ["surf", "window.focus", "123"])
+
     def test_close_matching_closes_only_matching_remembered_open_threads(self):
         with TemporaryDirectory() as tmp:
             state_dir = Path(tmp)

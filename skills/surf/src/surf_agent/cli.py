@@ -31,7 +31,7 @@ FORBIDDEN_COMMANDS = {
     "window.new",
 }
 
-MANAGEMENT_COMMANDS = {"help", "state", "list", "id", "window-id", "new", "reset", "forget", "close", "close-all", "close-matching"}
+MANAGEMENT_COMMANDS = {"help", "state", "list", "id", "window-id", "new", "reset", "forget", "close", "focus", "close-all", "close-matching"}
 DEFAULT_THREAD = "default"
 
 
@@ -139,6 +139,13 @@ class SurfAgent:
     def close(self) -> int:
         return self._close_remembered_window()
 
+    def focus(self) -> int:
+        window = self._load_state()
+        if not window:
+            raise SurfAgentError("no remembered window for this thread", exit_code=1)
+        proc = self._focus_window(window.window_id)
+        return proc.returncode
+
     def _close_remembered_window(self) -> int:
         window = self._load_state()
         if not window:
@@ -190,6 +197,9 @@ class SurfAgent:
         if quiet:
             kwargs.update({"text": True, "capture_output": True})
         return self._subprocess_run([self.surf_bin, "window.close", str(window_id)], **kwargs)
+
+    def _focus_window(self, window_id: int) -> subprocess.CompletedProcess[str]:
+        return self._subprocess_run([self.surf_bin, "window.focus", str(window_id)], check=False)
 
     def _create_window(self) -> AgentWindow:
         before = self._list_windows(allow_failure=True)
@@ -453,6 +463,7 @@ def print_help(stream: Any) -> None:
         "  surf-agent list                             list threads and clean stale entries\n"
         "  surf-agent [--thread ID] new                replace/create thread window, print id\n"
         "  surf-agent [--thread ID] close              close remembered thread window\n"
+        "  surf-agent [--thread ID] focus              focus remembered thread window for user handoff\n"
         "  surf-agent close-all                        close all remembered thread windows\n"
         "  surf-agent close-matching <glob>            close remembered thread windows whose thread names match\n"
         "  surf-agent [--thread ID] reset              forget thread state\n"
@@ -495,6 +506,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if command == "close":
             return agent.close()
+        if command == "focus":
+            return agent.focus()
         if command == "close-all":
             return agent.close_matching("*")
         if command == "close-matching":
