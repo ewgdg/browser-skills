@@ -48,6 +48,8 @@ class ReusableAskOptions:
     mode: str
     session_policy: str
     session_url: str | None = None
+    window_id: int | None = None
+    keep_open: bool = False
     start_new: bool = False
     timeout: int = 2700
     thinking_label: str | None = None
@@ -130,11 +132,15 @@ def _resolve_target(runner: SurfRunner, options: ReusableAskOptions) -> BrowserT
         return _open_ephemeral_chatgpt_target(runner)
     if options.session_policy == "current":
         return _active_chatgpt_tab(runner)
+    if options.session_policy == "window":
+        if options.window_id is None:
+            raise SkillError("invalid_args", "--window-id is required for window session mode")
+        return _existing_window_chatgpt_target(runner, options.window_id)
     if options.start_new or options.session_policy == "new":
-        return _open_chatgpt_url(runner, CHATGPT_HOME, reused=False)
+        return _open_chatgpt_url(runner, CHATGPT_HOME, reused=False, close_after=not options.keep_open)
     if options.session_url:
-        return _open_chatgpt_url(runner, options.session_url, reused=True)
-    raise SkillError("invalid_args", "browser session mode requires --new, --session ID_OR_URL, or --current")
+        return _open_chatgpt_url(runner, options.session_url, reused=True, close_after=not options.keep_open)
+    raise SkillError("invalid_args", "browser session mode requires --new, --session ID_OR_URL, --window-id, or --current")
 
 
 def _open_ephemeral_chatgpt_target(runner: SurfRunner) -> BrowserTarget:
@@ -143,10 +149,26 @@ def _open_ephemeral_chatgpt_target(runner: SurfRunner) -> BrowserTarget:
     return target
 
 
-def _open_chatgpt_url(runner: SurfRunner, url: str, *, reused: bool) -> BrowserTarget:
-    target = _open_background_window(runner, reused=reused, close_after=False)
+def _open_chatgpt_url(runner: SurfRunner, url: str, *, reused: bool, close_after: bool) -> BrowserTarget:
+    target = _open_background_window(runner, reused=reused, close_after=close_after)
     _navigate_window(runner, target, url)
     return target
+
+
+def _existing_window_chatgpt_target(runner: SurfRunner, window_id: int) -> BrowserTarget:
+    matches = [tab for tab in _list_tabs(runner) if _coerce_int(tab.get("windowId") or tab.get("window_id")) == window_id]
+    if not matches:
+        raise SkillError("invalid_args", f"no surf window found for --window-id {window_id}")
+    if len(matches) > 1:
+        raise SkillError("invalid_args", f"--window-id {window_id} has multiple tabs; expected one ChatGPT tab")
+    tab = matches[0]
+    url = str(tab.get("url", ""))
+    if not _is_chatgpt_url(url):
+        raise SkillError("invalid_args", f"--window-id {window_id} is not a ChatGPT window")
+    tab_id = _coerce_int(tab.get("id") or tab.get("tabId") or tab.get("tab_id"))
+    if tab_id is None:
+        raise SkillError("parse_error", "ChatGPT window tab is missing id")
+    return BrowserTarget(tab_id=tab_id, window_id=window_id, reused=True, close_after=False, scope="window")
 
 
 def _open_background_window(runner: SurfRunner, *, reused: bool, close_after: bool) -> BrowserTarget:

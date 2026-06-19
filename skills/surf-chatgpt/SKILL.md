@@ -48,6 +48,7 @@ printf 'Plan...' | uv run surf-chatgpt ask --mode critique --max-chars 3000
 printf 'Plan...' | uv run surf-chatgpt ask --mode redteam --format text
 printf 'Question...' | uv run surf-chatgpt ask --thinking high
 printf 'Follow up...' | uv run surf-chatgpt ask --session '<session-id>' --model gpt5.5:medium
+printf 'Follow up...' | uv run surf-chatgpt ask --window-id '<window-id>'
 uv run surf-chatgpt --help
 uv run -m surf_chatgpt --help
 ```
@@ -108,17 +109,19 @@ Top-level model tokens such as `--model instant`, `--model thinking`, or `--mode
 
 ### Explicit browser sessions
 
-Core `ask` flow does not need local session state. Use returned ChatGPT session id/url directly.
+Core `ask` flow does not need local session state. Use returned ChatGPT session id/url for conversation continuity, or `window_id` for browser-window continuity.
 
 ```bash
 printf 'first prompt' | uv run surf-chatgpt ask --new
+printf 'first prompt' | uv run surf-chatgpt ask --new --keep-open
 printf 'follow up' | uv run surf-chatgpt ask --session '<session-id>'
+printf 'follow up, same browser window' | uv run surf-chatgpt ask --window-id '<window-id>'
 printf 'follow up with high thinking' | uv run surf-chatgpt ask --session '<session-id>' --thinking high
 printf 'follow up by URL' | uv run surf-chatgpt ask --session 'https://chatgpt.com/c/<session-id>'
 printf 'follow up in active ChatGPT tab' | uv run surf-chatgpt ask --current
 ```
 
-`--new` opens `https://chatgpt.com/`, sends the prompt, leaves the browser session open, and returns `session.id` plus `session.url`. `--session ID_OR_URL` opens `https://chatgpt.com/c/<ID>` or the provided ChatGPT URL and continues there. URL reuse can carry prior conversation context, so continuity is explicit. Prefer default ephemeral mode for clean one-shot consults.
+`--new` opens `https://chatgpt.com/`, sends the prompt, returns `session.id`/`session.url`, then closes the opened window by default. `--session ID_OR_URL` opens `https://chatgpt.com/c/<ID>` or the provided ChatGPT URL, continues there, then closes the opened window by default. Add `--keep-open` to leave that one-tab window open; the JSON response includes `session.window_id`, which can be reused with `--window-id`. `--window-id` targets an existing one-tab ChatGPT surf window and leaves it open.
 
 ## Web session discovery
 
@@ -166,7 +169,7 @@ uv run surf-chatgpt --help
 uv run -m surf_chatgpt --help
 uv run python -m unittest discover -s ../../tests/surf-chatgpt
 uv run surf-chatgpt ask --format json < /dev/null; test $? -ne 0
-uv run surf-chatgpt ask --help | grep -q -- '--session' && ! uv run surf-chatgpt ask --help | grep -q -- '--thread'
+uv run surf-chatgpt ask --help | grep -q -- '--session' && uv run surf-chatgpt ask --help | grep -q -- '--window-id' && ! uv run surf-chatgpt ask --help | grep -q -- '--thread'
 uv run surf-chatgpt session search --help | grep -q -- '--limit'
 uv run surf-chatgpt session --help | grep -q 'current' && uv run surf-chatgpt session --help | grep -q 'search' && ! uv run surf-chatgpt session --help | grep -E 'bind|forget|list'
 ```

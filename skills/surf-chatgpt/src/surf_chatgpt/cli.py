@@ -31,9 +31,10 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--mode", choices=MODES, default="answer")
     ask.add_argument("--ephemeral", action="store_true", help="Use a temporary controlled browser session. Default when no session option is given.")
     ask.add_argument("--session", help="Continue a ChatGPT session by conversation id or https://chatgpt.com/c/<id> URL.")
-    ask.add_argument("--new", action="store_true", help="Start a new persistent ChatGPT session and return its session id/url.")
+    ask.add_argument("--window-id", type=int, help="Continue in an existing one-tab surf window returned by --keep-open.")
+    ask.add_argument("--new", action="store_true", help="Start a new ChatGPT session and return its session id/url.")
     ask.add_argument("--current", action="store_true", help="Use current active ChatGPT tab.")
-    ask.add_argument("--keep-open", action="store_true", help="Keep browser session open. Only meaningful for browser session mode.")
+    ask.add_argument("--keep-open", action="store_true", help="Keep the opened one-tab window open and return its window_id for follow-up.")
     ask.add_argument("--model", help="ChatGPT GPT-5.5 selector, e.g. gpt5.5:low, gpt5.5:medium, or gpt5.5:high. Top-level model tokens are rejected.")
     ask.add_argument("--thinking", choices=("low", "medium", "high"), help="ChatGPT GPT-5.5 thinking level. Maps low/medium/high to the web UI levels.")
     ask.add_argument("--timeout", type=int, default=2700, help="ChatGPT wait timeout in seconds. Default: 2700.")
@@ -105,6 +106,8 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
         mode=args.mode,
         session_policy=session_policy,
         session_url=_normalize_session_url(args.session) if args.session else None,
+        window_id=args.window_id,
+        keep_open=args.keep_open,
         model=model_choice.surf_model_token,
         thinking_label=model_choice.thinking_label,
         requested_model=args.model,
@@ -118,8 +121,10 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
 
 
 def _session_policy(args: argparse.Namespace) -> str:
-    if args.ephemeral or not (args.session or args.current or args.new):
+    if args.ephemeral or not (args.session or args.current or args.new or args.window_id):
         return "ephemeral"
+    if args.window_id is not None:
+        return "window"
     if args.current:
         return "current"
     if args.new:
@@ -128,15 +133,16 @@ def _session_policy(args: argparse.Namespace) -> str:
 
 
 def _validate_ask_args(args: argparse.Namespace) -> None:
-    explicit_session = bool(args.session or args.current or args.new or args.keep_open)
+    explicit_session = bool(args.session or args.current or args.new or args.window_id is not None or args.keep_open)
     if args.ephemeral and explicit_session:
-        raise SkillError("invalid_args", "--ephemeral cannot be combined with --session, --new, --current, or --keep-open")
-    if args.keep_open and not (args.session or args.current or args.new):
-        raise SkillError("invalid_args", "--keep-open requires --session, --new, or --current")
-    if args.current and (args.session or args.new):
-        raise SkillError("invalid_args", "--current cannot be combined with --session or --new")
-    if args.new and args.session:
-        raise SkillError("invalid_args", "--new cannot be combined with --session")
+        raise SkillError("invalid_args", "--ephemeral cannot be combined with --session, --window-id, --new, --current, or --keep-open")
+    if args.keep_open and not (args.session or args.current or args.new or args.window_id is not None):
+        raise SkillError("invalid_args", "--keep-open requires --session, --window-id, --new, or --current")
+    session_modes = [bool(args.session), bool(args.current), bool(args.new), args.window_id is not None]
+    if sum(session_modes) > 1:
+        raise SkillError("invalid_args", "choose only one of --session, --window-id, --new, or --current")
+    if args.window_id is not None and args.window_id <= 0:
+        raise SkillError("invalid_args", "--window-id must be positive")
     if args.timeout <= 0:
         raise SkillError("invalid_args", "--timeout must be positive")
     if args.max_chars <= 0:
@@ -261,7 +267,8 @@ def _emit(result: dict[str, Any], fmt: str, stdout: IO[str]) -> None:
         return
     if "answer" in result:
         session = result.get("session") or {}
-        print(f"external ChatGPT via surf | mode={result.get('mode')} | session={session.get('policy')}", file=stdout)
+        window_suffix = f" | window_id={session.get('window_id')}" if session.get("window_id") is not None else ""
+        print(f"external ChatGPT via surf | mode={result.get('mode')} | session={session.get('policy')}{window_suffix}", file=stdout)
         print("---", file=stdout)
         print(result.get("answer", ""), file=stdout)
         return

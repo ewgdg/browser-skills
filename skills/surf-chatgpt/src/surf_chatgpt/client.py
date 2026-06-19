@@ -15,6 +15,8 @@ class AskOptions:
     mode: str = "answer"
     session_policy: str = "ephemeral"
     session_url: str | None = None
+    window_id: int | None = None
+    keep_open: bool = False
     model: str | None = None
     thinking_label: str | None = None
     requested_model: str | None = None
@@ -50,6 +52,8 @@ def ask_chatgpt(user_prompt: str, options: AskOptions, *, surf: SurfRunner | Non
             mode=options.mode,
             session_policy=options.session_policy,
             session_url=options.session_url,
+            window_id=options.window_id,
+            keep_open=options.keep_open,
             start_new=options.start_new,
             timeout=options.timeout,
             thinking_label=options.thinking_label,

@@ -31,6 +31,25 @@ class CliValidationTests(unittest.TestCase):
         self.assertEqual(payload["error"]["type"], "invalid_args")
         self.assertIn("--keep-open requires", payload["error"]["message"])
 
+    def test_keep_open_is_passed_to_client(self):
+        fake = {"ok": True, "source": "external-chatgpt-via-surf", "answer": "ok", "session": {"policy": "session", "window_id": 99}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "--session", "abc", "--keep-open"], stdin=io.StringIO("x"), stdout=out)
+        self.assertEqual(code, 0)
+        options = mocked.call_args.args[1]
+        self.assertTrue(options.keep_open)
+
+    def test_window_id_is_passed_to_client(self):
+        fake = {"ok": True, "source": "external-chatgpt-via-surf", "answer": "ok", "session": {"policy": "window", "window_id": 99}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "--window-id", "99"], stdin=io.StringIO("x"), stdout=out)
+        self.assertEqual(code, 0)
+        options = mocked.call_args.args[1]
+        self.assertEqual(options.session_policy, "window")
+        self.assertEqual(options.window_id, 99)
+
     def test_session_id_is_normalized_and_passed_to_client(self):
         fake = {"ok": True, "source": "external-chatgpt-via-surf", "answer": "ok", "session": {"policy": "session", "url": "https://chatgpt.com/c/abc", "id": "abc"}}
         with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
@@ -192,7 +211,7 @@ class CliValidationTests(unittest.TestCase):
             "source": "external-chatgpt-via-surf",
             "mode": "answer",
             "answer": "ok",
-            "session": {"policy": "ephemeral"},
+            "session": {"policy": "ephemeral", "window_id": 99},
         }
         with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake):
             out = io.StringIO()
@@ -200,6 +219,7 @@ class CliValidationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         rendered = out.getvalue()
         self.assertIn("external ChatGPT via surf", rendered)
+        self.assertIn("window_id=99", rendered)
         self.assertIn("ok", rendered)
 
     def test_text_mode_error_is_labeled(self):

@@ -124,7 +124,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(ctx.exception.type, "login_required")
         self.assertEqual(surf.commands[-1][1], ["window.close", "99"])
 
-    def test_new_session_opens_home_and_returns_resulting_id_url(self):
+    def test_new_session_closes_by_default_and_returns_resulting_id_url(self):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "normal user prompt",
@@ -138,9 +138,21 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertNotIn("name", result["session"])
         self.assertEqual(surf.commands[0][1], ["window.new"])
         self.assertEqual(surf.commands[1], ("window:99", ["navigate", "https://chatgpt.com/"]))
+        self.assertEqual(result["session"]["window_id"], 99)
+        self.assertEqual(surf.commands[-1][1], ["window.close", "99"])
         self.assertNotIn("tab.new", [command[1][0] for command in surf.commands])
 
-    def test_session_url_opens_supplied_conversation_url(self):
+    def test_new_session_keep_open_returns_window_id_without_closing(self):
+        surf = FakeSurfRunner()
+        result = ask_reusable_session(
+            "normal user prompt",
+            ReusableAskOptions(mode="answer", session_policy="new", start_new=True, timeout=5, keep_open=True),
+            surf=surf,
+        )
+        self.assertEqual(result["session"]["window_id"], 99)
+        self.assertNotIn(["window.close", "99"], [command[1] for command in surf.commands])
+
+    def test_session_url_closes_by_default(self):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "follow up",
@@ -150,7 +162,33 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(result["response"], "assistant answer")
         self.assertTrue(result["session"]["reused"])
         self.assertIn(("window:99", ["navigate", "https://chatgpt.com/c/existing"]), surf.commands)
+        self.assertEqual(surf.commands[-1][1], ["window.close", "99"])
         self.assertNotIn("tab.new", [command[1][0] for command in surf.commands])
+
+    def test_session_url_keep_open_returns_window_id_without_closing(self):
+        surf = FakeSurfRunner()
+        result = ask_reusable_session(
+            "follow up",
+            ReusableAskOptions(mode="critique", session_policy="session", session_url="https://chatgpt.com/c/existing", timeout=5, keep_open=True),
+            surf=surf,
+        )
+        self.assertEqual(result["session"]["window_id"], 99)
+        self.assertNotIn(["window.close", "99"], [command[1] for command in surf.commands])
+
+    def test_window_id_reuses_existing_one_tab_window(self):
+        surf = FakeSurfRunner()
+        surf.tabs.append({"id": 77, "windowId": 99, "active": False, "url": "https://chatgpt.com/c/existing", "title": "ChatGPT"})
+        surf.current_url = "https://chatgpt.com/c/existing"
+        result = ask_reusable_session(
+            "follow up",
+            ReusableAskOptions(mode="answer", session_policy="window", window_id=99, timeout=5),
+            surf=surf,
+        )
+        self.assertEqual(result["session"]["policy"], "window")
+        self.assertEqual(result["session"]["tab_id"], 77)
+        self.assertEqual(result["session"]["window_id"], 99)
+        self.assertNotIn("window.new", [command[1][0] for command in surf.commands])
+        self.assertNotIn(["window.close", "99"], [command[1] for command in surf.commands])
 
     def test_current_uses_active_chatgpt_tab(self):
         surf = FakeSurfRunner()
