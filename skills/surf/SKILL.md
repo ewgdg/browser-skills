@@ -18,7 +18,7 @@ Use `surf-agent` for all browser operations. It owns a Chrome window per thread 
 - Do not operate on user-owned browser windows.
 - If blocked, ask the user to handle it in the managed window, then resume.
 - Close temporary sessions when done.
-- For subagent fan-out, use a unique thread prefix per run (for example `review-42-a`) and sweep it with `close-matching 'review-42-*'`.
+- For subagent fan-out, use a unique thread prefix per run (for example `review-42-a`).
 
 ## Base command
 
