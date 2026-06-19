@@ -46,7 +46,7 @@ Run from this skill directory:
 printf 'Question...' | uv run surf-chatgpt ask
 printf 'Critique this plan: ...' | uv run surf-chatgpt ask --format text
 printf 'Question...' | uv run surf-chatgpt ask --thinking high
-printf 'Follow up...' | uv run surf-chatgpt ask --session '<session-id>' --model gpt5.5:medium
+printf 'Follow up...' | uv run surf-chatgpt ask --session '<session-id>' --model gpt-5.5 --thinking medium
 printf 'Follow up...' | uv run surf-chatgpt ask --window-id '<window-id>'
 uv run surf-chatgpt --help
 uv run -m surf_chatgpt --help
@@ -68,30 +68,24 @@ Errors are structured and nonzero:
 
 ## Model / thinking selection
 
-GPT-5.5 thinking is a secondary web UI menu, not the same thing as surf's legacy `pro` model token. The controlled browser path supports it in ephemeral and persistent session modes:
+`--model` is a fuzzy query against the models visible in ChatGPT's web model picker. The best available match is clicked; unavailable/disabled entries are not selected. No silent fallback: if no usable match is found, the command fails with `model_unavailable` and reports visible options when possible.
 
 ```bash
 printf 'Question...' | uv run surf-chatgpt ask --thinking high
-printf 'Question...' | uv run surf-chatgpt ask --model gpt5.5:medium
-printf 'Follow up...' | uv run surf-chatgpt ask --session '<session-id>' --thinking medium
-printf 'Question...' | uv run surf-chatgpt ask --current --model gpt5.5:high
+printf 'Question...' | uv run surf-chatgpt ask --model pro
+printf 'Question...' | uv run surf-chatgpt ask --model gpt-5.5
+printf 'Question...' | uv run surf-chatgpt ask --model gpt-5.5-pro
+printf 'Question...' | uv run surf-chatgpt ask --model gpt-5.4
+printf 'Follow up...' | uv run surf-chatgpt ask --session '<session-id>' --model gpt-5.5 --thinking medium
 ```
 
-Mapping used by this skill:
+Thinking mapping:
 
 - `low` -> click ChatGPT `Instant`
 - `medium` -> click ChatGPT `Medium`
 - `high` -> click ChatGPT `High`
 
-Convenience forms are accepted for the GPT-5.5 submenu:
-
-```bash
-uv run surf-chatgpt ask --session '<session-id>' --model gpt5.5:low
-uv run surf-chatgpt ask --session '<session-id>' --model gpt5.5:medium
-uv run surf-chatgpt ask --session '<session-id>' --model gpt5.5:high
-```
-
-Top-level model tokens such as `--model instant`, `--model thinking`, or `--model pro` are rejected in this skill because the controlled browser path does not implement the top-level model picker. Use `--thinking low|medium|high` or `--model gpt5.5:<level>` instead. No silent fallback: if the requested level is missing from your subscription/UI, the command fails with `model_unavailable`.
+`--model <name>:<low|medium|high>` is accepted as shorthand for a model query plus thinking level, e.g. `--model gpt-5.5:high`. If the model suffix conflicts with `--thinking`, the command fails with `invalid_args`.
 
 ## Session policy
 

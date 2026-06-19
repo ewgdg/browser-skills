@@ -187,25 +187,26 @@ class CliValidationTests(unittest.TestCase):
             code = cli.main(["ask", "--new", "--thinking", "high"], stdin=io.StringIO("x"), stdout=out)
         self.assertEqual(code, 0)
         options = mocked.call_args.args[1]
-        self.assertIsNone(options.model)
+        self.assertIsNone(options.model_query)
         self.assertEqual(options.session_policy, "new")
         self.assertEqual(options.thinking_label, "High")
         self.assertEqual(options.requested_thinking, "high")
 
-    def test_model_thinking_conflict_is_structured(self):
-        out = io.StringIO()
-        code = cli.main(["ask", "--model", "pro", "--thinking", "medium"], stdin=io.StringIO("x"), stdout=out)
-        self.assertNotEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["type"], "invalid_args")
+    def test_model_query_is_passed_to_client(self):
+        fake = {"ok": True, "source": "external-chatgpt-via-surf", "answer": "ok", "session": {"policy": "ephemeral"}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "--model", "pro"], stdin=io.StringIO("x"), stdout=out)
+        self.assertEqual(code, 0)
+        options = mocked.call_args.args[1]
+        self.assertEqual(options.model_query, "pro")
 
-    def test_top_level_model_without_thinking_is_rejected(self):
+    def test_model_suffix_thinking_conflict_is_structured(self):
         out = io.StringIO()
-        code = cli.main(["ask", "--model", "pro"], stdin=io.StringIO("x"), stdout=out)
+        code = cli.main(["ask", "--model", "gpt-5.5:high", "--thinking", "medium"], stdin=io.StringIO("x"), stdout=out)
         self.assertNotEqual(code, 0)
         payload = json.loads(out.getvalue())
         self.assertEqual(payload["error"]["type"], "invalid_args")
-        self.assertIn("top-level --model", payload["error"]["message"])
 
     def test_text_mode_success_is_labeled_and_compact(self):
         fake = {

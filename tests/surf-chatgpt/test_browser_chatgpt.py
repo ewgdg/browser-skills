@@ -47,9 +47,9 @@ class FakeSurfRunner:
         if "hasPrompt" in code and "loginRequired" in code:
             self.js_events.append("status")
             return {"result": {"value": {"hasPrompt": True, "challenge": False, "loginRequired": False, "url": self.current_url}}}
-        if "desiredNorm" in code and "findModelButton" in code:
+        if "findModelButton" in code and ("desiredModelQuery" in code or "desiredThinking" in code):
             self.js_events.append("model")
-            return {"result": {"value": {"ok": True, "selected": "High"}}}
+            return {"result": {"value": {"ok": True, "selectedModel": "GPT-5.5 Pro" if 'const desiredModelQuery = "pro"' in code else None, "selectedThinking": "High" if 'const desiredThinking = "High"' in code else None}}}
         if "composer_missing" in code:
             self.js_events.append("inject")
             return {"result": {"value": {"ok": True, "textLength": 12}}}
@@ -98,7 +98,8 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(result["response"], "assistant answer")
         self.assertEqual(result["session"]["policy"], "ephemeral")
         self.assertEqual(result["session"]["id"], "new-session-id")
-        self.assertEqual(result["model"], "High")
+        self.assertEqual(result["model"], "current")
+        self.assertEqual(result["thinking"], "High")
         self.assertEqual(surf.commands[0][1], ["window.new"])
         self.assertEqual(surf.commands[1], ("window:99", ["navigate", "https://chatgpt.com/"]))
         self.assertNotIn("tab.new", [command[1][0] for command in surf.commands])
@@ -175,6 +176,24 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(result["session"]["window_id"], 99)
         self.assertNotIn(["window.close", "99"], [command[1] for command in surf.commands])
 
+    def test_answer_survives_final_url_timeout(self):
+        class UrlTimeoutFake(FakeSurfRunner):
+            def _handle_scoped_command(self, args):
+                if args[0] == "js":
+                    code = Path(args[2]).read_text(encoding="utf-8")
+                    if code.strip() == "return location.href;":
+                        raise SkillError("timeout", "surf command timed out after 10s")
+                return super()._handle_scoped_command(args)
+
+        result = ask_reusable_session(
+            "follow up",
+            ReusableAskOptions(session_policy="session", session_url="https://chatgpt.com/c/existing", timeout=5),
+            surf=UrlTimeoutFake(),
+        )
+        self.assertEqual(result["response"], "assistant answer")
+        self.assertEqual(result["session"]["url"], "https://chatgpt.com/c/existing")
+        self.assertIn("session_url_unavailable:timeout", result["warnings"])
+
     def test_window_id_reuses_existing_one_tab_window(self):
         surf = FakeSurfRunner()
         surf.tabs.append({"id": 77, "windowId": 99, "active": False, "url": "https://chatgpt.com/c/existing", "title": "ChatGPT"})
@@ -203,14 +222,15 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(result["session"]["id"], "current")
         self.assertFalse(result["session"]["saved"])
 
-    def test_session_model_level_is_selected_before_prompt(self):
+    def test_session_model_and_thinking_are_selected_before_prompt(self):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, thinking_label="High"),
+            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, model_query="pro", thinking_label="High"),
             surf=surf,
         )
-        self.assertEqual(result["model"], "High")
+        self.assertEqual(result["model"], "GPT-5.5 Pro")
+        self.assertEqual(result["thinking"], "High")
         self.assertLess(surf.js_events.index("model"), surf.js_events.index("inject"))
 
     def test_session_model_unavailable_is_classified(self):
@@ -221,8 +241,8 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
                 code = Path(args[2]).read_text(encoding="utf-8")
                 if "hasPrompt" in code and "loginRequired" in code:
                     return {"result": {"value": {"hasPrompt": True, "challenge": False, "loginRequired": False, "url": self.current_url}}}
-                if "desiredNorm" in code and "findModelButton" in code:
-                    return {"result": {"value": {"ok": False, "reason": "level_missing", "available": ["Instant", "Medium"]}}}
+                if "findModelButton" in code and ("desiredModelQuery" in code or "desiredThinking" in code):
+                    return {"result": {"value": {"ok": False, "reason": "thinking_missing", "available": ["Instant", "Medium"]}}}
                 return super()._handle_scoped_command(args)
 
         with self.assertRaises(SkillError) as ctx:

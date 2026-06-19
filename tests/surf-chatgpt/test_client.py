@@ -2,7 +2,6 @@ import unittest
 from unittest.mock import patch
 
 from surf_chatgpt.client import AskOptions, ask_chatgpt
-from surf_chatgpt.errors import SkillError
 
 
 class ClientTests(unittest.TestCase):
@@ -24,10 +23,12 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(result["session"]["policy"], "ephemeral")
         self.assertEqual(result["session"]["id"], "s1")
 
-    def test_top_level_model_is_rejected_in_client_to_avoid_silent_ignore(self):
-        with self.assertRaises(SkillError) as ctx:
-            ask_chatgpt("question", AskOptions(model="pro", requested_model="pro"))
-        self.assertEqual(ctx.exception.type, "invalid_args")
+    def test_model_query_is_passed_to_browser_path(self):
+        raw = {"response": "answer", "model": "GPT-5.5 Pro", "session": {"policy": "ephemeral"}}
+        with patch("surf_chatgpt.client.ask_reusable_session", return_value=raw) as mocked:
+            result = ask_chatgpt("question", AskOptions(model_query="pro", requested_model="pro"))
+        self.assertEqual(result["model"], "GPT-5.5 Pro")
+        self.assertEqual(mocked.call_args.args[1].model_query, "pro")
 
 
 if __name__ == "__main__":

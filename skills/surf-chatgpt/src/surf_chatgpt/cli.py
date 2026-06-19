@@ -37,8 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--new", action="store_true", help="Start a new ChatGPT session and return its session id/url.")
     ask.add_argument("--current", action="store_true", help="Use current active ChatGPT tab.")
     ask.add_argument("--keep-open", action="store_true", help="Keep the opened one-tab window open and return its window_id for follow-up.")
-    ask.add_argument("--model", help="ChatGPT GPT-5.5 selector, e.g. gpt5.5:low, gpt5.5:medium, or gpt5.5:high. Top-level model tokens are rejected.")
-    ask.add_argument("--thinking", choices=("low", "medium", "high"), help="ChatGPT GPT-5.5 thinking level. Maps low/medium/high to the web UI levels.")
+    ask.add_argument("--model", help="ChatGPT model query, e.g. pro, gpt-5.5, gpt-5.5-pro, or gpt-5.4. Best available fuzzy match is selected from the web UI.")
+    ask.add_argument("--thinking", choices=("low", "medium", "high"), help="ChatGPT thinking level. Maps low/medium/high to the web UI levels.")
     ask.add_argument("--timeout", type=int, default=2700, help="ChatGPT wait timeout in seconds. Default: 2700.")
     ask.add_argument("--format", choices=("json", "text"), default="json")
 
@@ -97,17 +97,12 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
 
     session_policy = _session_policy(args)
     model_choice = normalize_model_choice(args.model, args.thinking)
-    if model_choice.surf_model_token:
-        raise SkillError(
-            "invalid_args",
-            "top-level --model values are not supported by the controlled browser path; use --thinking low|medium|high or --model gpt5.5:<level>",
-        )
     options = AskOptions(
         session_policy=session_policy,
         session_url=_normalize_session_url(args.session) if args.session else None,
         window_id=args.window_id,
         keep_open=args.keep_open,
-        model=model_choice.surf_model_token,
+        model_query=model_choice.model_query,
         thinking_label=model_choice.thinking_label,
         requested_model=args.model,
         requested_thinking=args.thinking,
