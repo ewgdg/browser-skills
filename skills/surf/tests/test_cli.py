@@ -137,6 +137,45 @@ class AxiBackendTests(unittest.TestCase):
 
         self.assertIn("expected 'http://127.0.0.1:9336'", mismatch)
 
+    def test_profile_show_prints_dedicated_profile_config(self):
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_CHROME_PROFILE_DIR": str(Path(tmp) / "profile")}, clear=True):
+            agent = FakeAxiAgent([])
+            output = io.StringIO()
+            with redirect_stdout(output):
+                agent.print_profile_show()
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["profile_dir"], str(Path(tmp) / "profile"))
+        self.assertEqual(payload["chrome_class"], "surf-agent")
+        self.assertEqual(payload["chrome_debug_port"], 9336)
+        self.assertEqual(payload["browser_url"], "http://127.0.0.1:9336")
+        self.assertEqual(payload["axi_bridge_port"], 9335)
+
+    def test_profile_open_uses_profile_without_debug_port(self):
+        with TemporaryDirectory() as tmp:
+            profile = Path(tmp) / "profile"
+            agent = FakeAxiAgent([""], chrome_profile_dir=profile)
+            with patch.object(agent, "_chrome_debug_endpoint_ready", return_value=False):
+                self.assertEqual(agent.profile_open("https://x.test"), 0)
+
+        self.assertEqual([call[0] for call in agent.calls], [["chrome", "--class=surf-agent", f"--user-data-dir={profile}", "--new-window", "https://x.test"]])
+
+    def test_profile_open_fails_when_automation_chrome_is_running(self):
+        agent = FakeAxiAgent([])
+        with patch.object(agent, "_chrome_debug_endpoint_ready", return_value=True):
+            with self.assertRaisesRegex(SurfAgentError, "automated Surf Agent Chrome is running"):
+                agent.profile_open()
+
+        self.assertEqual(agent.calls, [])
+
+    def test_profile_command_dispatch(self):
+        with patch.dict("os.environ", {}, clear=True), patch.object(SurfAgent, "_chrome_debug_endpoint_ready", return_value=False):
+            output = io.StringIO()
+            error = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(error):
+                self.assertEqual(main(["profile", "show"]), 0)
+            self.assertEqual(json.loads(output.getvalue())["chrome_debug_port"], 9336)
+
     def test_bridge_unavailable_starts_once_then_uses_http(self):
         agent = FakeAxiAgent([AxiBridgeUnavailable("down"), "started\n", "## Pages\n1: Example (https://example.test/)\n"])
 

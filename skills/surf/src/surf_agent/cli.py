@@ -281,6 +281,29 @@ class SurfAgent:
             print(output, end="" if output.endswith("\n") else "\n")
         return 0
 
+    def print_profile_show(self) -> None:
+        payload = {
+            "axi_bridge_port": int(os.environ.get("CHROME_DEVTOOLS_AXI_PORT", DEFAULT_AXI_PORT)),
+            "browser_url": self.browser_url,
+            "chrome_class": self.chrome_class,
+            "chrome_debug_port": self.chrome_debug_port,
+            "profile_dir": str(self.chrome_profile_dir),
+        }
+        print(json.dumps(payload, sort_keys=True))
+
+    def profile_open(self, url: str = "about:blank") -> int:
+        if self._chrome_debug_endpoint_ready():
+            raise SurfAgentError(f"automated Surf Agent Chrome is running at {self.browser_url}; close Surf Agent windows or run `surf-agent bridge-stop` before `profile open`")
+        if not self.chrome_bin:
+            raise SurfAgentError("could not find Chrome executable for profile open; set SURF_AGENT_CHROME_BIN")
+        self.chrome_profile_dir.mkdir(parents=True, exist_ok=True)
+        command = [*shlex.split(self.chrome_bin), f"--class={self.chrome_class}", f"--user-data-dir={self.chrome_profile_dir}", "--new-window", url]
+        proc = self._subprocess_run(command, check=False, text=True, capture_output=True, timeout=CHROME_NEW_WINDOW_TIMEOUT_S)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or "Chrome profile open failed").strip()
+            raise SurfAgentError(detail)
+        return 0
+
     # AXI backend
 
     def _run_axi_command(self, args: Sequence[str]) -> int:
@@ -1205,6 +1228,8 @@ def print_help(stream: Any) -> None:
         "  surf-agent list                                list remembered AXI threads and clean stale entries\n"        "  surf-agent [--thread ID] new                   replace/create dedicated thread window, print page id\n"
         "  surf-agent [--thread ID] close                 close remembered thread page/window; AXI bridge stays alive\n"
         "  surf-agent [--thread ID] focus                 select remembered thread page\n"
+        "  surf-agent profile show                         print dedicated profile configuration JSON\n"
+        "  surf-agent profile open [url]                   open dedicated profile without automation/debug port\n"
         "  surf-agent close-all                           close all remembered thread pages/windows\n"
         "  surf-agent close-matching <glob>               close remembered thread pages/windows whose thread names match\n"
         "  surf-agent [--thread ID] reset|forget          forget thread state without closing page\n"
@@ -1217,6 +1242,7 @@ def print_help(stream: Any) -> None:
         "  surf-agent --thread main state\n"
         "  surf-agent --thread main go https://example.com\n"
         "  surf-agent --thread main page.read\n"
+        "  surf-agent profile open https://x.com\n"
         "  surf-agent --thread docs screenshot --output /tmp/shot.png\n"
         "  surf-agent close-matching 'agent-run-*'\n\n"
         "State: skill-local .state/<thread>.json plus chrome-profile/. Backend: AXI only.\n"
@@ -1252,6 +1278,15 @@ def main(argv: list[str] | None = None) -> int:
             return agent.close()
         if command == "focus":
             return agent.focus()
+        if command == "profile":
+            if len(argv) < 2:
+                raise SurfAgentError("profile requires subcommand: show or open", exit_code=2)
+            if argv[1] == "show" and len(argv) == 2:
+                agent.print_profile_show()
+                return 0
+            if argv[1] == "open" and len(argv) <= 3:
+                return agent.profile_open(argv[2] if len(argv) == 3 else "about:blank")
+            raise SurfAgentError("usage: surf-agent profile show | profile open [url]", exit_code=2)
         if command == "close-all":
             return agent.close_matching("*")
         if command == "close-matching":

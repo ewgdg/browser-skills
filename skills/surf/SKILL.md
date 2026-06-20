@@ -51,7 +51,7 @@ export SURF_AGENT_CHROME_DEBUG_PORT=9336
 export SURF_AGENT_AXI_TIMEOUT=15
 ```
 
-If bridge is down or Chrome waits for approval, commands fail fast with a clear AXI error. Approve Chrome prompt, then retry. First use of the dedicated profile may require one-time browser setup/login.
+If bridge is down or Chrome waits for approval, commands fail fast with a clear AXI error. Approve Chrome prompt, then retry. First use of the dedicated profile may require one-time browser setup/login. For setup without automation/debugging, close Surf Agent automation windows and run `uv run surf-agent profile open https://x.com`.
 
 Only use explicit bridge stop when you intend to kill persistent bridge:
 
@@ -119,6 +119,8 @@ uv run surf-agent list                         # remembered threads from local s
 uv run surf-agent --thread main new            # replace/create dedicated thread window showing Surf Agent welcome page; prints page id
 uv run surf-agent --thread main close          # close remembered thread page/window; bridge stays alive
 uv run surf-agent --thread main focus          # select remembered thread page
+uv run surf-agent profile show                 # print dedicated profile configuration
+uv run surf-agent profile open [url]           # open dedicated profile without automation/debug port for manual login/setup
 uv run surf-agent close-all                    # close all remembered thread pages/windows
 uv run surf-agent close-matching 'run-*'       # close remembered pages/windows with matching thread names
 uv run surf-agent --thread main reset          # forget state without closing page
