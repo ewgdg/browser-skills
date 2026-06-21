@@ -7,7 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from surf_agent.cli import AgentPage, AxiBridgeClient, AxiBridgeUnavailable, SurfAgent, SurfAgentError, default_chrome_profile_dir, main, parse_axi_pages, surf_agent_app_url
+from surf_agent.cli import AgentPage, AxiBridgeClient, AxiBridgeUnavailable, DEFAULT_THREAD, SurfAgent, SurfAgentError, default_chrome_profile_dir, main, parse_agent_args, parse_axi_pages, parse_do_argv_steps, parse_do_script, run_do, strip_axi_page_list, surf_agent_app_url
 
 
 def page_state(page_id, **extra):
@@ -16,7 +16,7 @@ def page_state(page_id, **extra):
     return payload
 
 
-def legacy_extra_page_state(page_id, **extra):
+def extra_page_state(page_id, **extra):
     payload = {"backend": "axi", "page_id": page_id, "owner": "surf-agent", "token": "surf-agent:test-token"}
     payload.update(extra)
     return payload
@@ -183,7 +183,7 @@ class AxiBackendTests(unittest.TestCase):
         commands = [call[0] for call in agent.calls]
         self.assertEqual(commands, [["bridge", "list_pages", {}], ["axi", "start"], ["bridge", "list_pages", {}]])
 
-    def test_go_creates_and_saves_axi_page_state(self):
+    def test_open_creates_and_saves_axi_page_state(self):
         with TemporaryDirectory() as tmp:
             state_file = Path(tmp) / "thread.json"
             agent = FakeAxiAgent(
@@ -200,7 +200,7 @@ class AxiBackendTests(unittest.TestCase):
             )
             output = io.StringIO()
             with redirect_stdout(output):
-                self.assertEqual(agent.run_in_window(["go", "https://example.test/"]), 0)
+                self.assertEqual(agent.run_in_window(["open", "https://example.test/"]), 0)
 
             state = json.loads(state_file.read_text())
             self.assertEqual(state["backend"], "axi")
@@ -217,7 +217,7 @@ class AxiBackendTests(unittest.TestCase):
             self.assertEqual(commands[1][3], "--new-window")
             self.assertEqual(commands[1][4], "data:text/html,%3Ctitle%3ESurf%20Agent%3C%2Ftitle%3ESurf%20Agent")
             self.assertEqual(commands[2:], [["bridge", "list_pages", {}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": "() => (JSON.stringify({title:document.title,href:location.href}))"}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "navigate_page", {"type": "url", "url": "https://example.test/"}]])
-            self.assertIn("Successfully navigated", output.getvalue())
+            self.assertEqual(output.getvalue(), "Successfully navigated to https://example.test/.\n")
             self.assertFalse(any(call[0][0] == "axi" for call in agent.calls))
 
     def test_new_command_opens_welcome_after_short_app_bootstrap(self):
@@ -245,7 +245,7 @@ class AxiBackendTests(unittest.TestCase):
             self.assertEqual(commands[1], ["chrome", "--class=surf-agent", f"--user-data-dir={default_chrome_profile_dir()}", "--new-window", "data:text/html,%3Ctitle%3ESurf%20Agent%3C%2Ftitle%3ESurf%20Agent"])
             self.assertEqual(commands[2:6], [["bridge", "list_pages", {}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": "() => (JSON.stringify({title:document.title,href:location.href}))"}], ["bridge", "select_page", {"pageId": 22}]])
             self.assertEqual(commands[6][0:2], ["bridge", "navigate_page"])
-            self.assertIn("go%20%26lt%3Burl%26gt%3B", commands[6][2]["url"])
+            self.assertIn("open%20%26lt%3Burl%26gt%3B", commands[6][2]["url"])
 
     def test_state_without_axi_backend_is_ignored_and_not_closed(self):
         with TemporaryDirectory() as tmp:
@@ -271,7 +271,7 @@ class AxiBackendTests(unittest.TestCase):
             )
 
             with self.assertRaisesRegex(Exception, "could not find new AXI page titled"):
-                agent.run_in_window(["go", "https://example.test/"])
+                agent.run_in_window(["open", "https://example.test/"])
 
             self.assertFalse(state_file.exists())
             commands = [call[0] for call in agent.calls]
@@ -283,10 +283,10 @@ class AxiBackendTests(unittest.TestCase):
             self.assertEqual(commands[1][4], "data:text/html,%3Ctitle%3ESurf%20Agent%3C%2Ftitle%3ESurf%20Agent")
             self.assertEqual(commands[2:], [["bridge", "list_pages", {}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": "() => (JSON.stringify({title:document.title,href:location.href}))"}]])
 
-    def test_existing_go_selects_remembered_page_before_navigation(self):
+    def test_existing_open_selects_remembered_page_before_navigation(self):
         with TemporaryDirectory() as tmp:
             state_file = Path(tmp) / "thread.json"
-            state_file.write_text(json.dumps(legacy_extra_page_state(22, url="https://old.test/")))
+            state_file.write_text(json.dumps(extra_page_state(22, url="https://old.test/")))
             agent = FakeAxiAgent(
                 [
                     "selected\n",
@@ -297,7 +297,7 @@ class AxiBackendTests(unittest.TestCase):
 
             output = io.StringIO()
             with redirect_stdout(output):
-                self.assertEqual(agent.run_in_window(["go", "https://example.test/"]), 0)
+                self.assertEqual(agent.run_in_window(["open", "https://example.test/"]), 0)
 
             self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "navigate_page", {"type": "url", "url": "https://example.test/"}]])
             saved = json.loads(state_file.read_text())
@@ -318,7 +318,7 @@ class AxiBackendTests(unittest.TestCase):
             )
             output = io.StringIO()
             with redirect_stdout(output):
-                self.assertEqual(agent.run_in_window(["js", "1"]), 0)
+                self.assertEqual(agent.run_in_window(["eval", "1"]), 0)
 
             self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": "() => (1)"}]])
             self.assertEqual(output.getvalue(), "result: 1\n")
@@ -331,7 +331,7 @@ class AxiBackendTests(unittest.TestCase):
             agent = FakeAxiAgent([select_failed], state_file=state_file)
 
             with self.assertRaisesRegex(Exception, "bad page"):
-                agent.run_in_window(["js", "1"])
+                agent.run_in_window(["eval", "1"])
 
             self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}]])
 
@@ -358,7 +358,7 @@ class AxiBackendTests(unittest.TestCase):
         self.assertNotIn(["axi", "stop"], commands)
         self.assertFalse(state_file.exists())
 
-    def test_stale_page_state_is_forgotten_without_creating_page(self):
+    def test_stale_page_state_is_cleared_without_creating_page(self):
         with TemporaryDirectory() as tmp:
             state_file = Path(tmp) / "thread.json"
             state_file.write_text(json.dumps(page_state(22)))
@@ -439,6 +439,14 @@ class AxiBackendTests(unittest.TestCase):
         output = "## Pages\n1: Example Domain (https://example.test/) [selected]\n2: Surf Agent (data:text/html,%3Ctitle%3ESurf%20Agent)\n"
         self.assertEqual(parse_axi_pages(output), [AgentPage(1, "https://example.test/", "Example Domain"), AgentPage(2, "data:text/html,%3Ctitle%3ESurf%20Agent", "Surf Agent")])
 
+    def test_navigation_output_strips_axi_page_list(self):
+        output = "Successfully navigated to https://example.test/.\n## Pages\n22: Example (https://example.test/) [selected]\n"
+        self.assertEqual(strip_axi_page_list(output), "Successfully navigated to https://example.test/.\n")
+
+    def test_navigation_output_strips_axi_csv_page_list(self):
+        output = "opened https://example.test/\npages[1]{id,url,selected}:\n22,https://example.test/,true\n"
+        self.assertEqual(strip_axi_page_list(output), "opened https://example.test/\n")
+
     def test_extract_page_id_ignores_snapshot_uids(self):
         from surf_agent.cli import extract_page_id
 
@@ -453,6 +461,143 @@ class AxiBackendTests(unittest.TestCase):
             with self.assertRaisesRegex(Exception, "unsupported AXI backend command: forward"):
                 agent.run_in_window(["forward"])
 
+    def test_removed_alias_commands_are_rejected(self):
+        removed_commands = [
+            "g" + "o",
+            "read",
+            "page" + ".read",
+            "page" + ".text",
+            "page" + ".state",
+            "j" + "s",
+            "key",
+            "forget",
+        ]
+        for command in removed_commands:
+            with self.subTest(command=command):
+                output = io.StringIO()
+                error = io.StringIO()
+                with redirect_stdout(output), redirect_stderr(error):
+                    exit_code = main([command])
+
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(output.getvalue(), "")
+                self.assertIn(f"unsupported AXI backend command: {command}", error.getvalue())
+
+    def test_removed_thread_id_option_forms_are_rejected(self):
+        flag = "--thread" + "-id"
+        for argv in ([flag, "custom", "state"], [flag + "=custom", "state"]):
+            with self.subTest(argv=argv):
+                config, rest = parse_agent_args(argv)
+
+                self.assertEqual(config.thread, DEFAULT_THREAD)
+                self.assertEqual(rest, argv)
+
+    def test_do_stdin_prints_only_final_step_by_default(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22)))
+            agent = FakeAxiAgent(["selected\n", "clicked\n", "selected\n", "snapshot:\nuid=g2:1 button Submit\n"], state_file=state_file)
+            output = io.StringIO()
+            error = io.StringIO()
+
+            exit_code = run_do(agent, thread="thread", argv=[], stdin=io.StringIO("click @g1:1\nsnapshot\n"), stdout=output, stderr=error)
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(output.getvalue(), "snapshot:\nuid=g2:1 button Submit\n")
+        self.assertEqual(error.getvalue(), "")
+        self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "click", {"uid": "g1:1"}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "take_snapshot", {}]])
+
+    def test_do_jsonl_uses_status_key_and_emits_requested_steps(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22)))
+            agent = FakeAxiAgent(["selected\n", "1\n", "selected\n", "2\n"], state_file=state_file)
+            output = io.StringIO()
+            error = io.StringIO()
+
+            exit_code = run_do(agent, thread="thread", argv=["--jsonl"], stdin=io.StringIO("eval 1 --emit\neval 2\n"), stdout=output, stderr=error)
+
+        self.assertEqual(exit_code, 0)
+        records = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual([record["status"] for record in records], ["success", "success"])
+        self.assertEqual([record["command"] for record in records], ["eval", "eval"])
+        self.assertNotIn("ok", records[0])
+        self.assertEqual(error.getvalue(), "")
+
+    def test_do_rejects_unknown_commands(self):
+        agent = FakeAxiAgent([])
+        output = io.StringIO()
+        error = io.StringIO()
+
+        exit_code = run_do(agent, thread="thread", argv=[], stdin=io.StringIO("unknown https://example.test/\n"), stdout=output, stderr=error)
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("unsupported AXI backend command: unknown", error.getvalue())
+
+    def test_do_stdin_allows_literal_separator_tokens(self):
+        steps = parse_do_script('type "::"\neval "location.href.includes(\'||\')"\n')
+
+        self.assertEqual([step.args for step in steps], [["type", "::"], ["eval", "location.href.includes('||')"]])
+
+    def test_do_script_keeps_url_fragments_and_literal_hashes(self):
+        steps = parse_do_script("# full-line comment\nopen https://example.test/path#section\ntype literal#hash\n")
+
+        self.assertEqual([step.args for step in steps], [["open", "https://example.test/path#section"], ["type", "literal#hash"]])
+
+    def test_do_step_double_dash_makes_emit_and_quiet_literal_args(self):
+        steps = parse_do_script("type -- --emit --quiet\n")
+
+        self.assertEqual(steps[0].args, ["type", "--emit", "--quiet"])
+        self.assertFalse(steps[0].emit)
+        self.assertFalse(steps[0].quiet)
+
+    def test_do_argv_double_dash_is_step_local(self):
+        steps = parse_do_argv_steps(["type", "--", "--emit", "::", "snapshot"])
+
+        self.assertEqual([step.args for step in steps], [["type", "--emit"], ["snapshot"]])
+        self.assertFalse(steps[0].emit)
+        self.assertFalse(steps[0].quiet)
+
+    def test_do_stops_after_failed_step(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22)))
+            agent = FakeAxiAgent(["selected\n", "clicked\n", "selected\n", SurfAgentError("bad click", exit_code=1)], state_file=state_file)
+            output = io.StringIO()
+            error = io.StringIO()
+
+            exit_code = run_do(agent, thread="thread", argv=[], stdin=io.StringIO("click @g1:1\nclick @g1:2\nsnapshot\n"), stdout=output, stderr=error)
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("step 2 `click @g1:2` failed: bad click", error.getvalue())
+        self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "click", {"uid": "g1:1"}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "click", {"uid": "g1:2"}]])
+
+    def test_run_do_defaults_use_live_standard_streams(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            agent = FakeAxiAgent([], state_file=state_file)
+            output = io.StringIO()
+            with patch("sys.stdin", io.StringIO("state\n")), redirect_stdout(output):
+                exit_code = run_do(agent, thread="thread", argv=[])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(json.loads(output.getvalue()), {"backend": "axi", "open": False, "thread": "thread"})
+
+    def test_text_outputs_raw_body_text_without_result_wrapper(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22)))
+            agent = FakeAxiAgent(["selected\n", bridge_eval_raw("Hello body")], state_file=state_file)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                exit_code = agent.run_in_window(["text"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(output.getvalue(), "Hello body\n")
+        self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": "() => (document.body.innerText)"}]])
+
     def test_close_matching_requires_pattern(self):
         output = io.StringIO()
         error = io.StringIO()
@@ -461,7 +606,7 @@ class AxiBackendTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
 
-    def test_window_id_legacy_command_is_removed(self):
+    def test_window_id_command_is_removed(self):
         output = io.StringIO()
         error = io.StringIO()
         with redirect_stdout(output), redirect_stderr(error):

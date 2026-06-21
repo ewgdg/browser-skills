@@ -17,9 +17,9 @@ pi install /path/to/browser-skills
 
 ```bash
 uv --project skills/surf run surf-agent --help
-PYTHONPATH=skills/surf/src python -m unittest discover -s tests/surf
+cd skills/surf && uv run python -m unittest discover -s tests
 uv --project skills/surf-chatgpt run surf-chatgpt --help
 uv --project skills/surf-chatgpt run python -m unittest discover -s tests/surf-chatgpt
 ```
 
-Skill runtime payload lives under `skills/<skill>/`. Skill-specific tests live under `tests/<skill>/` and are not shipped.
+Skill runtime payload lives under `skills/<skill>/`. Surf tests are package-local under `skills/surf/tests/`; surf-chatgpt tests remain repo-level under `tests/surf-chatgpt/`.

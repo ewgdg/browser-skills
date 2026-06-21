@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import contextlib
 import csv
 import fnmatch
+import io
 import json
 import os
 import re
@@ -45,7 +47,6 @@ MANAGEMENT_COMMANDS = {
     "page-id",
     "new",
     "reset",
-    "forget",
     "close",
     "focus",
     "close-all",
@@ -75,6 +76,27 @@ class AgentPage:
     url: str | None = None
     title: str | None = None
     backend: str = "axi"
+
+
+@dataclass(frozen=True)
+class DoOptions:
+    jsonl: bool = False
+    quiet: bool = False
+
+
+@dataclass(frozen=True)
+class DoStep:
+    args: list[str]
+    emit: bool = False
+    quiet: bool = False
+
+    @property
+    def command(self) -> str:
+        return self.args[0] if self.args else ""
+
+    @property
+    def display(self) -> str:
+        return shlex.join(self.args)
 
 
 AgentState = AgentPage
@@ -134,7 +156,7 @@ class AxiBridgeClient:
 
     def _ready_port(self) -> int:
         # surf-agent owns the AXI port default so callers do not need env boilerplate.
-        # The PID file is still read for diagnostics/compat, but a stale bridge on AXI's
+        # The PID file is still read for diagnostics, but a stale bridge on AXI's
         # package default port must not override surf-agent's configured port.
         port = int(os.environ.get("CHROME_DEVTOOLS_AXI_PORT", DEFAULT_AXI_PORT))
         pid_port = self._read_pid_port()
@@ -253,6 +275,9 @@ class SurfAgent:
     def run_in_window(self, args: Sequence[str]) -> int:
         return self._run_axi_command(args)
 
+    def execute_in_window(self, args: Sequence[str]) -> str:
+        return self._execute_axi_command(args)
+
     def print_page_id(self, *, force_new: bool = False) -> None:
         print(self.ensure_page(force_new=force_new).page_id)
 
@@ -262,7 +287,7 @@ class SurfAgent:
     def print_list(self) -> None:
         self._print_axi_list()
 
-    def forget(self) -> None:
+    def reset_state(self) -> None:
         unlink_missing_ok(self.state_file)
 
     def close(self) -> int:
@@ -310,24 +335,30 @@ class SurfAgent:
         if not args:
             print_help(sys.stderr)
             return 2
+        output = self._execute_axi_command(args)
+        if output:
+            print(output, end="" if output.endswith("\n") else "\n")
+        return 0
+
+    def _execute_axi_command(self, args: Sequence[str]) -> str:
         command = first_command(args)
+        if command is None:
+            raise SurfAgentError("missing command", exit_code=2)
         if command in FORBIDDEN_COMMANDS:
             raise SurfAgentError(forbidden_message(command), exit_code=2)
-        if command in {"go", "open"}:
-            return self._axi_go(args)
+        if command == "open":
+            return self._axi_open(args)
 
         axi_args, update_state = self._translate_axi_command(args)
         page = self._require_current_axi_page()
         output = self._run_axi_text(axi_args)
-        if output:
-            print(output, end="" if output.endswith("\n") else "\n")
         if update_state:
             parsed = parse_axi_eval_json(output)
             if parsed is not None:
                 self._save_axi_state(AgentPage(page.page_id, url=string_or_none(parsed.get("url")) or page.url, title=string_or_none(parsed.get("title")) or page.title))
-        return 0
+        return output
 
-    def _axi_go(self, args: Sequence[str]) -> int:
+    def _axi_open(self, args: Sequence[str]) -> str:
         if len(args) != 2:
             raise SurfAgentError(f"{args[0]} requires exactly one URL", exit_code=2)
         url = args[1]
@@ -341,9 +372,7 @@ class SurfAgent:
                 output = self._run_axi_text(["open", url])
                 page = merge_page(AgentPage(current.page_id, url=url, title=current.title), find_page(parse_axi_pages(output), current.page_id))
                 self._save_axi_state(page)
-                if output:
-                    print(output, end="" if output.endswith("\n") else "\n")
-                return 0
+                return strip_axi_page_list(output)
 
         page = self._create_axi_page(url)
         self._save_axi_state(page)
@@ -351,9 +380,7 @@ class SurfAgent:
         output = self._run_axi_text(["open", url])
         page = merge_page(AgentPage(page.page_id, url=url, title=page.title), find_page(parse_axi_pages(output), page.page_id))
         self._save_axi_state(page)
-        if output:
-            print(output, end="" if output.endswith("\n") else "\n")
-        return 0
+        return strip_axi_page_list(output)
 
     def _translate_axi_command(self, args: Sequence[str]) -> tuple[list[str], bool]:
         command = first_command(args)
@@ -361,37 +388,37 @@ class SurfAgent:
             raise SurfAgentError("missing command", exit_code=2)
         values = list(args[1:])
 
-        if command in {"read", "page.read"}:
+        if command == "snapshot":
             if values:
-                raise SurfAgentError("AXI snapshot does not support page.read arguments", exit_code=2)
+                raise SurfAgentError("snapshot does not accept arguments", exit_code=2)
             return ["snapshot"], False
-        if command == "page.text":
+        if command == "text":
             if values:
-                raise SurfAgentError("page.text does not accept arguments", exit_code=2)
-            return ["eval", "document.body.innerText"], False
-        if command == "page.state":
-            if values:
-                raise SurfAgentError("page.state does not accept arguments", exit_code=2)
-            return ["eval", "JSON.stringify({title:document.title,url:location.href})"], True
-        if command == "js":
+                raise SurfAgentError("text does not accept arguments", exit_code=2)
+            return ["text"], False
+        if command == "eval":
             if not values:
-                raise SurfAgentError("js requires code", exit_code=2)
+                raise SurfAgentError("eval requires code", exit_code=2)
             return ["eval", " ".join(values)], False
         if command == "click":
             if len(values) != 1:
                 raise SurfAgentError("click requires exactly one target", exit_code=2)
             return ["click", values[0]], False
+        if command == "fill":
+            if len(values) < 2:
+                raise SurfAgentError("fill requires target and text", exit_code=2)
+            return ["fill", values[0], " ".join(values[1:])], False
         if command == "type":
             if not values:
                 raise SurfAgentError("type requires text", exit_code=2)
             return ["type", " ".join(values)], False
-        if command in {"key", "press"}:
+        if command == "press":
             if len(values) != 1:
-                raise SurfAgentError(f"{command} requires exactly one key", exit_code=2)
+                raise SurfAgentError("press requires exactly one key", exit_code=2)
             return ["press", values[0]], False
         if command == "scroll":
-            if len(values) != 1 or values[0] not in {"up", "down"}:
-                raise SurfAgentError("scroll requires direction: up or down", exit_code=2)
+            if len(values) != 1 or values[0] not in {"up", "down", "top", "bottom"}:
+                raise SurfAgentError("scroll requires direction: up, down, top, or bottom", exit_code=2)
             return ["scroll", values[0]], False
         if command == "screenshot":
             output_path = parse_screenshot_output(values)
@@ -402,7 +429,7 @@ class SurfAgent:
             return ["back"], False
         if command == "wait":
             if len(values) != 1:
-                raise SurfAgentError("wait requires one duration in milliseconds", exit_code=2)
+                raise SurfAgentError("wait requires one duration in milliseconds or text target", exit_code=2)
             return ["wait", values[0]], False
 
         raise SurfAgentError(f"unsupported AXI backend command: {command}", exit_code=2)
@@ -445,7 +472,7 @@ class SurfAgent:
             self._run_axi_text(["closepage", str(page.page_id)])
         except SurfAgentError:
             return 1
-        self.forget()
+        self.reset_state()
         return 0
 
     def _close_matching_axi(self, pattern: str) -> int:
@@ -484,7 +511,7 @@ class SurfAgent:
     def _require_current_axi_page(self) -> AgentPage:
         page = self._load_axi_state()
         if page is None:
-            raise SurfAgentError("no remembered AXI page for this thread; run `surf-agent go <url>` or `surf-agent new` first")
+            raise SurfAgentError("no remembered AXI page for this thread; run `surf-agent open <url>` or `surf-agent new` first")
         try:
             self._select_axi_page(page.page_id)
         except SurfAgentError as exc:
@@ -787,7 +814,7 @@ def surf_agent_welcome_url() -> str:
         "</head><body>"
         f"<h1>{SURF_AGENT_WINDOW_TITLE}</h1>"
         "<p>Dedicated browser window managed by <code>surf-agent</code>.</p>"
-        "<p>This window is safe to target with window rules. It will navigate when you run <code>go &lt;url&gt;</code>.</p>"
+        "<p>This window is safe to target with window rules. It will navigate when you run <code>open &lt;url&gt;</code>.</p>"
         "</body></html>"
     )
     return "data:text/html;charset=utf-8," + quote(html, safe="")
@@ -843,7 +870,9 @@ def map_axi_cli_args_to_bridge(args: Sequence[str]) -> BridgeMapping | None:
     if command == "open" and len(values) == 1:
         return "navigate_page", {"type": "url", "url": values[0]}, format_bridge_navigation
     if command == "eval" and values:
-        return "evaluate_script", {"function": wrap_js_expression(" ".join(values))}, format_bridge_eval_result
+        return "evaluate_script", {"function": wrap_script_expression(" ".join(values))}, format_bridge_eval_result
+    if command == "text" and not values:
+        return "evaluate_script", {"function": "() => (document.body.innerText)"}, format_bridge_text_result
     if command == "snapshot" and not values:
         return "take_snapshot", {}, format_bridge_identity
     if command == "closepage" and len(values) == 1:
@@ -857,12 +886,14 @@ def map_axi_cli_args_to_bridge(args: Sequence[str]) -> BridgeMapping | None:
         if re.fullmatch(r"\d+", target):
             return "evaluate_script", {"function": f"() => new Promise(r => setTimeout(() => r({json.dumps(target)}), {int(target)}))"}, lambda _result: f"waited: {target}\n"
         return "wait_for", {"text": [target]}, lambda _result: f"waited: {target}\n"
+    if command == "fill" and len(values) >= 2:
+        return "fill", {"uid": values[0].removeprefix("@"), "value": " ".join(values[1:])}, format_bridge_identity
     if command == "type" and values:
         return "type_text", {"text": " ".join(values)}, format_bridge_identity
     if command == "press" and len(values) == 1:
         return "press_key", {"key": values[0]}, format_bridge_identity
     if command == "scroll" and len(values) == 1:
-        scroll_fn = {"up": "window.scrollBy(0, -500)", "down": "window.scrollBy(0, 500)"}.get(values[0])
+        scroll_fn = {"up": "window.scrollBy(0, -500)", "down": "window.scrollBy(0, 500)", "top": "window.scrollTo(0, 0)", "bottom": "window.scrollTo(0, document.body.scrollHeight)"}.get(values[0])
         if scroll_fn:
             return "evaluate_script", {"function": f"() => {{ {scroll_fn}; return true; }}"}, format_bridge_identity
     if command == "click" and len(values) == 1:
@@ -889,9 +920,29 @@ def format_bridge_navigation(result: str) -> str:
     return result or ""
 
 
+def strip_axi_page_list(output: str) -> str:
+    lines = output.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("## Pages") or re.match(r"^pages\[\d+\]", stripped, flags=re.IGNORECASE):
+            return "".join(lines[:index]).rstrip() + ("\n" if index else "")
+    return output
+
+
 def format_bridge_eval_result(result: str) -> str:
     raw = parse_bridge_eval_result(result)
     return f"result: {raw}\n"
+
+
+def format_bridge_text_result(result: str) -> str:
+    raw = parse_bridge_eval_result(result)
+    try:
+        decoded = json.loads(raw)
+    except json.JSONDecodeError:
+        text = raw
+    else:
+        text = decoded if isinstance(decoded, str) else raw
+    return text + ("" if text.endswith("\n") else "\n")
 
 
 def parse_bridge_eval_result(output: str) -> str:
@@ -904,21 +955,21 @@ def parse_bridge_eval_result(output: str) -> str:
     return output.strip()
 
 
-def wrap_js_expression(js: str) -> str:
-    trimmed = unwrap_no_arg_iife(js.strip())
+def wrap_script_expression(source: str) -> str:
+    trimmed = unwrap_no_arg_iife(source.strip())
     if re.match(r"^(async\s*)?(\(.*?\)\s*=>|[a-zA-Z_$][a-zA-Z0-9_$]*\s*=>|function[\s*(])", trimmed):
         return trimmed
     return f"() => ({trimmed})"
 
 
-def unwrap_no_arg_iife(js: str) -> str:
-    match = re.match(r"^\((.*)\)\s*\(\s*\)\s*;?$", js, flags=re.DOTALL)
+def unwrap_no_arg_iife(source: str) -> str:
+    match = re.match(r"^\((.*)\)\s*\(\s*\)\s*;?$", source, flags=re.DOTALL)
     if not match:
-        return js
+        return source
     inner = match.group(1).strip()
     if re.match(r"^(async\s*)?(\(.*?\)\s*=>|[a-zA-Z_$][a-zA-Z0-9_$]*\s*=>|function[\s*(])", inner):
         return inner
-    return js
+    return source
 
 
 def load_state_file(path: Path) -> AgentState | None:
@@ -1194,6 +1245,168 @@ def find_page(pages: Sequence[AgentPage], wanted_id: int) -> AgentPage | None:
     return None
 
 
+DO_SEPARATORS = {"::", "--then"}
+DO_SHELL_OPERATORS = {"|", "&&", "||", ";"}
+DO_FORBIDDEN_COMMANDS = (MANAGEMENT_COMMANDS - {"state"}) | {"list"}
+def run_do(agent: SurfAgent, *, thread: str, argv: Sequence[str], stdin: Any = None, stdout: Any = None, stderr: Any = None) -> int:
+    stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
+    stderr = sys.stderr if stderr is None else stderr
+    try:
+        options, steps = parse_do_invocation(argv, stdin=stdin)
+    except SurfAgentError as exc:
+        print(f"surf-agent: {exc}", file=stderr)
+        return exc.exit_code
+
+    emitted: list[tuple[int, DoStep, str]] = []
+    json_records: list[dict[str, Any]] = []
+    for index, step in enumerate(steps, start=1):
+        try:
+            output = execute_do_step(agent, step, thread=thread)
+        except SurfAgentError as exc:
+            if options.jsonl:
+                json_records.append(do_error_record(index, step, exc))
+                write_jsonl_records(json_records, stdout)
+            else:
+                print(f"surf-agent do: step {index} `{step.display}` failed: {exc}", file=stderr)
+            return exc.exit_code
+
+        if should_emit_step(step, index=index, total=len(steps), options=options):
+            if options.jsonl:
+                json_records.append(do_success_record(index, step, output))
+            else:
+                emitted.append((index, step, output))
+
+    if options.jsonl:
+        write_jsonl_records(json_records, stdout)
+    elif not options.quiet:
+        write_plain_do_outputs(emitted, stdout)
+    return 0
+
+
+def parse_do_invocation(argv: Sequence[str], *, stdin: Any) -> tuple[DoOptions, list[DoStep]]:
+    args = list(argv)
+    jsonl = False
+    quiet = False
+    while args and args[0] in {"--jsonl", "--quiet"}:
+        flag = args.pop(0)
+        if flag == "--jsonl":
+            jsonl = True
+        elif flag == "--quiet":
+            quiet = True
+    options = DoOptions(jsonl=jsonl, quiet=quiet)
+
+    if not args or args == ["-"]:
+        if hasattr(stdin, "isatty") and stdin.isatty():
+            raise SurfAgentError("do requires stdin script or steps separated by ::", exit_code=2)
+        return options, parse_do_script(stdin.read())
+    return options, parse_do_argv_steps(args)
+
+
+def parse_do_script(script: str) -> list[DoStep]:
+    steps: list[DoStep] = []
+    for line_number, line in enumerate(script.splitlines(), start=1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        try:
+            tokens = shlex.split(line, comments=False)
+        except ValueError as exc:
+            raise SurfAgentError(f"do line {line_number}: {exc}", exit_code=2) from exc
+        if not tokens:
+            continue
+        steps.append(parse_do_step(tokens, context=f"do line {line_number}"))
+    if not steps:
+        raise SurfAgentError("do script is empty", exit_code=2)
+    return steps
+
+
+def parse_do_argv_steps(args: Sequence[str]) -> list[DoStep]:
+    steps: list[DoStep] = []
+    current: list[str] = []
+    for token in args:
+        if token in DO_SHELL_OPERATORS:
+            raise SurfAgentError("use :: or --then between do steps; shell operators chain separate surf-agent invocations", exit_code=2)
+        if token in DO_SEPARATORS:
+            if not current:
+                raise SurfAgentError("empty do step", exit_code=2)
+            steps.append(parse_do_step(current, context="do"))
+            current = []
+            continue
+        current.append(token)
+    if current:
+        steps.append(parse_do_step(current, context="do"))
+    if not steps:
+        raise SurfAgentError("do chain is empty", exit_code=2)
+    return steps
+
+
+def parse_do_step(tokens: Sequence[str], *, context: str) -> DoStep:
+    args: list[str] = []
+    emit = False
+    quiet = False
+    literal = False
+    for token in tokens:
+        if not literal and token == "--":
+            literal = True
+            continue
+        if not literal and token == "--emit":
+            emit = True
+            continue
+        if not literal and token == "--quiet":
+            quiet = True
+            continue
+        args.append(token)
+    if emit and quiet:
+        raise SurfAgentError(f"{context}: --emit and --quiet conflict", exit_code=2)
+    if not args:
+        raise SurfAgentError(f"{context}: empty command", exit_code=2)
+    command = args[0]
+    if command in DO_FORBIDDEN_COMMANDS:
+        raise SurfAgentError(f"{context}: `{command}` is not allowed inside do", exit_code=2)
+    return DoStep(args=args, emit=emit, quiet=quiet)
+
+
+def execute_do_step(agent: SurfAgent, step: DoStep, *, thread: str) -> str:
+    if step.command == "state":
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            agent.print_state(thread=thread)
+        return output.getvalue()
+    return agent.execute_in_window(step.args)
+
+
+def should_emit_step(step: DoStep, *, index: int, total: int, options: DoOptions) -> bool:
+    if options.quiet or step.quiet:
+        return False
+    return step.emit or index == total
+
+
+def do_success_record(index: int, step: DoStep, output: str) -> dict[str, Any]:
+    return {"step": index, "command": step.command, "status": "success", "output": output}
+
+
+def do_error_record(index: int, step: DoStep, error: SurfAgentError) -> dict[str, Any]:
+    return {"step": index, "command": step.command, "status": "error", "error": {"type": "runtime" if error.exit_code == 1 else "usage", "message": str(error)}}
+
+
+def write_jsonl_records(records: Sequence[dict[str, Any]], stdout: Any) -> None:
+    for record in records:
+        print(json.dumps(record, sort_keys=True), file=stdout)
+
+
+def write_plain_do_outputs(outputs: Sequence[tuple[int, DoStep, str]], stdout: Any) -> None:
+    nonempty = [(index, step, output) for index, step, output in outputs if output]
+    if not nonempty:
+        return
+    if len(nonempty) == 1:
+        output = nonempty[0][2]
+        print(output, end="" if output.endswith("\n") else "\n", file=stdout)
+        return
+    for index, step, output in nonempty:
+        print(f"--- step {index}: {step.display} ---", file=stdout)
+        print(output, end="" if output.endswith("\n") else "\n", file=stdout)
+
+
 def parse_agent_args(argv: Sequence[str]) -> tuple[AgentConfig, list[str]]:
     thread = DEFAULT_THREAD
     rest = list(argv)
@@ -1202,17 +1415,13 @@ def parse_agent_args(argv: Sequence[str]) -> tuple[AgentConfig, list[str]]:
         arg = rest[i]
         if arg == "--":
             return AgentConfig(thread=safe_thread_name(thread)), rest[i + 1 :]
-        if arg in {"--thread", "--thread-id"}:
+        if arg == "--thread":
             if i + 1 >= len(rest):
                 raise SurfAgentError(f"{arg} requires a value", exit_code=2)
             thread = rest[i + 1]
             del rest[i : i + 2]
             continue
         if arg.startswith("--thread="):
-            thread = arg.split("=", 1)[1]
-            del rest[i]
-            continue
-        if arg.startswith("--thread-id="):
             thread = arg.split("=", 1)[1]
             del rest[i]
             continue
@@ -1232,16 +1441,18 @@ def print_help(stream: Any) -> None:
         "  surf-agent profile open [url]                   open dedicated profile without automation/debug port\n"
         "  surf-agent close-all                           close all remembered thread pages/windows\n"
         "  surf-agent close-matching <glob>               close remembered thread pages/windows whose thread names match\n"
-        "  surf-agent [--thread ID] reset|forget          forget thread state without closing page\n"
+        "  surf-agent [--thread ID] reset                 clear thread state without closing page\n"
         "  surf-agent [--thread ID] bridge-stop           explicit destructive AXI bridge stop\n"
+        "  surf-agent [--thread ID] do [-]                run newline-separated steps from stdin\n"
         "  surf-agent [--thread ID] <command...>          run supported browser command in thread page\n\n"
         "Supported AXI commands:\n"
-        "  go/open <url>, read/page.read, page.text, page.state, js <code>, click <target>, type <text>,\n"
-        "  key/press <key>, scroll up|down, screenshot [--output] <path>, back, wait <ms>.\n\n"
+        "  open <url>, snapshot, text, eval <code>, click <target>, fill <target> <text>, type <text>,\n"
+        "  press <key>, scroll up|down|top|bottom, screenshot [--output] <path>, back, wait <ms|text>.\n\n"
         "Examples:\n"
         "  surf-agent --thread main state\n"
-        "  surf-agent --thread main go https://example.com\n"
-        "  surf-agent --thread main page.read\n"
+        "  surf-agent --thread main open https://example.com\n"
+        "  surf-agent --thread main snapshot\n"
+        "  printf 'open https://example.com\\nsnapshot\\n' | surf-agent --thread main do\n"
         "  surf-agent profile open https://x.com\n"
         "  surf-agent --thread docs screenshot --output /tmp/shot.png\n"
         "  surf-agent close-matching 'agent-run-*'\n\n"
@@ -1271,8 +1482,8 @@ def main(argv: list[str] | None = None) -> int:
         if command == "new":
             agent.print_page_id(force_new=True)
             return 0
-        if command in {"reset", "forget"}:
-            agent.forget()
+        if command == "reset":
+            agent.reset_state()
             return 0
         if command == "close":
             return agent.close()
@@ -1295,6 +1506,8 @@ def main(argv: list[str] | None = None) -> int:
             return agent.close_matching(argv[1])
         if command == "bridge-stop":
             return agent.bridge_stop()
+        if command == "do":
+            return run_do(agent, thread=config.thread, argv=argv[1:])
         if command == "--":
             argv = argv[1:]
         return agent.run_in_window(argv)
