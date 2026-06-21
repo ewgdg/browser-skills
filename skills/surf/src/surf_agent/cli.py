@@ -53,6 +53,8 @@ MANAGEMENT_COMMANDS = {
     "close-all",
     "close-matching",
     "bridge-stop",
+    "setup",
+    "backend",
 }
 DEFAULT_THREAD = "default"
 DEFAULT_AXI_BIN = "npx -y chrome-devtools-axi"
@@ -60,6 +62,14 @@ DEFAULT_AXI_TIMEOUT_S = 15.0
 DEFAULT_AXI_PORT = "9335"
 DEFAULT_CHROME_DEBUG_PORT = "9336"
 DEFAULT_CHROME_CLASS = "surf-agent"
+DEFAULT_BACKEND = "axi"
+CAMOUFOX_BACKEND = "camoufox"
+DEFAULT_CAMOUFOX_PORT = "9345"
+CAMOUFOX_SETUP_STEPS = (
+    ("sync",),
+    ("set", "official/prerelease"),
+    ("fetch",),
+)
 AXI_STATE_DIR = Path.home() / ".chrome-devtools-axi"
 AXI_BRIDGE_PID_FILE = AXI_STATE_DIR / "bridge.pid"
 SURF_AGENT_WINDOW_TITLE = "Surf Agent"
@@ -256,6 +266,85 @@ class AxiBridgeClient:
         return data if isinstance(data, dict) else None
 
 
+class CamoufoxBridgeClient:
+    def __init__(self, *, timeout_s: float, port: int, profile_dir: Path) -> None:
+        self.timeout_s = timeout_s
+        self.port = port
+        self.profile_dir = profile_dir
+
+    def call_tool(self, name: str, args: dict[str, Any] | None = None) -> str:
+        self._ensure_running()
+        payload = json.dumps({"name": name, "args": args or {}}).encode()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/call",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+                data = json.loads(response.read().decode())
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace") or str(exc)
+            try:
+                parsed = json.loads(detail)
+                detail = parsed.get("error") or detail
+            except json.JSONDecodeError:
+                pass
+            raise SurfAgentError(f"Camoufox bridge tool {name} failed: {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise AxiBridgeUnavailable(f"Camoufox bridge call failed: {exc}") from exc
+        result = data.get("result")
+        return result if isinstance(result, str) else ""
+
+    def stop(self) -> str:
+        if not self._health_ok():
+            return ""
+        payload = json.dumps({"name": "stop", "args": {}}).encode()
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/call",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+                data = json.loads(response.read().decode())
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+            return ""
+        result = data.get("result")
+        return result if isinstance(result, str) else ""
+
+    def _ensure_running(self) -> None:
+        if self._health_ok():
+            return
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
+        command = [
+            sys.executable,
+            "-m",
+            "surf_agent.camoufox_bridge",
+            "--port",
+            str(self.port),
+            "--profile-dir",
+            str(self.profile_dir),
+        ]
+        subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + CHROME_NEW_WINDOW_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if self._health_ok():
+                return
+            time.sleep(0.25)
+        raise SurfAgentError("Camoufox bridge did not become healthy; install Camoufox and run `uv run python -m camoufox fetch`")
+
+    def _health_ok(self) -> bool:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=1.0) as response:
+                data = json.loads(response.read().decode())
+                return response.status == 200 and data.get("status") == "ok"
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+            return False
+
+
 class SurfAgent:
     def __init__(
         self,
@@ -275,10 +364,14 @@ class SurfAgent:
         self.command_timeout_s = command_timeout_s if command_timeout_s is not None else parse_timeout_env()
         self.state_file = state_file or default_state_file(thread=thread, state_dir=state_dir)
         self.state_dir = self.state_file.parent if state_file else default_state_dir(state_dir=state_dir)
+        self.backend = parse_backend_env()
         self.chrome_profile_dir = chrome_profile_dir or default_chrome_profile_dir()
+        self.camoufox_profile_dir = default_camoufox_profile_dir()
         self.chrome_class = chrome_class or os.environ.get("SURF_AGENT_CHROME_CLASS") or DEFAULT_CHROME_CLASS
         self.chrome_debug_port = parse_port_env("SURF_AGENT_CHROME_DEBUG_PORT", DEFAULT_CHROME_DEBUG_PORT)
+        self.camoufox_port = parse_port_env("SURF_AGENT_CAMOUFOX_PORT", DEFAULT_CAMOUFOX_PORT)
         self.browser_url = f"http://127.0.0.1:{self.chrome_debug_port}"
+        self.camoufox_client = CamoufoxBridgeClient(timeout_s=self.command_timeout_s, port=self.camoufox_port, profile_dir=self.camoufox_profile_dir)
         self.bridge_client = bridge_client or AxiBridgeClient(
             timeout_s=self.command_timeout_s,
             expected_profile_dir=self.chrome_profile_dir if self._uses_dedicated_chrome_profile() else None,
@@ -299,43 +392,76 @@ class SurfAgent:
         return created
 
     def run_in_window(self, args: Sequence[str]) -> int:
+        if self.backend == CAMOUFOX_BACKEND:
+            return self._run_camoufox_command(args)
         return self._run_axi_command(args)
 
     def execute_in_window(self, args: Sequence[str]) -> str:
+        if self.backend == CAMOUFOX_BACKEND:
+            return self._execute_camoufox_command(args)
         return self._execute_axi_command(args)
 
     def print_page_id(self, *, force_new: bool = False) -> None:
+        if self.backend == CAMOUFOX_BACKEND:
+            if force_new:
+                self._run_camoufox_text(["new"])
+            print(0)
+            return
         print(self.ensure_page(force_new=force_new).page_id)
 
     def print_state(self, *, thread: str) -> None:
+        if self.backend == CAMOUFOX_BACKEND:
+            print(self.camoufox_client.call_tool("state", {"thread": thread}), end="")
+            return
         self._print_axi_state(thread=thread)
 
     def print_list(self) -> None:
+        if self.backend == CAMOUFOX_BACKEND:
+            print(self.camoufox_client.call_tool("list", {}), end="")
+            return
         self._print_axi_list()
 
     def reset_state(self) -> None:
         unlink_missing_ok(self.state_file)
 
     def close(self) -> int:
+        if self.backend == CAMOUFOX_BACKEND:
+            output = self._run_camoufox_text(["close"])
+            if output:
+                print(output, end="" if output.endswith("\n") else "\n")
+            return 0
         return self._close_remembered_axi_page()
 
     def focus(self) -> int:
+        if self.backend == CAMOUFOX_BACKEND:
+            output = self._run_camoufox_text(["focus"])
+            if output:
+                print(output, end="" if output.endswith("\n") else "\n")
+            return 0
         page = self._require_current_axi_page()
         return self._select_axi_page(page.page_id, bring_to_front=True).returncode
 
     def close_matching(self, pattern: str) -> int:
+        if self.backend == CAMOUFOX_BACKEND:
+            raise SurfAgentError("close-matching is not supported by Camoufox backend yet", exit_code=2)
         return self._close_matching_axi(pattern)
 
     def bridge_stop(self) -> int:
-        output = self._run_axi_text(["stop"])
+        if self.backend == CAMOUFOX_BACKEND:
+            output = self.camoufox_client.stop()
+        else:
+            output = self._run_axi_text(["stop"])
         if output:
             print(output, end="" if output.endswith("\n") else "\n")
         return 0
 
     def print_profile_show(self) -> None:
         payload = {
+            "backend": self.backend,
             "axi_bridge_port": int(os.environ.get("CHROME_DEVTOOLS_AXI_PORT", DEFAULT_AXI_PORT)),
             "browser_url": self.browser_url,
+            "camoufox_bridge_port": self.camoufox_port,
+            "camoufox_profile_dir": str(self.camoufox_profile_dir),
             "chrome_class": self.chrome_class,
             "chrome_debug_port": self.chrome_debug_port,
             "profile_dir": str(self.chrome_profile_dir),
@@ -354,6 +480,95 @@ class SurfAgent:
             detail = (proc.stderr or proc.stdout or "Chrome profile open failed").strip()
             raise SurfAgentError(detail)
         return 0
+
+    def setup_camoufox(self) -> int:
+        return setup_camoufox_backend()
+
+    # Camoufox backend
+
+    def _run_camoufox_command(self, args: Sequence[str]) -> int:
+        if not args:
+            print_help(sys.stderr)
+            return 2
+        output = self._execute_camoufox_command(args)
+        if output:
+            print(output, end="" if output.endswith("\n") else "\n")
+        return 0
+
+    def _execute_camoufox_command(self, args: Sequence[str]) -> str:
+        command = first_command(args)
+        if command is None:
+            raise SurfAgentError("missing command", exit_code=2)
+        if command in FORBIDDEN_COMMANDS:
+            raise SurfAgentError(forbidden_message(command), exit_code=2)
+        if command == "snapshot" and len(args) > 1:
+            mode = parse_snapshot_flags(args)
+            if mode == "baseline":
+                raise SurfAgentError("snapshot --baseline is only supported inside do", exit_code=2)
+            current = capture_snapshot(self)
+            decision = choose_snapshot_diff(None, current)
+            return decision.output
+        return self._run_camoufox_text(list(args))
+
+    def _run_camoufox_text(self, args: Sequence[str]) -> str:
+        command = first_command(args)
+        if command is None:
+            raise SurfAgentError("missing command", exit_code=2)
+        values = list(args[1:])
+        payload: dict[str, Any] = {"thread": self.state_file.stem}
+        name = command
+        if command == "open":
+            if len(values) != 1:
+                raise SurfAgentError("open requires exactly one URL", exit_code=2)
+            payload["url"] = values[0]
+        elif command == "new":
+            payload["url"] = surf_agent_welcome_url()
+        elif command == "text":
+            if values:
+                raise SurfAgentError("text does not accept arguments", exit_code=2)
+        elif command == "snapshot":
+            if values:
+                parse_snapshot_flags(args)
+                raise SurfAgentError("snapshot --baseline and --diff are only supported by dedicated handlers", exit_code=2)
+        elif command == "click":
+            if len(values) != 1:
+                raise SurfAgentError("click requires exactly one target", exit_code=2)
+            payload["uid"] = values[0]
+        elif command == "fill":
+            if len(values) < 2:
+                raise SurfAgentError("fill requires target and text", exit_code=2)
+            payload["uid"] = values[0]
+            payload["text"] = " ".join(values[1:])
+        elif command == "type":
+            if not values:
+                raise SurfAgentError("type requires text", exit_code=2)
+            payload["text"] = " ".join(values)
+        elif command == "press":
+            if len(values) != 1:
+                raise SurfAgentError("press requires exactly one key", exit_code=2)
+            payload["key"] = values[0]
+        elif command == "scroll":
+            if len(values) != 1 or values[0] not in {"up", "down", "top", "bottom"}:
+                raise SurfAgentError("scroll requires direction: up, down, top, or bottom", exit_code=2)
+            payload["direction"] = values[0]
+        elif command == "wait":
+            if len(values) != 1:
+                raise SurfAgentError("wait requires one duration in milliseconds or text target", exit_code=2)
+            payload["target"] = int(values[0]) if values[0].isdigit() else values[0]
+        elif command == "screenshot":
+            if len(values) != 2 or values[0] != "--output":
+                raise SurfAgentError("usage: screenshot --output <path>", exit_code=2)
+            payload["path"] = values[1]
+        elif command == "eval":
+            if not values:
+                raise SurfAgentError("eval requires code", exit_code=2)
+            payload["code"] = " ".join(values)
+        elif command in {"back", "focus", "close", "state", "list"}:
+            if values:
+                raise SurfAgentError(f"{command} does not accept arguments", exit_code=2)
+        else:
+            raise SurfAgentError(f"unsupported Camoufox browser command: {command}", exit_code=2)
+        return self.camoufox_client.call_tool(name, payload)
 
     # AXI backend
 
@@ -658,6 +873,8 @@ class SurfAgent:
         return pages
 
     def _run_axi_text(self, args: Sequence[str]) -> str:
+        if self.backend == CAMOUFOX_BACKEND:
+            return self._run_camoufox_text(args)
         bridge_output = self._run_axi_text_via_bridge(args)
         if bridge_output is not None:
             return bridge_output
@@ -764,8 +981,16 @@ def skill_dir() -> Path:
     return Path(__file__).resolve().parents[2]
 
 
+def skill_data_dir() -> Path:
+    return skill_dir() / ".surf-agent"
+
+
 def skill_state_dir() -> Path:
-    return skill_dir() / ".state"
+    return skill_data_dir() / "state"
+
+
+def backend_config_file() -> Path:
+    return skill_data_dir() / "config.json"
 
 
 def default_chrome_profile_dir() -> Path:
@@ -773,6 +998,81 @@ def default_chrome_profile_dir() -> Path:
     if value:
         return Path(value).expanduser()
     return skill_dir() / "chrome-profile"
+
+
+def default_camoufox_profile_dir() -> Path:
+    value = os.environ.get("SURF_AGENT_CAMOUFOX_PROFILE_DIR")
+    if value:
+        return Path(value).expanduser()
+    return skill_dir() / "camoufox-profile"
+
+
+def parse_backend_env() -> str:
+    return resolve_backend_preference()[0]
+
+
+def resolve_backend_preference() -> tuple[str, str]:
+    env_backend = os.environ.get("SURF_AGENT_BACKEND")
+    if env_backend:
+        return validate_backend_name(env_backend, source="SURF_AGENT_BACKEND"), "env"
+    config = load_backend_config()
+    configured = config.get("backend")
+    if isinstance(configured, str) and configured.strip():
+        return validate_backend_name(configured, source=str(backend_config_file())), "config"
+    return DEFAULT_BACKEND, "default"
+
+
+def validate_backend_name(value: str, *, source: str = "backend") -> str:
+    backend = value.strip().lower()
+    if backend not in {DEFAULT_BACKEND, CAMOUFOX_BACKEND}:
+        raise SurfAgentError(f"{source} must be 'axi' or 'camoufox'", exit_code=2)
+    return backend
+
+
+def load_backend_config() -> dict[str, Any]:
+    try:
+        data = json.loads(backend_config_file().read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SurfAgentError(f"could not read surf-agent backend config {backend_config_file()}: {exc}", exit_code=2) from exc
+    if not isinstance(data, dict):
+        raise SurfAgentError(f"surf-agent backend config {backend_config_file()} must contain a JSON object", exit_code=2)
+    return data
+
+
+def write_backend_config(config: dict[str, Any]) -> None:
+    path = backend_config_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(config, sort_keys=True) + "\n")
+
+
+def show_backend_config() -> int:
+    backend, source = resolve_backend_preference()
+    print(json.dumps({"backend": backend, "source": source, "config_file": str(backend_config_file())}, sort_keys=True))
+    return 0
+
+
+def set_backend_config(backend: str) -> int:
+    backend = validate_backend_name(backend)
+    config = load_backend_config()
+    config["backend"] = backend
+    write_backend_config(config)
+    print(json.dumps({"backend": backend, "config_file": str(backend_config_file())}, sort_keys=True))
+    return 0
+
+
+def reset_backend_config() -> int:
+    config = load_backend_config()
+    config.pop("backend", None)
+    path = backend_config_file()
+    if config:
+        write_backend_config(config)
+    else:
+        unlink_missing_ok(path)
+    backend, source = resolve_backend_preference()
+    print(json.dumps({"backend": backend, "source": source, "config_file": str(path)}, sort_keys=True))
+    return 0
 
 
 def safe_thread_name(thread: str) -> str:
@@ -1299,18 +1599,30 @@ def parse_snapshot_flags(args: Sequence[str]) -> SnapshotMode:
 
 
 def capture_snapshot(agent: SurfAgent) -> SnapshotCapture:
+    if agent.backend == CAMOUFOX_BACKEND:
+        return capture_camoufox_snapshot(agent)
     page = agent._require_current_axi_page()
     text = agent._run_axi_text(["snapshot"])
     # Read live metadata after the snapshot so origin gating is based on the
     # current page, without persisting any hidden snapshot baseline state.
     current = capture_current_page_metadata(agent, fallback=page)
+    return snapshot_capture_from_page(text=text, page=current)
+
+
+def capture_camoufox_snapshot(agent: SurfAgent) -> SnapshotCapture:
+    text = agent._run_camoufox_text(["snapshot"])
+    current = capture_camoufox_page_metadata(agent)
+    return snapshot_capture_from_page(text=text, page=current)
+
+
+def snapshot_capture_from_page(*, text: str, page: AgentPage) -> SnapshotCapture:
     return SnapshotCapture(
         text=text,
-        page_id=current.page_id,
-        url=current.url,
-        title=current.title,
-        origin=url_origin(current.url),
-        url_without_fragment=url_without_fragment(current.url),
+        page_id=page.page_id,
+        url=page.url,
+        title=page.title,
+        origin=url_origin(page.url),
+        url_without_fragment=url_without_fragment(page.url),
     )
 
 
@@ -1329,6 +1641,34 @@ def capture_current_page_metadata(agent: SurfAgent, *, fallback: AgentPage) -> A
         url=string_or_none(parsed.get("url")) or fallback.url,
         title=string_or_none(parsed.get("title")) or fallback.title,
     )
+
+
+def capture_camoufox_page_metadata(agent: SurfAgent) -> AgentPage:
+    fallback = AgentPage(stable_camoufox_page_id(agent.state_file.stem), backend=CAMOUFOX_BACKEND)
+    try:
+        output = agent._run_camoufox_text(["state"])
+    except SurfAgentError:
+        return fallback
+    try:
+        data = json.loads(output)
+    except json.JSONDecodeError:
+        return fallback
+    if not isinstance(data, dict):
+        return fallback
+    page_id = coerce_int(data.get("page_id")) or fallback.page_id
+    return AgentPage(
+        page_id,
+        url=string_or_none(data.get("url")) or fallback.url,
+        title=string_or_none(data.get("title")) or fallback.title,
+        backend=CAMOUFOX_BACKEND,
+    )
+
+
+def stable_camoufox_page_id(thread: str) -> int:
+    value = 0
+    for char in thread:
+        value = ((value * 33) + ord(char)) % 2_147_483_647
+    return value or 1
 
 
 def url_origin(url: str | None) -> str | None:
@@ -1605,6 +1945,30 @@ def parse_agent_args(argv: Sequence[str]) -> tuple[AgentConfig, list[str]]:
     return AgentConfig(thread=safe_thread_name(thread)), rest
 
 
+def setup_camoufox_backend() -> int:
+    for step in CAMOUFOX_SETUP_STEPS:
+        command = [sys.executable, "-m", "camoufox", *step]
+        print(f"running: {shlex.join(command)}")
+        try:
+            proc = subprocess.run(command, check=False, text=True, capture_output=True)
+        except FileNotFoundError as exc:
+            raise SurfAgentError(f"could not run Python executable {sys.executable!r}", exit_code=1) from exc
+        if proc.stdout:
+            print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
+        if proc.stderr:
+            print(proc.stderr, end="" if proc.stderr.endswith("\n") else "\n", file=sys.stderr)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or f"exit code {proc.returncode}").strip()
+            hint = " Install Camoufox support with `uv sync --extra camoufox`." if is_camoufox_module_missing(detail) else ""
+            raise SurfAgentError(f"Camoufox setup failed while running `{shlex.join(command)}`: {detail}.{hint}", exit_code=proc.returncode or 1)
+    print("Camoufox setup complete.")
+    return 0
+
+
+def is_camoufox_module_missing(detail: str) -> bool:
+    return "No module named" in detail and "camoufox" in detail
+
+
 def print_help(stream: Any) -> None:
     stream.write(
         "surf-agent: threaded browser helper using a persistent browser bridge\n\n"
@@ -1615,6 +1979,10 @@ def print_help(stream: Any) -> None:
         "  surf-agent [--thread ID] focus                 select remembered thread page\n"
         "  surf-agent profile show                         print dedicated profile configuration JSON\n"
         "  surf-agent profile open [url]                   open dedicated profile without automation/debug port\n"
+        "  surf-agent backend show                         print selected backend and source\n"
+        "  surf-agent backend set axi|camoufox             persist default backend\n"
+        "  surf-agent backend reset                        clear persisted backend\n"
+        "  surf-agent setup camoufox                       install/update Camoufox browser backend\n"
         "  surf-agent close-all                           close all remembered thread pages/windows\n"
         "  surf-agent close-matching <glob>               close remembered thread pages/windows whose thread names match\n"
         "  surf-agent [--thread ID] reset                 clear thread state without closing page\n"
@@ -1630,9 +1998,11 @@ def print_help(stream: Any) -> None:
         "  surf-agent --thread main snapshot\n"
         "  printf 'open https://example.com\\nsnapshot\\n' | surf-agent --thread main do\n"
         "  surf-agent profile open https://x.com\n"
+        "  surf-agent backend set camoufox\n"
+        "  surf-agent setup camoufox\n"
         "  surf-agent --thread docs screenshot --output /tmp/shot.png\n"
         "  surf-agent close-matching 'agent-run-*'\n\n"
-        "State: skill-local .state/<thread>.json plus chrome-profile/.\n"
+        "State: skill-local .surf-agent/state/<thread>.json plus chrome-profile/.\n"
         "Browser bridge: dedicated profile env is embedded; setup/login may be needed once. New threads start in a window titled Surf Agent.\n"
     )
 
@@ -1641,11 +2011,25 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     try:
         config, argv = parse_agent_args(argv)
-        agent = SurfAgent(thread=config.thread)
         if not argv or argv[0] in {"help", "--help", "-h"}:
             print_help(sys.stdout)
             return 0 if argv else 2
         command = argv[0]
+        if command == "backend":
+            if len(argv) == 2 and argv[1] == "show":
+                return show_backend_config()
+            if len(argv) == 3 and argv[1] == "set":
+                return set_backend_config(argv[2])
+            if len(argv) == 2 and argv[1] == "reset":
+                return reset_backend_config()
+            raise SurfAgentError("usage: surf-agent backend show | backend set axi|camoufox | backend reset", exit_code=2)
+        if command == "setup":
+            if len(argv) == 2 and argv[1] == CAMOUFOX_BACKEND:
+                return setup_camoufox_backend()
+            raise SurfAgentError("usage: surf-agent setup camoufox", exit_code=2)
+        if command == CAMOUFOX_BACKEND and len(argv) == 2 and argv[1] == "setup":
+            return setup_camoufox_backend()
+        agent = SurfAgent(thread=config.thread)
         if command == "state":
             agent.print_state(thread=config.thread)
             return 0

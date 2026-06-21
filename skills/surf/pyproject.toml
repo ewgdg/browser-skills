@@ -5,6 +5,9 @@ description = "Agent-scoped wrapper for generic surf browser control"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+camoufox = ["cloverlabs-camoufox>=0.6.0"]
+
 [project.scripts]
 surf-agent = "surf_agent.cli:main"
 

@@ -7,7 +7,33 @@ description: Browser control through `surf-agent`, backed by a persistent browse
 
 ## Backend policy
 
-Use `surf-agent` for browser operations. Current implementation uses a persistent browser bridge with a dedicated Chrome profile.
+Use `surf-agent` for browser operations. Current default implementation uses a persistent AXI browser bridge with a dedicated Chrome profile.
+
+Optional experimental Firefox/Camoufox backend exists for high-fingerprint-resistance trials:
+
+```bash
+uv run surf-agent backend set camoufox
+uv run surf-agent --thread main open https://example.com
+```
+
+For one command only, env override still wins:
+
+```bash
+SURF_AGENT_BACKEND=camoufox uv run surf-agent --thread main open https://example.com
+```
+
+Setup first:
+
+```bash
+uv sync --extra camoufox
+uv run surf-agent setup camoufox
+```
+
+`setup camoufox` runs `python -m camoufox sync`, selects `official/prerelease`, then fetches the browser binary without launching it.
+
+Camoufox backend supports core browsing commands (`open`, `new`, `snapshot`, `text`, `click`, `fill`, `type`, `press`, `scroll`, `wait`, `back`, `screenshot`, `eval`, `close`, `focus`, `state`, `list`) through a persistent local Python bridge and `camoufox-profile/`. It is experimental: Chrome extensions/profile behavior does not apply, and `close-matching` is not implemented yet.
+
+Persistent app-local data lives under `.surf-agent/`: backend config in `.surf-agent/config.json`, thread state in `.surf-agent/state/`.
 
 - One thread owns one remembered browser page id in one dedicated Chrome window.
 - New threads first open a short `Surf Agent` bootstrap in a normal `--new-window` Chrome window so human login/unblock has toolbar, back/forward, and extension controls. `new` then opens the welcome page; `open <url>` navigates directly to the requested URL.
@@ -24,7 +50,7 @@ Direct `surf` CLI fallback is removed. Unsupported commands fail clearly instead
 
 ## Backend details
 
-Normal callers should use `surf-agent` commands only. Current AXI backend/env details live in [docs/axi-backend.md](docs/axi-backend.md).
+Normal callers should use `surf-agent` commands only. Current AXI backend/env details live in [docs/axi-backend.md](docs/axi-backend.md). Backend selection priority is `SURF_AGENT_BACKEND`, then `.surf-agent/config.json`, then AXI default.
 
 First use of the dedicated profile may require one-time browser setup/login. For setup without automation/debugging, close Surf Agent automation windows and run `uv run surf-agent profile open https://x.com`.
 
