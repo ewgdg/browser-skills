@@ -133,10 +133,13 @@ uv run surf-agent bridge-stop                  # explicit destructive bridge sto
 ```bash
 uv run surf-agent --thread main open https://example.com
 uv run surf-agent --thread main back
-uv run surf-agent --thread main snapshot
+uv run surf-agent --thread main snapshot        # full snapshot; no hidden baseline
+uv run surf-agent --thread main snapshot --diff # full snapshot with no-baseline fallback outside do
 uv run surf-agent --thread main text
 uv run surf-agent --thread main state
 ```
+
+`snapshot --baseline` is valid only inside `do`.
 
 ### Interact
 
@@ -155,10 +158,25 @@ uv run surf-agent --thread main wait "Loaded"
 
 `do` runs one command per stdin line in the current thread. It is fail-fast. Non-final step output is suppressed unless the step has `--emit`; final step output is printed unless it has `--quiet`.
 
+Snapshot modes inside one `do` invocation:
+
+- `snapshot`: full snapshot; does not set a baseline.
+- `snapshot --baseline`: captures baseline and emits no output.
+- `snapshot --diff`: compares current snapshot to current `do` baseline, then updates baseline to current.
+- Baseline lives only for one `do` invocation. No persistent baseline state.
+- Diff is auto-gated. If diff is too large, saves too few chars, has too many hunks, or page identity/origin changes, output falls back to full snapshot with compact reason. No force mode.
+
 ```bash
 uv run surf-agent --thread main do <<'EOF'
 open https://example.com
 snapshot
+EOF
+
+uv run surf-agent --thread main do <<'EOF'
+open https://example.com
+snapshot --baseline
+click @button
+snapshot --diff
 EOF
 
 uv run surf-agent --thread main do --jsonl <<'EOF'

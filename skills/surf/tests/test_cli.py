@@ -7,7 +7,25 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from surf_agent.cli import AgentPage, AxiBridgeClient, AxiBridgeUnavailable, DEFAULT_THREAD, SurfAgent, SurfAgentError, default_chrome_profile_dir, main, parse_agent_args, parse_axi_pages, parse_do_argv_steps, parse_do_script, run_do, strip_axi_page_list, surf_agent_app_url
+from surf_agent.cli import (
+    AgentPage,
+    AxiBridgeClient,
+    AxiBridgeUnavailable,
+    DEFAULT_THREAD,
+    SnapshotCapture,
+    SurfAgent,
+    SurfAgentError,
+    choose_snapshot_diff,
+    default_chrome_profile_dir,
+    main,
+    parse_agent_args,
+    parse_axi_pages,
+    parse_do_argv_steps,
+    parse_do_script,
+    run_do,
+    strip_axi_page_list,
+    surf_agent_app_url,
+)
 
 
 def page_state(page_id, **extra):
@@ -28,6 +46,35 @@ def bridge_eval_raw(value):
 
 def axi_identity_result(title="Surf Agent", href=None):
     return bridge_eval_raw({"title": title, "href": href or surf_agent_app_url()})
+
+
+def snapshot_text(changes=None, *, line_count=220):
+    changes = changes or {}
+    lines = ["snapshot:"]
+    for index in range(line_count):
+        text = changes.get(index, f"stable content line {index:03d}")
+        lines.append(f"uid=g{index}: {text} {'x' * 30}")
+    return "\n".join(lines) + "\n"
+
+
+def page_metadata_result(url="https://example.test/", title="Example"):
+    return json.dumps({"title": title, "url": url})
+
+
+def page_metadata_call():
+    return ["bridge", "evaluate_script", {"function": "() => (JSON.stringify({title:document.title,url:location.href}))"}]
+
+
+def snapshot_capture(text=None, **overrides):
+    url = overrides.pop("url", "https://example.test/path#section")
+    return SnapshotCapture(
+        text=text if text is not None else snapshot_text(),
+        page_id=overrides.pop("page_id", 22),
+        url=url,
+        title=overrides.pop("title", "Example"),
+        origin=overrides.pop("origin", "https://example.test"),
+        url_without_fragment=overrides.pop("url_without_fragment", "https://example.test/path"),
+    )
 
 
 class FakeBridgeClient:
@@ -506,6 +553,192 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(output.getvalue(), "snapshot:\nuid=g2:1 button Submit\n")
         self.assertEqual(error.getvalue(), "")
         self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "click", {"uid": "g1:1"}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "take_snapshot", {}]])
+
+    def test_do_snapshot_baseline_emits_nothing_and_keeps_state_file_clean(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22, url="https://example.test/", title="Example")))
+            original_state = state_file.read_text()
+            agent = FakeAxiAgent(["selected\n", snapshot_text(), page_metadata_result()], state_file=state_file)
+            output = io.StringIO()
+            error = io.StringIO()
+
+            exit_code = run_do(agent, thread="thread", argv=[], stdin=io.StringIO("snapshot --baseline\n"), stdout=output, stderr=error)
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(output.getvalue(), "")
+            self.assertEqual(error.getvalue(), "")
+            self.assertEqual(state_file.read_text(), original_state)
+            self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "take_snapshot", {}], page_metadata_call()])
+
+    def test_do_snapshot_diff_emits_useful_unified_diff_and_updates_baseline(self):
+        before = snapshot_text({20: "first old"})
+        after_first = snapshot_text({20: "first new"})
+        after_second = snapshot_text({20: "first new", 60: "second new"})
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22, url="https://example.test/", title="Example")))
+            agent = FakeAxiAgent(["selected\n", before, page_metadata_result(), "selected\n", after_first, page_metadata_result(), "selected\n", after_second, page_metadata_result()], state_file=state_file)
+            output = io.StringIO()
+            error = io.StringIO()
+
+            exit_code = run_do(agent, thread="thread", argv=[], stdin=io.StringIO("snapshot --baseline\nsnapshot --diff --emit\nsnapshot --diff\n"), stdout=output, stderr=error)
+
+        self.assertEqual(exit_code, 0)
+        text = output.getvalue()
+        self.assertIn("--- baseline", text)
+        self.assertIn("+++ current", text)
+        self.assertIn("@@", text)
+        self.assertNotIn("stable content line 180", text)
+        sections = text.split("--- step 3: snapshot --diff ---")
+        self.assertEqual(len(sections), 2)
+        self.assertIn("first old", sections[0])
+        self.assertNotIn("first old", sections[1])
+        self.assertIn("second new", sections[1])
+        self.assertEqual(error.getvalue(), "")
+
+    def test_do_snapshot_diff_without_baseline_outputs_full_once_then_updates_baseline(self):
+        first = snapshot_text({30: "first snapshot"})
+        second = snapshot_text({30: "second snapshot"})
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22, url="https://example.test/", title="Example")))
+            agent = FakeAxiAgent(["selected\n", first, page_metadata_result(), "selected\n", second, page_metadata_result()], state_file=state_file)
+            output = io.StringIO()
+            error = io.StringIO()
+
+            exit_code = run_do(agent, thread="thread", argv=[], stdin=io.StringIO("snapshot --diff --emit\nsnapshot --diff\n"), stdout=output, stderr=error)
+
+        self.assertEqual(exit_code, 0)
+        text = output.getvalue()
+        self.assertIn("# snapshot fallback: no baseline", text)
+        self.assertIn("stable content line 180", text)
+        step2 = text.split("--- step 2: snapshot --diff ---")[1]
+        self.assertIn("--- baseline", step2)
+        self.assertNotIn("stable content line 180", step2)
+        self.assertEqual(error.getvalue(), "")
+
+    def test_snapshot_diff_gates_fall_back_for_large_small_savings_and_many_hunks(self):
+        cases = [
+            (snapshot_text({i: f"old {i}" for i in range(120)}, line_count=120), snapshot_text({i: f"new {i}" for i in range(120)}, line_count=120), "diff too large"),
+            ("snapshot:\n" + "\n".join(f"L{i}" for i in range(80)) + "\n", "snapshot:\n" + "\n".join("CHANGED" if i == 40 else f"L{i}" for i in range(80)) + "\n", "saved chars < 250"),
+            (snapshot_text(line_count=260), snapshot_text({i * 20: f"change {i}" for i in range(9)}, line_count=260), "hunks > 8"),
+        ]
+        for before_text, after_text, reason in cases:
+            with self.subTest(reason=reason):
+                decision = choose_snapshot_diff(snapshot_capture(before_text), snapshot_capture(after_text))
+
+                self.assertFalse(decision.used_diff)
+                self.assertIn(f"# snapshot fallback: {reason}", decision.output)
+                self.assertIn("snapshot:", decision.output)
+
+    def test_snapshot_diff_no_changes_emits_compact_header(self):
+        capture = snapshot_capture(snapshot_text())
+        decision = choose_snapshot_diff(capture, capture)
+
+        self.assertTrue(decision.used_diff)
+        self.assertEqual(decision.output, "# snapshot-diff: no changes\n")
+
+    def test_snapshot_diff_metadata_vetoes_only_identity_changes(self):
+        before = snapshot_capture(snapshot_text({20: "old"}), url="https://example.test/path#old")
+        useful_after = snapshot_text({20: "new"})
+
+        origin_change = choose_snapshot_diff(before, snapshot_capture(useful_after, url="https://other.test/path#old", origin="https://other.test", url_without_fragment="https://other.test/path"))
+        self.assertFalse(origin_change.used_diff)
+        self.assertIn("origin changed", origin_change.output)
+
+        page_change = choose_snapshot_diff(before, snapshot_capture(useful_after, page_id=23))
+        self.assertFalse(page_change.used_diff)
+        self.assertIn("page changed", page_change.output)
+
+        hash_only = choose_snapshot_diff(before, snapshot_capture(useful_after, url="https://example.test/path#new", url_without_fragment="https://example.test/path"))
+        self.assertTrue(hash_only.used_diff)
+
+        path_and_title = choose_snapshot_diff(before, snapshot_capture(useful_after, url="https://example.test/other", url_without_fragment="https://example.test/other", title="Other"))
+        self.assertTrue(path_and_title.used_diff)
+
+    def test_do_snapshot_diff_uses_fallback_metadata_when_auxiliary_eval_fails(self):
+        before = snapshot_text({20: "old"})
+        after = snapshot_text({20: "new"})
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22, url="https://example.test/path", title="Example")))
+            agent = FakeAxiAgent(
+                [
+                    "selected\n",
+                    before,
+                    SurfAgentError("metadata unavailable"),
+                    "selected\n",
+                    after,
+                    SurfAgentError("metadata unavailable"),
+                ],
+                state_file=state_file,
+            )
+            output = io.StringIO()
+            error = io.StringIO()
+
+            exit_code = run_do(agent, thread="thread", argv=[], stdin=io.StringIO("snapshot --baseline\nsnapshot --diff\n"), stdout=output, stderr=error)
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("--- baseline", output.getvalue())
+        self.assertEqual(error.getvalue(), "")
+
+    def test_do_snapshot_diff_origin_gate_uses_live_page_url_without_persisting_state(self):
+        before = snapshot_text({20: "old"})
+        after = snapshot_text({20: "new"})
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22, url="https://example.test/path", title="Example")))
+            original_state = state_file.read_text()
+            agent = FakeAxiAgent(
+                [
+                    "selected\n",
+                    before,
+                    page_metadata_result(url="https://example.test/path"),
+                    "selected\n",
+                    after,
+                    page_metadata_result(url="https://other.test/path"),
+                ],
+                state_file=state_file,
+            )
+            output = io.StringIO()
+            error = io.StringIO()
+
+            exit_code = run_do(agent, thread="thread", argv=[], stdin=io.StringIO("snapshot --baseline\nsnapshot --diff\n"), stdout=output, stderr=error)
+            final_state = state_file.read_text()
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("# snapshot fallback: origin changed", output.getvalue())
+        self.assertIn("stable content line 180", output.getvalue())
+        self.assertNotIn("--- baseline", output.getvalue())
+        self.assertEqual(final_state, original_state)
+        self.assertEqual(error.getvalue(), "")
+
+    def test_standalone_snapshot_diff_flags(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22, url="https://example.test/", title="Example")))
+            agent = FakeAxiAgent(["selected\n", snapshot_text(), page_metadata_result()], state_file=state_file)
+            output = io.StringIO()
+            error = io.StringIO()
+            with patch("surf_agent.cli.SurfAgent", return_value=agent), redirect_stdout(output), redirect_stderr(error):
+                exit_code = main(["snapshot", "--diff"])
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("# snapshot fallback: no baseline", output.getvalue())
+        self.assertEqual(error.getvalue(), "")
+
+        for argv in (["snapshot", "--baseline"], ["snapshot", "--baseline", "--diff"], ["snapshot", "--diff", "extra"]):
+            with self.subTest(argv=argv):
+                agent = FakeAxiAgent([])
+                output = io.StringIO()
+                error = io.StringIO()
+                with patch("surf_agent.cli.SurfAgent", return_value=agent), redirect_stdout(output), redirect_stderr(error):
+                    exit_code = main(list(argv))
+
+                self.assertEqual(exit_code, 2)
+                self.assertEqual(output.getvalue(), "")
+                self.assertIn("surf-agent:", error.getvalue())
 
     def test_do_jsonl_uses_status_key_and_emits_requested_steps(self):
         with TemporaryDirectory() as tmp:

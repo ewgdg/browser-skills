@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import csv
+import difflib
 import fnmatch
 import io
 import json
@@ -17,7 +18,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
-from urllib.parse import quote
+from urllib.parse import quote, urlparse, urlunparse
 
 FORBIDDEN_COMMANDS = {
     "ai",
@@ -63,6 +64,9 @@ AXI_STATE_DIR = Path.home() / ".chrome-devtools-axi"
 AXI_BRIDGE_PID_FILE = AXI_STATE_DIR / "bridge.pid"
 SURF_AGENT_WINDOW_TITLE = "Surf Agent"
 CHROME_NEW_WINDOW_TIMEOUT_S = 10.0
+SNAPSHOT_DIFF_MAX_RATIO = 0.50
+SNAPSHOT_DIFF_MIN_SAVED_CHARS = 250
+SNAPSHOT_DIFF_MAX_HUNKS = 8
 
 
 @dataclass(frozen=True)
@@ -82,6 +86,28 @@ class AgentPage:
 class DoOptions:
     jsonl: bool = False
     quiet: bool = False
+
+
+@dataclass
+class DoContext:
+    snapshot_baseline: "SnapshotCapture | None" = None
+
+
+@dataclass(frozen=True)
+class SnapshotCapture:
+    text: str
+    page_id: int | None
+    url: str | None
+    title: str | None
+    origin: str | None
+    url_without_fragment: str | None
+
+
+@dataclass(frozen=True)
+class SnapshotDiffDecision:
+    output: str
+    used_diff: bool
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -348,6 +374,13 @@ class SurfAgent:
             raise SurfAgentError(forbidden_message(command), exit_code=2)
         if command == "open":
             return self._axi_open(args)
+        if command == "snapshot" and len(args) > 1:
+            mode = parse_snapshot_flags(args)
+            if mode == "baseline":
+                raise SurfAgentError("snapshot --baseline is only supported inside do", exit_code=2)
+            current = capture_snapshot(self)
+            decision = choose_snapshot_diff(None, current)
+            return decision.output
 
         axi_args, update_state = self._translate_axi_command(args)
         page = self._require_current_axi_page()
@@ -390,7 +423,8 @@ class SurfAgent:
 
         if command == "snapshot":
             if values:
-                raise SurfAgentError("snapshot does not accept arguments", exit_code=2)
+                parse_snapshot_flags(args)
+                raise SurfAgentError("snapshot --baseline and snapshot --diff are only supported by dedicated handlers", exit_code=2)
             return ["snapshot"], False
         if command == "text":
             if values:
@@ -1245,6 +1279,126 @@ def find_page(pages: Sequence[AgentPage], wanted_id: int) -> AgentPage | None:
     return None
 
 
+SnapshotMode = str
+
+
+def parse_snapshot_flags(args: Sequence[str]) -> SnapshotMode:
+    values = list(args)
+    if not values or values[0] != "snapshot":
+        raise SurfAgentError("snapshot flags require snapshot command", exit_code=2)
+    flags = values[1:]
+    if not flags:
+        return "snapshot"
+    if flags == ["--baseline"]:
+        return "baseline"
+    if flags == ["--diff"]:
+        return "diff"
+    if "--baseline" in flags and "--diff" in flags:
+        raise SurfAgentError("snapshot --baseline and --diff conflict", exit_code=2)
+    raise SurfAgentError("usage: snapshot [--baseline | --diff]", exit_code=2)
+
+
+def capture_snapshot(agent: SurfAgent) -> SnapshotCapture:
+    page = agent._require_current_axi_page()
+    text = agent._run_axi_text(["snapshot"])
+    # Read live metadata after the snapshot so origin gating is based on the
+    # current page, without persisting any hidden snapshot baseline state.
+    current = capture_current_page_metadata(agent, fallback=page)
+    return SnapshotCapture(
+        text=text,
+        page_id=current.page_id,
+        url=current.url,
+        title=current.title,
+        origin=url_origin(current.url),
+        url_without_fragment=url_without_fragment(current.url),
+    )
+
+
+def capture_current_page_metadata(agent: SurfAgent, *, fallback: AgentPage) -> AgentPage:
+    try:
+        output = agent._run_axi_text(["eval", "JSON.stringify({title:document.title,url:location.href})"])
+    except SurfAgentError:
+        # Metadata only gates noisy diffs; a successful snapshot should not fail
+        # because this auxiliary read is unavailable.
+        return fallback
+    parsed = parse_axi_eval_json(output)
+    if parsed is None:
+        return fallback
+    return AgentPage(
+        fallback.page_id,
+        url=string_or_none(parsed.get("url")) or fallback.url,
+        title=string_or_none(parsed.get("title")) or fallback.title,
+    )
+
+
+def url_origin(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def url_without_fragment(url: str | None) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url)
+    return urlunparse(parsed._replace(fragment=""))
+
+
+def unified_snapshot_diff(before: SnapshotCapture, after: SnapshotCapture) -> str:
+    return "".join(
+        difflib.unified_diff(
+            before.text.splitlines(keepends=True),
+            after.text.splitlines(keepends=True),
+            fromfile="baseline",
+            tofile="current",
+        )
+    )
+
+
+def count_diff_hunks(diff_text: str) -> int:
+    return sum(1 for line in diff_text.splitlines() if line.startswith("@@"))
+
+
+def choose_snapshot_diff(before: SnapshotCapture | None, after: SnapshotCapture) -> SnapshotDiffDecision:
+    if before is None:
+        return SnapshotDiffDecision(snapshot_fallback_output(after.text, "no baseline"), used_diff=False, reason="no baseline")
+    if before.page_id != after.page_id:
+        return SnapshotDiffDecision(snapshot_fallback_output(after.text, "page changed"), used_diff=False, reason="page changed")
+    if before.origin and after.origin and before.origin != after.origin:
+        return SnapshotDiffDecision(snapshot_fallback_output(after.text, "origin changed"), used_diff=False, reason="origin changed")
+
+    diff_text = unified_snapshot_diff(before, after)
+    if not diff_text:
+        return SnapshotDiffDecision(format_snapshot_header("diff", "no changes"), used_diff=True, reason="no changes")
+
+    diff_chars = len(diff_text)
+    full_chars = len(after.text)
+    saved_chars = full_chars - diff_chars
+    hunk_count = count_diff_hunks(diff_text)
+
+    if diff_chars > full_chars * SNAPSHOT_DIFF_MAX_RATIO:
+        return SnapshotDiffDecision(snapshot_fallback_output(after.text, "diff too large"), used_diff=False, reason="diff too large")
+    if saved_chars < SNAPSHOT_DIFF_MIN_SAVED_CHARS:
+        return SnapshotDiffDecision(snapshot_fallback_output(after.text, f"saved chars < {SNAPSHOT_DIFF_MIN_SAVED_CHARS}"), used_diff=False, reason="saved chars too small")
+    if hunk_count > SNAPSHOT_DIFF_MAX_HUNKS:
+        return SnapshotDiffDecision(snapshot_fallback_output(after.text, f"hunks > {SNAPSHOT_DIFF_MAX_HUNKS}"), used_diff=False, reason="too many hunks")
+    return SnapshotDiffDecision(format_snapshot_header("diff", "") + diff_text, used_diff=True, reason="")
+
+
+def snapshot_fallback_output(snapshot_text: str, reason: str) -> str:
+    return format_snapshot_header("fallback", reason) + snapshot_text
+
+
+def format_snapshot_header(kind: str, reason: str) -> str:
+    if not reason:
+        return ""
+    label = "snapshot-diff" if kind == "diff" else "snapshot fallback"
+    return f"# {label}: {reason}\n"
+
+
 DO_SEPARATORS = {"::", "--then"}
 DO_SHELL_OPERATORS = {"|", "&&", "||", ";"}
 DO_FORBIDDEN_COMMANDS = (MANAGEMENT_COMMANDS - {"state"}) | {"list"}
@@ -1258,11 +1412,12 @@ def run_do(agent: SurfAgent, *, thread: str, argv: Sequence[str], stdin: Any = N
         print(f"surf-agent: {exc}", file=stderr)
         return exc.exit_code
 
+    context = DoContext()
     emitted: list[tuple[int, DoStep, str]] = []
     json_records: list[dict[str, Any]] = []
     for index, step in enumerate(steps, start=1):
         try:
-            output = execute_do_step(agent, step, thread=thread)
+            output = execute_do_step(agent, step, thread=thread, context=context)
         except SurfAgentError as exc:
             if options.jsonl:
                 json_records.append(do_error_record(index, step, exc))
@@ -1366,12 +1521,22 @@ def parse_do_step(tokens: Sequence[str], *, context: str) -> DoStep:
     return DoStep(args=args, emit=emit, quiet=quiet)
 
 
-def execute_do_step(agent: SurfAgent, step: DoStep, *, thread: str) -> str:
+def execute_do_step(agent: SurfAgent, step: DoStep, *, thread: str, context: DoContext) -> str:
     if step.command == "state":
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             agent.print_state(thread=thread)
         return output.getvalue()
+    if step.command == "snapshot":
+        mode = parse_snapshot_flags(step.args)
+        if mode == "baseline":
+            context.snapshot_baseline = capture_snapshot(agent)
+            return ""
+        if mode == "diff":
+            current = capture_snapshot(agent)
+            decision = choose_snapshot_diff(context.snapshot_baseline, current)
+            context.snapshot_baseline = current
+            return decision.output
     return agent.execute_in_window(step.args)
 
 
