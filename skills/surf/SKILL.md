@@ -154,9 +154,9 @@ uv run surf-agent --thread main wait 1000
 uv run surf-agent --thread main wait "Loaded"
 ```
 
-### Chain with `do`
+### Compose with `do`
 
-`do` runs one command per stdin line in the current thread. It is fail-fast. Non-final step output is suppressed unless the step has `--emit`; final step output is printed unless it has `--quiet`.
+`do` composes one command per stdin line in the current thread. It is fail-fast. Non-final step output is suppressed unless the step has `--emit`; final step output is printed unless it has `--quiet`. A single emitted step prints raw output. Multiple emitted steps are separated with fenced `surf-step` blocks.
 
 Snapshot modes inside one `do` invocation:
 
@@ -165,6 +165,8 @@ Snapshot modes inside one `do` invocation:
 - `snapshot --diff`: compares current snapshot to current `do` baseline, then updates baseline to current.
 - Baseline lives only for one `do` invocation. No persistent baseline state.
 - Diff is auto-gated. If diff is too large, saves too few chars, has too many hunks, or page identity/origin changes, output falls back to full snapshot with compact reason. No force mode.
+
+Recommended diff pattern: capture baseline, perform one or more actions, then ask for `snapshot --diff`. Use it when the action should only affect a small part of the page.
 
 ```bash
 uv run surf-agent --thread main do <<'EOF'
@@ -185,7 +187,7 @@ snapshot
 EOF
 ```
 
-Use `do -` explicitly when helpful. One-line chaining with `::` or `--then` is supported, but stdin is preferred for quoting safety. In stdin scripts, only full-line comments are ignored; URL fragments and literal `#` stay intact. Within a step, `--` makes later tokens literal so command args can include `--emit` or `--quiet`.
+Use `do -` explicitly when helpful. Prefer stdin/heredoc for `do`. One-line composition with `::` or `--then` remains available for simple commands only; avoid it when quoting, long text, or flags are involved. In stdin scripts, only full-line comments are ignored; URL fragments and literal `#` stay intact. Within a step, `--` makes later tokens literal so command args can include `--emit` or `--quiet`.
 
 ```bash
 uv run surf-agent --thread main do open https://example.com :: snapshot

@@ -1568,8 +1568,9 @@ def write_plain_do_outputs(outputs: Sequence[tuple[int, DoStep, str]], stdout: A
         print(output, end="" if output.endswith("\n") else "\n", file=stdout)
         return
     for index, step, output in nonempty:
-        print(f"--- step {index}: {step.display} ---", file=stdout)
+        print(f'```surf-step index={index} command={json.dumps(step.display)}', file=stdout)
         print(output, end="" if output.endswith("\n") else "\n", file=stdout)
+        print("```", file=stdout)
 
 
 def parse_agent_args(argv: Sequence[str]) -> tuple[AgentConfig, list[str]]:

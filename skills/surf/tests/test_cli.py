@@ -590,7 +590,8 @@ class AxiBackendTests(unittest.TestCase):
         self.assertIn("+++ current", text)
         self.assertIn("@@", text)
         self.assertNotIn("stable content line 180", text)
-        sections = text.split("--- step 3: snapshot --diff ---")
+        self.assertIn('```surf-step index=2 command="snapshot --diff"', text)
+        sections = text.split('```surf-step index=3 command="snapshot --diff"')
         self.assertEqual(len(sections), 2)
         self.assertIn("first old", sections[0])
         self.assertNotIn("first old", sections[1])
@@ -613,7 +614,7 @@ class AxiBackendTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("# snapshot fallback: no baseline", text)
         self.assertIn("stable content line 180", text)
-        step2 = text.split("--- step 2: snapshot --diff ---")[1]
+        step2 = text.split('```surf-step index=2 command="snapshot --diff"')[1]
         self.assertIn("--- baseline", step2)
         self.assertNotIn("stable content line 180", step2)
         self.assertEqual(error.getvalue(), "")
