@@ -317,7 +317,7 @@ class AxiBackendTests(unittest.TestCase):
                 state_file=state_file,
             )
 
-            with self.assertRaisesRegex(Exception, "could not find new AXI page titled"):
+            with self.assertRaisesRegex(Exception, "could not find new browser page titled"):
                 agent.run_in_window(["open", "https://example.test/"])
 
             self.assertFalse(state_file.exists())
@@ -423,7 +423,7 @@ class AxiBackendTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             state_file = Path(tmp) / "thread.json"
             state_file.write_text(json.dumps(page_state(22)))
-            failed_close = subprocess.CompletedProcess(["axi", "closepage", "22"], 1, stdout="", stderr="approval required")
+            failed_close = subprocess.CompletedProcess(["axi", "closepage", "22"], 1, stdout="", stderr="bridge unavailable")
             agent = FakeAxiAgent([failed_close], state_file=state_file)
 
             self.assertEqual(agent.close(), 1)
@@ -461,7 +461,7 @@ class AxiBackendTests(unittest.TestCase):
 
     def test_timeout_raises_clear_axi_error(self):
         agent = FakeAxiAgent([subprocess.TimeoutExpired(["axi", "eval", "1"], 1)])
-        with self.assertRaisesRegex(Exception, "AXI command timed out after 1s: eval 1.*Chrome approval"):
+        with self.assertRaisesRegex(Exception, "browser command timed out after 1s: eval 1.*browser bridge"):
             agent._run_axi_cli_text(["eval", "1"])
 
     def test_bridge_stop_is_explicit_only(self):
@@ -505,7 +505,7 @@ class AxiBackendTests(unittest.TestCase):
             state_file = Path(tmp) / "thread.json"
             state_file.write_text(json.dumps(page_state(22)))
             agent = FakeAxiAgent(["22 Example https://example.test/\n", "selected\n"], state_file=state_file)
-            with self.assertRaisesRegex(Exception, "unsupported AXI backend command: forward"):
+            with self.assertRaisesRegex(Exception, "unsupported browser command: forward"):
                 agent.run_in_window(["forward"])
 
     def test_removed_alias_commands_are_rejected(self):
@@ -528,7 +528,7 @@ class AxiBackendTests(unittest.TestCase):
 
                 self.assertEqual(exit_code, 2)
                 self.assertEqual(output.getvalue(), "")
-                self.assertIn(f"unsupported AXI backend command: {command}", error.getvalue())
+                self.assertIn(f"unsupported browser command: {command}", error.getvalue())
 
     def test_removed_thread_id_option_forms_are_rejected(self):
         flag = "--thread" + "-id"
@@ -590,8 +590,8 @@ class AxiBackendTests(unittest.TestCase):
         self.assertIn("+++ current", text)
         self.assertIn("@@", text)
         self.assertNotIn("stable content line 180", text)
-        self.assertIn('```surf-step index=2 command="snapshot --diff"', text)
-        sections = text.split('```surf-step index=3 command="snapshot --diff"')
+        self.assertIn('~~~surf-step index=2 command="snapshot --diff"', text)
+        sections = text.split('~~~surf-step index=3 command="snapshot --diff"')
         self.assertEqual(len(sections), 2)
         self.assertIn("first old", sections[0])
         self.assertNotIn("first old", sections[1])
@@ -614,7 +614,7 @@ class AxiBackendTests(unittest.TestCase):
         text = output.getvalue()
         self.assertIn("# snapshot fallback: no baseline", text)
         self.assertIn("stable content line 180", text)
-        step2 = text.split('```surf-step index=2 command="snapshot --diff"')[1]
+        step2 = text.split('~~~surf-step index=2 command="snapshot --diff"')[1]
         self.assertIn("--- baseline", step2)
         self.assertNotIn("stable content line 180", step2)
         self.assertEqual(error.getvalue(), "")
@@ -741,6 +741,22 @@ class AxiBackendTests(unittest.TestCase):
                 self.assertEqual(output.getvalue(), "")
                 self.assertIn("surf-agent:", error.getvalue())
 
+    def test_do_plain_multi_output_uses_fence_longer_than_output_tilde_runs(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22)))
+            agent = FakeAxiAgent(["selected\n", bridge_eval_raw("a~~~b"), "selected\n", bridge_eval_raw(2)], state_file=state_file)
+            output = io.StringIO()
+            error = io.StringIO()
+
+            exit_code = run_do(agent, thread="thread", argv=[], stdin=io.StringIO("eval 'a~~~b' --emit\neval 2\n"), stdout=output, stderr=error)
+
+        self.assertEqual(exit_code, 0)
+        text = output.getvalue()
+        self.assertIn('~~~~surf-step index=1 command="eval', text)
+        self.assertIn("a~~~b", text)
+        self.assertEqual(error.getvalue(), "")
+
     def test_do_jsonl_uses_status_key_and_emits_requested_steps(self):
         with TemporaryDirectory() as tmp:
             state_file = Path(tmp) / "thread.json"
@@ -767,7 +783,7 @@ class AxiBackendTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertEqual(output.getvalue(), "")
-        self.assertIn("unsupported AXI backend command: unknown", error.getvalue())
+        self.assertIn("unsupported browser command: unknown", error.getvalue())
 
     def test_do_stdin_allows_literal_separator_tokens(self):
         steps = parse_do_script('type "::"\neval "location.href.includes(\'||\')"\n')
@@ -847,7 +863,7 @@ class AxiBackendTests(unittest.TestCase):
             exit_code = main(["window-id"])
 
         self.assertEqual(exit_code, 2)
-        self.assertIn("unsupported AXI backend command: window-id", error.getvalue())
+        self.assertIn("unsupported browser command: window-id", error.getvalue())
 
 
 if __name__ == "__main__":

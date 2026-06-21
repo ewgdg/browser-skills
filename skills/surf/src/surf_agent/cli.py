@@ -172,11 +172,11 @@ class AxiBridgeClient:
                 data = json.loads(response.read().decode())
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace") or str(exc)
-            raise SurfAgentError(f"AXI bridge tool {name} failed: {detail}") from exc
+            raise SurfAgentError(f"browser bridge tool {name} failed: {detail}") from exc
         except urllib.error.URLError as exc:
-            raise AxiBridgeUnavailable(f"AXI bridge call failed: {exc}") from exc
+            raise AxiBridgeUnavailable(f"browser bridge call failed: {exc}") from exc
         except (json.JSONDecodeError, TimeoutError) as exc:
-            raise SurfAgentError(f"AXI bridge returned invalid response for {name}") from exc
+            raise SurfAgentError(f"browser bridge returned invalid response for {name}") from exc
         result = data.get("result")
         return result if isinstance(result, str) else ""
 
@@ -187,15 +187,15 @@ class AxiBridgeClient:
         port = int(os.environ.get("CHROME_DEVTOOLS_AXI_PORT", DEFAULT_AXI_PORT))
         pid_port = self._read_pid_port()
         if pid_port is not None and pid_port != port:
-            # Ignore an old AXI bridge on a different port; startup fallback below will use our env.
+            # Ignore an old browser bridge on a different port; startup fallback below will use our env.
             pass
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=min(self.timeout_s, 2.0)) as response:
                 data = json.loads(response.read().decode())
         except (OSError, urllib.error.URLError, json.JSONDecodeError) as exc:
-            raise AxiBridgeUnavailable("AXI bridge is not running") from exc
+            raise AxiBridgeUnavailable("browser bridge is not running") from exc
         if data.get("status") != "ok":
-            raise AxiBridgeUnavailable("AXI bridge is not healthy")
+            raise AxiBridgeUnavailable("browser bridge is not healthy")
         self._verify_bridge_profile(port)
         return port
 
@@ -215,20 +215,20 @@ class AxiBridgeClient:
             return None
         expected_profile = str(self.expected_profile_dir)
         if env is None:
-            return f"AXI bridge is already running on port {os.environ.get('CHROME_DEVTOOLS_AXI_PORT', DEFAULT_AXI_PORT)}, but surf-agent cannot verify it uses the dedicated profile; run `surf-agent bridge-stop`, then retry"
+            return f"browser bridge is already running on port {os.environ.get('CHROME_DEVTOOLS_AXI_PORT', DEFAULT_AXI_PORT)}, but surf-agent cannot verify it uses the dedicated profile; run `surf-agent bridge-stop`, then retry"
         browser_url = env.get("CHROME_DEVTOOLS_AXI_BROWSER_URL")
         if env.get("CHROME_DEVTOOLS_AXI_AUTO_CONNECT") == "1":
-            return "AXI bridge is running against an explicit/user Chrome connection; run `surf-agent bridge-stop`, then retry so surf-agent can use its dedicated profile"
+            return "browser bridge is running against an explicit/user Chrome connection; run `surf-agent bridge-stop`, then retry so surf-agent can use its dedicated profile"
         if self.expected_browser_url is not None:
             if browser_url != self.expected_browser_url:
-                return f"AXI bridge is running against browser URL {browser_url!r}, expected {self.expected_browser_url!r}; run `surf-agent bridge-stop`, then retry"
+                return f"browser bridge is running against browser URL {browser_url!r}, expected {self.expected_browser_url!r}; run `surf-agent bridge-stop`, then retry"
             return None
         if browser_url:
-            return "AXI bridge is running against an explicit/user Chrome connection; run `surf-agent bridge-stop`, then retry so surf-agent can use its dedicated profile"
+            return "browser bridge is running against an explicit/user Chrome connection; run `surf-agent bridge-stop`, then retry so surf-agent can use its dedicated profile"
         if env.get("CHROME_DEVTOOLS_AXI_USER_DATA_DIR") != expected_profile:
-            return f"AXI bridge is running with profile {env.get('CHROME_DEVTOOLS_AXI_USER_DATA_DIR')!r}, expected {expected_profile!r}; run `surf-agent bridge-stop`, then retry"
+            return f"browser bridge is running with profile {env.get('CHROME_DEVTOOLS_AXI_USER_DATA_DIR')!r}, expected {expected_profile!r}; run `surf-agent bridge-stop`, then retry"
         if self.expected_chrome_class and not any(arg == f"--class={self.expected_chrome_class}" for arg in env.get("CHROME_DEVTOOLS_AXI_CHROME_ARGS", "").split()):
-            return f"AXI bridge is running without --class={self.expected_chrome_class}; run `surf-agent bridge-stop`, then retry"
+            return f"browser bridge is running without --class={self.expected_chrome_class}; run `surf-agent bridge-stop`, then retry"
         return None
 
     def _read_process_env(self, pid: int) -> dict[str, str] | None:
@@ -466,7 +466,7 @@ class SurfAgent:
                 raise SurfAgentError("wait requires one duration in milliseconds or text target", exit_code=2)
             return ["wait", values[0]], False
 
-        raise SurfAgentError(f"unsupported AXI backend command: {command}", exit_code=2)
+        raise SurfAgentError(f"unsupported browser command: {command}", exit_code=2)
 
     def _print_axi_state(self, *, thread: str) -> None:
         cached = self._load_axi_state()
@@ -545,7 +545,7 @@ class SurfAgent:
     def _require_current_axi_page(self) -> AgentPage:
         page = self._load_axi_state()
         if page is None:
-            raise SurfAgentError("no remembered AXI page for this thread; run `surf-agent open <url>` or `surf-agent new` first")
+            raise SurfAgentError("no remembered browser page for this thread; run `surf-agent open <url>` or `surf-agent new` first")
         try:
             self._select_axi_page(page.page_id)
         except SurfAgentError as exc:
@@ -578,7 +578,7 @@ class SurfAgent:
         new_pages = [page for page in pages if page.page_id not in before_ids]
         owned_page = self._find_owned_new_axi_page(new_pages)
         if owned_page is None:
-            raise SurfAgentError(f"could not find new AXI page titled {SURF_AGENT_WINDOW_TITLE!r}; before={sorted(before_ids)} after={[page.page_id for page in pages]}")
+            raise SurfAgentError(f"could not find new browser page titled {SURF_AGENT_WINDOW_TITLE!r}; before={sorted(before_ids)} after={[page.page_id for page in pages]}")
         return merge_page(AgentPage(owned_page.page_id, title=SURF_AGENT_WINDOW_TITLE), owned_page)
 
     def _find_owned_new_axi_page(self, candidates: Sequence[AgentPage]) -> AgentPage | None:
@@ -654,7 +654,7 @@ class SurfAgent:
             raise
         pages = parse_axi_pages(output)
         if not pages and output.strip() and not is_no_pages_output(output):
-            raise SurfAgentError(f"could not parse AXI pages output: {raw_prefix(output)}")
+            raise SurfAgentError(f"could not parse browser pages output: {raw_prefix(output)}")
         return pages
 
     def _run_axi_text(self, args: Sequence[str]) -> str:
@@ -663,7 +663,7 @@ class SurfAgent:
             return bridge_output
         proc = self._run_axi_cli(args, check=False)
         if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "AXI command failed").strip()
+            detail = (proc.stderr or proc.stdout or "browser command failed").strip()
             raise SurfAgentError(detail)
         return proc.stdout or ""
 
@@ -684,7 +684,7 @@ class SurfAgent:
     def _run_axi_cli_text(self, args: Sequence[str]) -> str:
         proc = self._run_axi_cli(args, check=False)
         if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "AXI command failed").strip()
+            detail = (proc.stderr or proc.stdout or "browser command failed").strip()
             raise SurfAgentError(detail)
         return proc.stdout or ""
 
@@ -701,10 +701,10 @@ class SurfAgent:
         except subprocess.TimeoutExpired as exc:
             pretty = " ".join(args)
             raise SurfAgentError(
-                f"AXI command timed out after {self.command_timeout_s:g}s: {pretty}. Bridge may be down or waiting for Chrome approval."
+                f"browser command timed out after {self.command_timeout_s:g}s: {pretty}. browser bridge may be unavailable."
             ) from exc
         except FileNotFoundError as exc:
-            raise SurfAgentError(f"AXI executable not found: {shlex.split(self.axi_bin)[0]}") from exc
+            raise SurfAgentError(f"browser helper executable not found: {shlex.split(self.axi_bin)[0]}") from exc
 
     def _load_axi_state(self) -> AgentPage | None:
         state = load_state_file(self.state_file)
@@ -938,7 +938,7 @@ def map_axi_cli_args_to_bridge(args: Sequence[str]) -> BridgeMapping | None:
 def parse_page_id_arg(value: str) -> int:
     page_id_value = coerce_int(value)
     if page_id_value is None:
-        raise SurfAgentError(f"invalid AXI page id: {value}", exit_code=2)
+        raise SurfAgentError(f"invalid browser page id: {value}", exit_code=2)
     return page_id_value
 
 
@@ -1568,9 +1568,19 @@ def write_plain_do_outputs(outputs: Sequence[tuple[int, DoStep, str]], stdout: A
         print(output, end="" if output.endswith("\n") else "\n", file=stdout)
         return
     for index, step, output in nonempty:
-        print(f'```surf-step index={index} command={json.dumps(step.display)}', file=stdout)
+        command_json = json.dumps(step.display)
+        fence = markdown_fence_for(command_json, output)
+        print(f'{fence}surf-step index={index} command={command_json}', file=stdout)
         print(output, end="" if output.endswith("\n") else "\n", file=stdout)
-        print("```", file=stdout)
+        print(fence, file=stdout)
+
+
+def markdown_fence_for(*values: str) -> str:
+    longest_tilde_run = 0
+    for value in values:
+        for match in re.finditer(r"~+", value):
+            longest_tilde_run = max(longest_tilde_run, len(match.group(0)))
+    return "~" * max(3, longest_tilde_run + 1)
 
 
 def parse_agent_args(argv: Sequence[str]) -> tuple[AgentConfig, list[str]]:
@@ -1597,21 +1607,21 @@ def parse_agent_args(argv: Sequence[str]) -> tuple[AgentConfig, list[str]]:
 
 def print_help(stream: Any) -> None:
     stream.write(
-        "surf-agent: threaded browser helper using persistent chrome-devtools-axi by default\n\n"
+        "surf-agent: threaded browser helper using a persistent browser bridge\n\n"
         "Usage:\n"
         "  surf-agent [--thread ID] state                 print current page state; does not open a page\n"
-        "  surf-agent list                                list remembered AXI threads and clean stale entries\n"        "  surf-agent [--thread ID] new                   replace/create dedicated thread window, print page id\n"
-        "  surf-agent [--thread ID] close                 close remembered thread page/window; AXI bridge stays alive\n"
+        "  surf-agent list                                list remembered browser threads and clean stale entries\n"        "  surf-agent [--thread ID] new                   replace/create dedicated thread window, print page id\n"
+        "  surf-agent [--thread ID] close                 close remembered thread page/window; browser bridge stays alive\n"
         "  surf-agent [--thread ID] focus                 select remembered thread page\n"
         "  surf-agent profile show                         print dedicated profile configuration JSON\n"
         "  surf-agent profile open [url]                   open dedicated profile without automation/debug port\n"
         "  surf-agent close-all                           close all remembered thread pages/windows\n"
         "  surf-agent close-matching <glob>               close remembered thread pages/windows whose thread names match\n"
         "  surf-agent [--thread ID] reset                 clear thread state without closing page\n"
-        "  surf-agent [--thread ID] bridge-stop           explicit destructive AXI bridge stop\n"
+        "  surf-agent [--thread ID] bridge-stop           explicit destructive browser bridge stop\n"
         "  surf-agent [--thread ID] do [-]                run newline-separated steps from stdin\n"
         "  surf-agent [--thread ID] <command...>          run supported browser command in thread page\n\n"
-        "Supported AXI commands:\n"
+        "Supported browser commands:\n"
         "  open <url>, snapshot, text, eval <code>, click <target>, fill <target> <text>, type <text>,\n"
         "  press <key>, scroll up|down|top|bottom, screenshot [--output] <path>, back, wait <ms|text>.\n\n"
         "Examples:\n"
@@ -1622,8 +1632,8 @@ def print_help(stream: Any) -> None:
         "  surf-agent profile open https://x.com\n"
         "  surf-agent --thread docs screenshot --output /tmp/shot.png\n"
         "  surf-agent close-matching 'agent-run-*'\n\n"
-        "State: skill-local .state/<thread>.json plus chrome-profile/. Backend: AXI only.\n"
-        "AXI: dedicated profile env is embedded; approve/setup Chrome once. New threads start in a window titled Surf Agent.\n"
+        "State: skill-local .state/<thread>.json plus chrome-profile/.\n"
+        "Browser bridge: dedicated profile env is embedded; setup/login may be needed once. New threads start in a window titled Surf Agent.\n"
     )
 
 
