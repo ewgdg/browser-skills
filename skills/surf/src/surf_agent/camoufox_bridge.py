@@ -16,6 +16,7 @@ ACTIONABLE_SELECTOR = "a,button,input,textarea,select,[role=button],[role=link],
 REF_PATTERN = re.compile(r"^(?:cf|e)\d+$")
 STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
 CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
+DEFAULT_CAMOUFOX_APP_ID = "surf-agent"
 STARTUP_PAGE_URLS = {"", "about:blank", "about:home", "about:newtab", "chrome://newtab/"}
 
 
@@ -45,9 +46,10 @@ class PageSlot:
 
 
 class CamoufoxRuntime:
-    def __init__(self, *, profile_dir: Path, headless: bool = False) -> None:
+    def __init__(self, *, profile_dir: Path, headless: bool = False, app_id: str = DEFAULT_CAMOUFOX_APP_ID) -> None:
         self.profile_dir = profile_dir
         self.headless = headless
+        self.app_id = app_id
         self.manager: Any | None = None
         self.browser_or_context: Any | None = None
         self.pages: dict[str, PageSlot] = {}
@@ -61,7 +63,8 @@ class CamoufoxRuntime:
         except ImportError as exc:
             raise RuntimeError("Camoufox is not installed. Run `uv sync --extra camoufox`, then `uv run python -m camoufox fetch`.") from exc
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        self.manager = Camoufox(persistent_context=True, user_data_dir=str(self.profile_dir), headless=self.headless)
+        launch_args = [f"--class={self.app_id}", "--name", self.app_id] if self.app_id else []
+        self.manager = Camoufox(persistent_context=True, user_data_dir=str(self.profile_dir), headless=self.headless, args=launch_args)
         self.browser_or_context = self.manager.__enter__()
 
     def stop(self) -> str:
@@ -508,9 +511,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("SURF_AGENT_CAMOUFOX_PORT", "9345")))
     parser.add_argument("--profile-dir", default=os.environ.get("SURF_AGENT_CAMOUFOX_PROFILE_DIR", ""))
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--app-id", default=os.environ.get("SURF_AGENT_CAMOUFOX_APP_ID") or os.environ.get("SURF_AGENT_CAMOUFOX_CLASS") or DEFAULT_CAMOUFOX_APP_ID)
     args = parser.parse_args(argv)
     profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / "camoufox-profile"
-    RequestHandler.runtime = CamoufoxRuntime(profile_dir=profile_dir, headless=args.headless)
+    RequestHandler.runtime = CamoufoxRuntime(profile_dir=profile_dir, headless=args.headless, app_id=args.app_id)
     # Playwright/Camoufox sync objects are bound to the thread that created them.
     # Use a single-threaded HTTP server so every browser call runs on one thread.
     server = HTTPServer(("127.0.0.1", args.port), RequestHandler)

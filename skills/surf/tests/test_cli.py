@@ -3,6 +3,7 @@ import json
 import subprocess
 import sys
 import threading
+import types
 import unittest
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
@@ -1067,6 +1068,28 @@ class AxiBackendTests(unittest.TestCase):
         self.assertFalse(runtime._fingerprint_matches(expected, TargetFingerprint(tag="button", role="button", name="Delete", text="Delete")))
         self.assertTrue(runtime._fingerprint_matches(TargetFingerprint(tag="button", role="button"), TargetFingerprint(tag="button", role="button")))
         self.assertFalse(runtime._fingerprint_matches(TargetFingerprint(tag="button", role="button"), TargetFingerprint(tag="button", role="link")))
+
+    def test_camoufox_runtime_passes_app_id_as_window_class(self):
+        calls = []
+
+        class FakeCamoufox:
+            def __init__(self, **kwargs):
+                calls.append(kwargs)
+
+            def __enter__(self):
+                return object()
+
+            def __exit__(self, exc_type, exc, traceback):
+                pass
+
+        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"), app_id="surf-agent-test")
+        fake_module = types.SimpleNamespace(Camoufox=FakeCamoufox)
+
+        with patch.dict(sys.modules, {"camoufox": types.SimpleNamespace(sync_api=fake_module), "camoufox.sync_api": fake_module}):
+            runtime.start()
+
+        self.assertEqual(calls[0]["args"], ["--class=surf-agent-test", "--name", "surf-agent-test"])
+        self.assertNotIn("env", calls[0])
 
     def test_camoufox_close_does_not_start_runtime(self):
         class FakePage:
