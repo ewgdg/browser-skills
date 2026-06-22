@@ -15,6 +15,23 @@ from .axi import AxiBridgeUnavailable
 from .base import AgentPage
 
 
+def _camoufox_binary_path() -> str:
+    """Locate the Camoufox browser binary (lazy import — optional dependency)."""
+    try:
+        from camoufox.utils import launch_path
+    except ImportError:
+        raise SurfAgentError(
+            "Camoufox package not installed. Run `uv sync --extra camoufox` "
+            "then `surf-agent setup-camoufox`."
+        )
+    try:
+        return launch_path()
+    except Exception as exc:
+        raise SurfAgentError(
+            f"Camoufox binary not found: {exc}. Run `surf-agent setup-camoufox` to install."
+        )
+
+
 class CamoufoxBridgeClient:
     def __init__(self, *, timeout_s: float, port: int, profile_dir: Path) -> None:
         self.timeout_s = timeout_s
@@ -117,6 +134,19 @@ class CamoufoxBackend:
 
     def print_list(self) -> None:
         print(self.client.call_tool("list", {}), end="")
+
+    def profile_open(self, url: str, *, profile_dir: str, app_id: str) -> int:
+        if self.client._health_ok():
+            raise SurfAgentError(f"Camoufox bridge is running; run `surf-agent bridge-stop` before `profile open`")
+        profile_path = Path(profile_dir)
+        profile_path.mkdir(parents=True, exist_ok=True)
+        subprocess.Popen(
+            [_camoufox_binary_path(), "-profile", str(profile_path), f"--class={app_id}", "--name", app_id, url],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return 0
 
     def close(self) -> int:
         output = self._call("close")

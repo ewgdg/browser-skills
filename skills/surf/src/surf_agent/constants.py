@@ -11,6 +11,7 @@ DEFAULT_CHROME_CLASS = "surf-agent"
 DEFAULT_BACKEND = "axi"
 CAMOUFOX_BACKEND = "camoufox"
 DEFAULT_CAMOUFOX_PORT = "9345"
+DEFAULT_CAMOUFOX_APP_ID = "surf-agent"
 CAMOUFOX_SETUP_STEPS = (
     ("sync",),
     ("set", "official/prerelease"),

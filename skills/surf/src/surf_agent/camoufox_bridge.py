@@ -12,11 +12,12 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from .constants import DEFAULT_CAMOUFOX_APP_ID
+
 ACTIONABLE_SELECTOR = "a,button,input,textarea,select,[role=button],[role=link],[contenteditable=true]"
 REF_PATTERN = re.compile(r"^(?:cf|e)\d+$")
 STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
 CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
-DEFAULT_CAMOUFOX_APP_ID = "surf-agent"
 STARTUP_PAGE_URLS = {"", "about:blank", "about:home", "about:newtab", "chrome://newtab/"}
 
 
@@ -482,7 +483,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             if name == "stop":
                 result = self.runtime.stop()
                 self._write(200, {"result": result})
-                threading.Thread(target=self.server.shutdown, daemon=True).start()
+                self.server._BaseServer__shutdown_request = True
                 return
             result = self.runtime.call(name, payload.get("args") or {})
         except Exception as exc:

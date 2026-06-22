@@ -52,6 +52,7 @@ from .constants import (
     DEFAULT_AXI_PORT,
     DEFAULT_AXI_TIMEOUT_S,
     DEFAULT_BACKEND,
+    DEFAULT_CAMOUFOX_APP_ID,
     DEFAULT_CAMOUFOX_PORT,
     DEFAULT_CHROME_CLASS,
     DEFAULT_CHROME_DEBUG_PORT,
@@ -164,6 +165,7 @@ class SurfAgent:
         thread: str = DEFAULT_THREAD,
         state_dir: Path | None = None,
         chrome_profile_dir: Path | None = None,
+        camoufox_profile_dir: Path | None = None,
         chrome_class: str | None = None,
     ) -> None:
         self.axi_bin = axi_bin or os.environ.get("SURF_AGENT_AXI_BIN", DEFAULT_AXI_BIN)
@@ -173,8 +175,9 @@ class SurfAgent:
         self.state_dir = self.state_file.parent if state_file else default_state_dir(state_dir=state_dir)
         self.backend = parse_backend_env()
         self.chrome_profile_dir = chrome_profile_dir or default_chrome_profile_dir()
-        self.camoufox_profile_dir = default_camoufox_profile_dir()
+        self.camoufox_profile_dir = camoufox_profile_dir or default_camoufox_profile_dir()
         self.chrome_class = chrome_class or os.environ.get("SURF_AGENT_CHROME_CLASS") or DEFAULT_CHROME_CLASS
+        self.camoufox_app_id = os.environ.get("SURF_AGENT_CAMOUFOX_APP_ID") or os.environ.get("SURF_AGENT_CAMOUFOX_CLASS") or DEFAULT_CAMOUFOX_APP_ID
         self.chrome_debug_port = parse_port_env("SURF_AGENT_CHROME_DEBUG_PORT", DEFAULT_CHROME_DEBUG_PORT)
         self.camoufox_port = parse_port_env("SURF_AGENT_CAMOUFOX_PORT", DEFAULT_CAMOUFOX_PORT)
         self.browser_url = f"http://127.0.0.1:{self.chrome_debug_port}"
@@ -303,6 +306,8 @@ class SurfAgent:
         print(json.dumps(payload, sort_keys=True))
 
     def profile_open(self, url: str = "about:blank") -> int:
+        if self.backend == CAMOUFOX_BACKEND:
+            return self._camoufox_profile_open(url)
         if self._chrome_debug_endpoint_ready():
             raise SurfAgentError(f"automated Surf Agent Chrome is running at {self.browser_url}; close Surf Agent windows or run `surf-agent bridge-stop` before `profile open`")
         if not self.chrome_bin:
@@ -314,6 +319,11 @@ class SurfAgent:
             detail = (proc.stderr or proc.stdout or "Chrome profile open failed").strip()
             raise SurfAgentError(detail)
         return 0
+
+    def _camoufox_profile_open(self, url: str = "about:blank") -> int:
+        return self.browser_backend.profile_open(
+            url, profile_dir=str(self.camoufox_profile_dir), app_id=self.camoufox_app_id
+        )
 
     def setup_camoufox(self) -> int:
         return setup_camoufox_backend()

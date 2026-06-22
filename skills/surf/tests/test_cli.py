@@ -124,6 +124,10 @@ class FakeAxiAgent(SurfAgent):
             return response
         return subprocess.CompletedProcess(command, 0, stdout=response, stderr="")
 
+    def _subprocess_popen(self, command, **kwargs):
+        self.calls.append((list(command), kwargs))
+        return object()
+
 
 class AxiBackendTests(unittest.TestCase):
     def test_constructs_without_backend_env(self):
@@ -261,6 +265,22 @@ class AxiBackendTests(unittest.TestCase):
                 agent.profile_open()
 
         self.assertEqual(agent.calls, [])
+
+    def test_camoufox_profile_open_calls_backend_with_app_id(self):
+        backend_calls = []
+
+        class FakeCamoufoxBackend:
+            def profile_open(self, url, *, profile_dir, app_id):
+                backend_calls.append((url, profile_dir, app_id))
+                return 0
+
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_BACKEND": "camoufox", "SURF_AGENT_CAMOUFOX_APP_ID": "surf-agent-test"}, clear=True):
+            profile = Path(tmp) / "camoufox-profile"
+            agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json", camoufox_profile_dir=profile)
+            agent.browser_backend = FakeCamoufoxBackend()
+            self.assertEqual(agent.profile_open("https://x.test"), 0)
+
+        self.assertEqual(backend_calls[0], ("https://x.test", str(profile), "surf-agent-test"))
 
     def test_profile_command_dispatch(self):
         with patch.dict("os.environ", {}, clear=True), patch.object(SurfAgent, "_chrome_debug_endpoint_ready", return_value=False):
@@ -1069,6 +1089,43 @@ class AxiBackendTests(unittest.TestCase):
         self.assertTrue(runtime._fingerprint_matches(TargetFingerprint(tag="button", role="button"), TargetFingerprint(tag="button", role="button")))
         self.assertFalse(runtime._fingerprint_matches(TargetFingerprint(tag="button", role="button"), TargetFingerprint(tag="button", role="link")))
 
+    def test_camoufox_backend_profile_open_rejects_running_bridge(self):
+        from surf_agent.backends import CamoufoxBackend
+
+        class FakeClient:
+            def _health_ok(self):
+                return True
+
+        agent = FakeAxiAgent([], state_file=Path("/tmp/thread.json"))
+        agent.camoufox_client = FakeClient()
+        backend = CamoufoxBackend(agent, client=FakeClient(), welcome_url=lambda: "about:blank")
+        with self.assertRaisesRegex(SurfAgentError, "Camoufox bridge is running"):
+            backend.profile_open("https://x.test", profile_dir="/tmp", app_id="test")
+
+    def test_camoufox_backend_profile_open_launches_camoufox_subprocess(self):
+        from surf_agent.backends.camoufox import CamoufoxBackend, _camoufox_binary_path
+
+        class FakeClient:
+            def _health_ok(self):
+                return False
+
+        pops = []
+        fake_bin = "/usr/bin/camoufox-bin"
+
+        agent = FakeAxiAgent([], state_file=Path("/tmp/thread.json"))
+        agent.camoufox_client = FakeClient()
+        backend = CamoufoxBackend(agent, client=FakeClient(), welcome_url=lambda: "about:blank")
+        with (
+            patch("subprocess.Popen", side_effect=lambda *a, **kw: pops.append((a, kw)) or object()),
+            patch("surf_agent.backends.camoufox._camoufox_binary_path", return_value=fake_bin),
+        ):
+            self.assertEqual(backend.profile_open("https://x.test", profile_dir="/tmp/p", app_id="test"), 0)
+
+        args = pops[0][0][0]
+        self.assertEqual(args[0], fake_bin)
+        self.assertEqual(args[1:], ["-profile", str(Path("/tmp/p")), "--class=test", "--name", "test", "https://x.test"])
+        self.assertTrue(pops[0][1]["start_new_session"])
+
     def test_camoufox_runtime_passes_app_id_as_window_class(self):
         calls = []
 
@@ -1089,6 +1146,7 @@ class AxiBackendTests(unittest.TestCase):
             runtime.start()
 
         self.assertEqual(calls[0]["args"], ["--class=surf-agent-test", "--name", "surf-agent-test"])
+        self.assertNotIn("no_viewport", calls[0])
         self.assertNotIn("env", calls[0])
 
     def test_camoufox_close_does_not_start_runtime(self):
