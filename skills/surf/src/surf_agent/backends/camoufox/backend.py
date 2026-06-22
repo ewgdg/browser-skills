@@ -9,10 +9,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from ..constants import CAMOUFOX_BACKEND, CHROME_NEW_WINDOW_TIMEOUT_S
-from ..errors import SurfAgentError
-from .axi import AxiBridgeUnavailable
-from .base import AgentPage
+from ...constants import CAMOUFOX_BACKEND, CHROME_NEW_WINDOW_TIMEOUT_S
+from ...errors import SurfAgentError
+from ..axi import AxiBridgeUnavailable
+from ..base import AgentPage
 
 
 def _camoufox_binary_path() -> str:
@@ -88,7 +88,7 @@ class CamoufoxBridgeClient:
         command = [
             sys.executable,
             "-m",
-            "surf_agent.camoufox_bridge",
+            "surf_agent.backends.camoufox.bridge",
             "--port",
             str(self.port),
             "--profile-dir",

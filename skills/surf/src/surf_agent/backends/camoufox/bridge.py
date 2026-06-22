@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from .constants import DEFAULT_CAMOUFOX_APP_ID
+from ...constants import DEFAULT_CAMOUFOX_APP_ID
 
 ACTIONABLE_SELECTOR = "a,button,input,textarea,select,[role=button],[role=link],[contenteditable=true]"
 REF_PATTERN = re.compile(r"^(?:cf|e)\d+$")

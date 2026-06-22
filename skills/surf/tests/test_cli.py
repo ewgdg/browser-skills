@@ -12,7 +12,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from surf_agent.camoufox_bridge import ACTIONABLE_SELECTOR, CamoufoxRuntime, PageSlot, RequestHandler, TargetFingerprint
+from surf_agent.backends.camoufox.bridge import ACTIONABLE_SELECTOR, CamoufoxRuntime, PageSlot, RequestHandler, TargetFingerprint
 from surf_agent.cli import (
     AgentPage,
     AxiBridgeClient,
@@ -1103,7 +1103,7 @@ class AxiBackendTests(unittest.TestCase):
             backend.profile_open("https://x.test", profile_dir="/tmp", app_id="test")
 
     def test_camoufox_backend_profile_open_launches_camoufox_subprocess(self):
-        from surf_agent.backends.camoufox import CamoufoxBackend, _camoufox_binary_path
+        from surf_agent.backends.camoufox.backend import CamoufoxBackend, _camoufox_binary_path
 
         class FakeClient:
             def _health_ok(self):
@@ -1117,7 +1117,7 @@ class AxiBackendTests(unittest.TestCase):
         backend = CamoufoxBackend(agent, client=FakeClient(), welcome_url=lambda: "about:blank")
         with (
             patch("subprocess.Popen", side_effect=lambda *a, **kw: pops.append((a, kw)) or object()),
-            patch("surf_agent.backends.camoufox._camoufox_binary_path", return_value=fake_bin),
+            patch("surf_agent.backends.camoufox.backend._camoufox_binary_path", return_value=fake_bin),
         ):
             self.assertEqual(backend.profile_open("https://x.test", profile_dir="/tmp/p", app_id="test"), 0)
 
