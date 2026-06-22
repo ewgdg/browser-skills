@@ -16,6 +16,7 @@ ACTIONABLE_SELECTOR = "a,button,input,textarea,select,[role=button],[role=link],
 REF_PATTERN = re.compile(r"^(?:cf|e)\d+$")
 STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
 CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
+STARTUP_PAGE_URLS = {"", "about:blank", "about:home", "about:newtab", "chrome://newtab/"}
 
 
 @dataclass(frozen=True)
@@ -197,17 +198,38 @@ class CamoufoxRuntime:
         if old and self._page_is_open(old.page):
             old.page.close()
         try:
-            page = self._context().new_page()
+            page = self._adopt_unowned_page() or self._context().new_page()
         except Exception as exc:
             if not self._is_closed_target_error(exc):
                 raise
             # Manual window close can close the whole persistent context; recreate it.
             self._restart_closed_context()
-            page = self._context().new_page()
+            page = self._adopt_unowned_page() or self._context().new_page()
         slot = PageSlot(page=page, page_token=self._next_page_token)
         self._next_page_token += 1
         self.pages[thread] = slot
         return slot
+
+    def _adopt_unowned_page(self) -> Any | None:
+        owned_pages = {id(slot.page) for slot in self.pages.values()}
+        try:
+            context_pages = list(self._context().pages)
+        except Exception as exc:
+            if self._is_closed_target_error(exc):
+                return None
+            raise
+        candidates = [page for page in context_pages if id(page) not in owned_pages and self._page_is_open(page)]
+        if not candidates:
+            return None
+        startup_pages = [page for page in candidates if self._page_url(page) in STARTUP_PAGE_URLS]
+        adopted = startup_pages[0] if startup_pages else candidates[0]
+        for page in candidates:
+            if page is not adopted:
+                page.close()
+        return adopted
+
+    def _page_url(self, page: Any) -> str:
+        return str(getattr(page, "url", "") or "")
 
     def _restart_closed_context(self) -> None:
         try:

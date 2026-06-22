@@ -1086,6 +1086,61 @@ class AxiBackendTests(unittest.TestCase):
         self.assertTrue(page.closed)
         self.assertNotIn("thread", runtime.pages)
 
+    def test_camoufox_open_reuses_initial_blank_context_page(self):
+        class BlankPage:
+            def __init__(self):
+                self.url = "about:blank"
+
+            def is_closed(self):
+                return False
+
+            def goto(self, url, wait_until=None):
+                self.url = url
+
+        class ContextWithBlankPage:
+            def __init__(self):
+                self.pages = [BlankPage()]
+
+            def new_page(self):
+                raise AssertionError("should reuse initial blank page")
+
+        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
+        runtime.browser_or_context = ContextWithBlankPage()
+
+        self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
+        self.assertIs(runtime.pages["thread"].page, runtime.browser_or_context.pages[0])
+        self.assertEqual(len(runtime.browser_or_context.pages), 1)
+
+    def test_camoufox_open_adopts_one_unowned_page_and_closes_restored_extras(self):
+        class RestoredPage:
+            def __init__(self, url):
+                self.url = url
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            def close(self):
+                self.closed = True
+
+            def goto(self, url, wait_until=None):
+                self.url = url
+
+        class ContextWithRestoredPages:
+            def __init__(self):
+                self.pages = [RestoredPage("https://restore-a.test/"), RestoredPage("https://restore-b.test/")]
+
+            def new_page(self):
+                raise AssertionError("should reuse restored page")
+
+        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
+        runtime.browser_or_context = ContextWithRestoredPages()
+
+        self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
+        self.assertIs(runtime.pages["thread"].page, runtime.browser_or_context.pages[0])
+        self.assertFalse(runtime.browser_or_context.pages[0].closed)
+        self.assertTrue(runtime.browser_or_context.pages[1].closed)
+
     def test_camoufox_runtime_restarts_context_after_manual_window_close(self):
         class ClosedPage:
             def is_closed(self):
