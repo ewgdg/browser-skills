@@ -6,7 +6,7 @@ import threading
 import unittest
 import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
-from http.server import ThreadingHTTPServer
+from http.server import HTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
@@ -1099,7 +1099,7 @@ class AxiBackendTests(unittest.TestCase):
 
     def test_camoufox_stop_request_shuts_down_http_server(self):
         with TemporaryDirectory() as tmp:
-            server = ThreadingHTTPServer(("127.0.0.1", 0), RequestHandler)
+            server = HTTPServer(("127.0.0.1", 0), RequestHandler)
             RequestHandler.runtime = CamoufoxRuntime(profile_dir=Path(tmp) / "profile")
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()

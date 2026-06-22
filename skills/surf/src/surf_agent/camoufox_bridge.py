@@ -7,7 +7,7 @@ import re
 import sys
 import threading
 from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -447,7 +447,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / "camoufox-profile"
     RequestHandler.runtime = CamoufoxRuntime(profile_dir=profile_dir, headless=args.headless)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), RequestHandler)
+    # Playwright/Camoufox sync objects are bound to the thread that created them.
+    # Use a single-threaded HTTP server so every browser call runs on one thread.
+    server = HTTPServer(("127.0.0.1", args.port), RequestHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
