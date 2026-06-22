@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 ACTIONABLE_SELECTOR = "a,button,input,textarea,select,[role=button],[role=link],[contenteditable=true]"
 REF_PATTERN = re.compile(r"^(?:cf|e)\d+$")
 STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
+CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
 
 
 @dataclass(frozen=True)
@@ -97,12 +98,16 @@ class CamoufoxRuntime:
                 slot.page.goto(url, wait_until="domcontentloaded")
             slot.ref_map.clear()
             return self._format_opened(slot.page)
-        slot = self._page(thread)
         if name == "open":
             url = str(args["url"])
-            slot.page.goto(url, wait_until="domcontentloaded")
-            slot.ref_map.clear()
-            return self._format_opened(slot.page)
+
+            def open_page(slot: PageSlot) -> str:
+                slot.page.goto(url, wait_until="domcontentloaded")
+                slot.ref_map.clear()
+                return self._format_opened(slot.page)
+
+            return self._with_live_page(thread, open_page)
+        slot = self._page(thread)
         if name == "back":
             slot.page.go_back(wait_until="domcontentloaded")
             slot.ref_map.clear()
@@ -171,21 +176,58 @@ class CamoufoxRuntime:
             return self.browser_or_context
         return self.browser_or_context.new_context()
 
+    def _with_live_page(self, thread: str, action: Any) -> str:
+        slot = self._page(thread)
+        try:
+            return action(slot)
+        except Exception as exc:
+            if not self._is_closed_target_error(exc):
+                raise
+            slot = self._new_page(thread)
+            return action(slot)
+
     def _page(self, thread: str) -> PageSlot:
         slot = self.pages.get(thread)
-        if slot and not slot.page.is_closed():
+        if slot and self._page_is_open(slot.page):
             return slot
         return self._new_page(thread)
 
     def _new_page(self, thread: str) -> PageSlot:
         old = self.pages.pop(thread, None)
-        if old and not old.page.is_closed():
+        if old and self._page_is_open(old.page):
             old.page.close()
-        page = self._context().new_page()
+        try:
+            page = self._context().new_page()
+        except Exception as exc:
+            if not self._is_closed_target_error(exc):
+                raise
+            # Manual window close can close the whole persistent context; recreate it.
+            self._restart_closed_context()
+            page = self._context().new_page()
         slot = PageSlot(page=page, page_token=self._next_page_token)
         self._next_page_token += 1
         self.pages[thread] = slot
         return slot
+
+    def _restart_closed_context(self) -> None:
+        try:
+            self.stop()
+        except Exception:
+            self.manager = None
+            self.browser_or_context = None
+            self.pages.clear()
+        self.start()
+
+    def _page_is_open(self, page: Any) -> bool:
+        try:
+            return not page.is_closed()
+        except Exception as exc:
+            if self._is_closed_target_error(exc):
+                return False
+            raise
+
+    def _is_closed_target_error(self, exc: Exception) -> bool:
+        return CLOSED_TARGET_MESSAGE in str(exc)
 
     def _body_text(self, page: Any) -> str:
         try:

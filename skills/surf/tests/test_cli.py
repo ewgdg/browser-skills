@@ -1086,6 +1086,76 @@ class AxiBackendTests(unittest.TestCase):
         self.assertTrue(page.closed)
         self.assertNotIn("thread", runtime.pages)
 
+    def test_camoufox_runtime_restarts_context_after_manual_window_close(self):
+        class ClosedPage:
+            def is_closed(self):
+                return True
+
+        class ClosedContext:
+            pages = []
+
+            def new_page(self):
+                raise RuntimeError("BrowserContext.new_page: Target page, context or browser has been closed")
+
+        class OpenContext:
+            def __init__(self):
+                self.pages = []
+
+            def new_page(self):
+                page = ClosedPage()
+                self.pages.append(page)
+                return page
+
+        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
+        runtime.browser_or_context = ClosedContext()
+        runtime.pages["thread"] = PageSlot(page=ClosedPage(), page_token=1)
+        open_context = OpenContext()
+
+        with patch.object(runtime, "start", side_effect=lambda: setattr(runtime, "browser_or_context", open_context)) as start:
+            slot = runtime._new_page("thread")
+
+        self.assertEqual(slot.page_token, 1)
+        self.assertIs(slot.page, open_context.pages[0])
+        self.assertEqual(start.call_count, 1)
+
+    def test_camoufox_open_recreates_page_when_goto_finds_closed_target(self):
+        class DeadPage:
+            url = "about:blank"
+
+            def is_closed(self):
+                return False
+
+            def close(self):
+                pass
+
+            def goto(self, url, wait_until=None):
+                raise RuntimeError("Page.goto: Target page, context or browser has been closed")
+
+        class OpenPage:
+            def __init__(self):
+                self.url = "about:blank"
+
+            def is_closed(self):
+                return False
+
+            def goto(self, url, wait_until=None):
+                self.url = url
+
+        class OpenContext:
+            pages = []
+
+            def new_page(self):
+                page = OpenPage()
+                self.pages.append(page)
+                return page
+
+        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
+        runtime.browser_or_context = OpenContext()
+        runtime.pages["thread"] = PageSlot(page=DeadPage(), page_token=1)
+
+        self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
+        self.assertIs(runtime.pages["thread"].page, runtime.browser_or_context.pages[0])
+
     def test_camoufox_runtime_rejects_invalid_scroll_direction(self):
         class FakePage:
             def is_closed(self):
