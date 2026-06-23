@@ -15,11 +15,11 @@ from typing import Any, Sequence
 from urllib.parse import quote
 
 from ..constants import AXI_BRIDGE_PID_FILE, CHROME_NEW_WINDOW_TIMEOUT_S, DEFAULT_AXI_PORT, SURF_AGENT_WINDOW_TITLE
-from ..errors import SurfAgentError
+from ..errors import BridgeUnavailable, SurfAgentError
 from .base import AgentPage
 
 
-class AxiBridgeUnavailable(SurfAgentError):
+class AxiBridgeUnavailable(BridgeUnavailable):
     pass
 
 

@@ -13,7 +13,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from surf_agent.backends.camoufox.bridge import ACTIONABLE_SELECTOR, CamoufoxRuntime, PageSlot, RequestHandler, TargetFingerprint
-from surf_agent.backends.patchright.bridge import PatchrightRuntime
+from surf_agent.backends.patchright.bridge import SNAPSHOT_REF_LIMIT, PatchrightRuntime
+from surf_agent.errors import BridgeUnavailable
 from surf_agent.cli import (
     AgentPage,
     AxiBridgeClient,
@@ -610,6 +611,73 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(state, {"backend": "patchright", "open": True, "thread": "thread", "page_id": 1, "url": "https://example.test/", "title": "Example"})
         listing = json.loads(runtime.call("list", {}))
         self.assertEqual(listing, {"backend": "patchright", "pages": [{"thread": "thread", "page_id": 1, "url": "https://example.test/", "title": "Example"}]})
+
+    def test_patchright_snapshot_limits_indexed_refs(self):
+        class FakeElement:
+            def __init__(self, index):
+                self.index = index
+
+            def is_visible(self, timeout=None):
+                return True
+
+            def evaluate(self, script, timeout=None):
+                if "tagName" in script:
+                    return "button"
+                return f"button:nth-of-type({self.index + 1})"
+
+            def get_attribute(self, name, timeout=None):
+                return "button" if name == "role" else ""
+
+            def inner_text(self, timeout=None):
+                return f"Button {self.index}"
+
+            def input_value(self, timeout=None):
+                return ""
+
+            def bounding_box(self, timeout=None):
+                return {"x": 1, "y": 2, "width": 3, "height": 4}
+
+        class FakeLocatorGroup:
+            def __init__(self, items):
+                self.items = items
+
+            def count(self):
+                return len(self.items)
+
+            def nth(self, index):
+                return self.items[index]
+
+        class FakePage:
+            def __init__(self):
+                self.actionables = [FakeElement(index) for index in range(SNAPSHOT_REF_LIMIT + 10)]
+
+            def locator(self, selector):
+                if selector == ACTIONABLE_SELECTOR:
+                    return FakeLocatorGroup(self.actionables)
+                raise AssertionError(f"unexpected selector: {selector}")
+
+            def aria_snapshot(self, *args, **kwargs):
+                return "snapshot body"
+
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
+        slot = PageSlot(page=FakePage(), page_token=1)
+
+        snapshot = runtime._snapshot(slot)
+
+        self.assertEqual(len(slot.ref_map), SNAPSHOT_REF_LIMIT)
+        self.assertIn(f"[ref=pr{SNAPSHOT_REF_LIMIT - 1}]", snapshot)
+        self.assertNotIn(f"[ref=pr{SNAPSHOT_REF_LIMIT}]", snapshot)
+
+    def test_patchright_bridge_client_timeout_has_clear_error(self):
+        from surf_agent.backends.patchright.backend import PatchrightBridgeClient
+
+        client = PatchrightBridgeClient(timeout_s=1.0, port=9555, profile_dir=Path("/tmp/surf-patchright-profile"))
+        with (
+            patch.object(client, "_ensure_running", return_value=None),
+            patch("surf_agent.backends.patchright.backend.urllib.request.urlopen", side_effect=TimeoutError("timed out")),
+        ):
+            with self.assertRaisesRegex(BridgeUnavailable, "Patchright bridge tool snapshot timed out after 1s"):
+                client.call_tool("snapshot", {"thread": "default"})
 
     def test_patchright_bridge_client_ensure_running_spawns_bridge_module_with_profile_and_port(self):
         from surf_agent.backends.patchright.backend import PatchrightBridgeClient

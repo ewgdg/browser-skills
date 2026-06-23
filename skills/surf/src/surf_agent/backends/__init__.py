@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from ..constants import CAMOUFOX_BACKEND, DEFAULT_BACKEND, PATCHRIGHT_BACKEND
-from ..errors import SurfAgentError
+from ..errors import BridgeUnavailable, SurfAgentError
 from .axi import (
     AxiBackend,
     AxiBridgeClient,
@@ -73,6 +73,7 @@ __all__ = [
     "AxiBridgeClient",
     "AxiBridgeConfigMismatch",
     "AxiBridgeUnavailable",
+    "BridgeUnavailable",
     "BrowserBackend",
     "CamoufoxBackend",
     "CamoufoxBridgeClient",

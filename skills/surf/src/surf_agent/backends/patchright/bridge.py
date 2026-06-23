@@ -5,6 +5,7 @@ import json
 import os
 import re
 import sys
+import time
 import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -24,6 +25,11 @@ REF_PATTERN = re.compile(r"^(?:pr|e)\d+$")
 STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
 CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
 STARTUP_PAGE_URLS = {"", "about:blank", "about:home", "about:newtab", "chrome://newtab/"}
+SNAPSHOT_ARIA_TIMEOUT_MS = 3_000
+SNAPSHOT_BODY_TIMEOUT_MS = 3_000
+SNAPSHOT_LOCATOR_TIMEOUT_MS = 250
+SNAPSHOT_REF_LIMIT = 80
+SNAPSHOT_INDEX_BUDGET_S = 7.0
 
 
 @dataclass(frozen=True)
@@ -270,7 +276,7 @@ class PatchrightRuntime:
 
     def _body_text(self, page: Any) -> str:
         try:
-            text = page.locator("body").inner_text(timeout=5_000)
+            text = page.locator("body").inner_text(timeout=SNAPSHOT_BODY_TIMEOUT_MS)
         except Exception:
             text = page.content()
         return text + ("" if text.endswith("\n") else "\n")
@@ -294,22 +300,25 @@ class PatchrightRuntime:
 
     def _aria_snapshot(self, target: Any) -> str:
         try:
-            return str(target.aria_snapshot(mode="ai", timeout=5_000))
+            return str(target.aria_snapshot(mode="ai", timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
         except TypeError:
-            return str(target.aria_snapshot(timeout=5_000))
+            return str(target.aria_snapshot(timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
 
     def _index_actionable_refs(self, slot: PageSlot) -> list[str]:
         locator = slot.page.locator(ACTIONABLE_SELECTOR)
         slot.ref_map.clear()
         lines: list[str] = []
+        deadline = time.monotonic() + SNAPSHOT_INDEX_BUDGET_S
         try:
-            count = min(locator.count(), 200)
+            count = min(locator.count(), SNAPSHOT_REF_LIMIT)
         except Exception:
             return lines
         for index in range(count):
+            if time.monotonic() >= deadline:
+                break
             item = locator.nth(index)
             try:
-                if not item.is_visible(timeout=250):
+                if not item.is_visible(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS):
                     continue
                 ref = f"pr{len(slot.ref_map)}"
                 fingerprint = self._fingerprint_locator(item)
@@ -333,23 +342,23 @@ class PatchrightRuntime:
         return f'{label} "{name}"' if name else label
 
     def _fingerprint_locator(self, locator: Any) -> TargetFingerprint:
-        tag = self._safe(lambda: locator.evaluate("el => el.tagName.toLowerCase()"), "")
-        role = self._safe(lambda: locator.get_attribute("role"), "")
-        text = self._safe(lambda: locator.inner_text(timeout=250), "")
-        value = self._safe(lambda: locator.input_value(timeout=250), "")
+        tag = self._safe(lambda: self._locator_evaluate(locator, "el => el.tagName.toLowerCase()", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        role = self._safe(lambda: self._locator_get_attribute(locator, "role", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        text = self._safe(lambda: locator.inner_text(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        value = self._safe(lambda: locator.input_value(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
         name = ""
         for attr in ("aria-label", "placeholder", "title", "alt"):
-            name = self._safe(lambda attr=attr: locator.get_attribute(attr), "")
+            name = self._safe(lambda attr=attr: self._locator_get_attribute(locator, attr, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
             if name:
                 break
         if not name:
-            name = text or value or self._safe(lambda: locator.get_attribute("href"), "")
+            name = text or value or self._safe(lambda: self._locator_get_attribute(locator, "href", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
         bbox = self._bbox(locator)
         return TargetFingerprint(tag=normalize_text(tag), role=normalize_text(role), name=normalize_text(name), text=normalize_text(text or value), bbox=bbox)
 
     def _bbox(self, locator: Any) -> dict[str, float] | None:
         try:
-            box = locator.bounding_box()
+            box = self._locator_bounding_box(locator, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS)
         except Exception:
             return None
         if not isinstance(box, dict):
@@ -383,8 +392,26 @@ class PatchrightRuntime:
           return parts.join(' > ');
         }
         """
-        value = self._safe(lambda: locator.evaluate(script), "")
+        value = self._safe(lambda: self._locator_evaluate(locator, script, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
         return value or None
+
+    def _locator_evaluate(self, locator: Any, script: str, *, timeout: int) -> Any:
+        try:
+            return locator.evaluate(script, timeout=timeout)
+        except TypeError:
+            return locator.evaluate(script)
+
+    def _locator_get_attribute(self, locator: Any, name: str, *, timeout: int) -> Any:
+        try:
+            return locator.get_attribute(name, timeout=timeout)
+        except TypeError:
+            return locator.get_attribute(name)
+
+    def _locator_bounding_box(self, locator: Any, *, timeout: int) -> Any:
+        try:
+            return locator.bounding_box(timeout=timeout)
+        except TypeError:
+            return locator.bounding_box()
 
     def _target_locator(self, slot: PageSlot, target: str) -> Any:
         normalized = target[1:] if target.startswith("@") else target

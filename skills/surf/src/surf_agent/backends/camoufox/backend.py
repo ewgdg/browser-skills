@@ -10,8 +10,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from ...constants import CAMOUFOX_BACKEND, CHROME_NEW_WINDOW_TIMEOUT_S
-from ...errors import SurfAgentError
-from ..axi import AxiBridgeUnavailable
+from ...errors import BridgeUnavailable, SurfAgentError
 from ..base import AgentPage
 
 
@@ -58,8 +57,12 @@ class CamoufoxBridgeClient:
             except json.JSONDecodeError:
                 pass
             raise SurfAgentError(f"Camoufox bridge tool {name} failed: {detail}") from exc
+        except TimeoutError as exc:
+            raise BridgeUnavailable(f"Camoufox bridge tool {name} timed out after {self.timeout_s:g}s") from exc
         except urllib.error.URLError as exc:
-            raise AxiBridgeUnavailable(f"Camoufox bridge call failed: {exc}") from exc
+            raise BridgeUnavailable(f"Camoufox bridge call failed: {exc}") from exc
+        except OSError as exc:
+            raise BridgeUnavailable(f"Camoufox bridge call failed: {exc}") from exc
         result = data.get("result")
         return result if isinstance(result, str) else ""
 
