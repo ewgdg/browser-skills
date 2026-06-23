@@ -492,18 +492,25 @@ def default_chrome_profile_dir() -> Path:
     return skill_dir() / "chrome-profile"
 
 
+def default_firefox_profile_dir() -> Path:
+    value = os.environ.get("SURF_AGENT_FIREFOX_PROFILE_DIR")
+    if value:
+        return Path(value).expanduser()
+    return skill_dir() / "firefox-profile"
+
+
 def default_camoufox_profile_dir() -> Path:
     value = os.environ.get("SURF_AGENT_CAMOUFOX_PROFILE_DIR")
     if value:
         return Path(value).expanduser()
-    return skill_dir() / "camoufox-profile"
+    return default_firefox_profile_dir()
 
 
 def default_patchright_profile_dir() -> Path:
     value = os.environ.get("SURF_AGENT_PATCHRIGHT_PROFILE_DIR")
     if value:
         return Path(value).expanduser()
-    return skill_dir() / "patchright-profile"
+    return default_chrome_profile_dir()
 
 
 def parse_backend_env() -> str:

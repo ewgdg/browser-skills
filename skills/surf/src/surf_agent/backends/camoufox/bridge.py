@@ -510,11 +510,14 @@ def normalize_text(value: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=int(os.environ.get("SURF_AGENT_CAMOUFOX_PORT", "9345")))
-    parser.add_argument("--profile-dir", default=os.environ.get("SURF_AGENT_CAMOUFOX_PROFILE_DIR", ""))
+    parser.add_argument(
+        "--profile-dir",
+        default=os.environ.get("SURF_AGENT_CAMOUFOX_PROFILE_DIR") or os.environ.get("SURF_AGENT_FIREFOX_PROFILE_DIR") or "",
+    )
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--app-id", default=os.environ.get("SURF_AGENT_CAMOUFOX_APP_ID") or os.environ.get("SURF_AGENT_CAMOUFOX_CLASS") or DEFAULT_CAMOUFOX_APP_ID)
     args = parser.parse_args(argv)
-    profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / "camoufox-profile"
+    profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / "firefox-profile"
     RequestHandler.runtime = CamoufoxRuntime(profile_dir=profile_dir, headless=args.headless, app_id=args.app_id)
     # Playwright/Camoufox sync objects are bound to the thread that created them.
     # Use a single-threaded HTTP server so every browser call runs on one thread.

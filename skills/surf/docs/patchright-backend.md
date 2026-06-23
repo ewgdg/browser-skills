@@ -29,9 +29,9 @@ SURF_AGENT_BACKEND=patchright uv run surf-agent --thread main open https://examp
 
 ## Runtime data
 
-- profile: `patchright-profile/`
+- profile: `chrome-profile/` by default, shared with AXI because both are Chrome-family backends
 - port env: `SURF_AGENT_PATCHRIGHT_PORT` default `9346`
-- profile env: `SURF_AGENT_PATCHRIGHT_PROFILE_DIR`
+- profile env: `SURF_AGENT_PATCHRIGHT_PROFILE_DIR` overrides the shared Chrome profile
 - app/window env: `SURF_AGENT_PATCHRIGHT_APP_ID` or `SURF_AGENT_PATCHRIGHT_CLASS`
 
 ## Commands

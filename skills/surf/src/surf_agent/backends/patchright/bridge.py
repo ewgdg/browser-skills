@@ -77,6 +77,7 @@ class PatchrightRuntime:
             channel="chrome",
             headless=self.headless,
             no_viewport=True,
+            chromium_sandbox=True,
             args=launch_args,
         )
 
@@ -522,12 +523,15 @@ def normalize_text(value: str) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=int(os.environ.get("SURF_AGENT_PATCHRIGHT_PORT", "9346")))
-    parser.add_argument("--profile-dir", default=os.environ.get("SURF_AGENT_PATCHRIGHT_PROFILE_DIR", ""))
+    parser.add_argument(
+        "--profile-dir",
+        default=os.environ.get("SURF_AGENT_PATCHRIGHT_PROFILE_DIR") or os.environ.get("SURF_AGENT_CHROME_PROFILE_DIR") or os.environ.get("CHROME_DEVTOOLS_AXI_USER_DATA_DIR") or "",
+    )
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--app-id", default=os.environ.get("SURF_AGENT_PATCHRIGHT_APP_ID") or os.environ.get("SURF_AGENT_PATCHRIGHT_CLASS") or DEFAULT_PATCHRIGHT_APP_ID)
     parser.add_argument("--class", dest="window_class", default=os.environ.get("SURF_AGENT_PATCHRIGHT_CLASS") or os.environ.get("SURF_AGENT_PATCHRIGHT_APP_ID") or DEFAULT_PATCHRIGHT_APP_ID)
     args = parser.parse_args(argv)
-    profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / "patchright-profile"
+    profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / "chrome-profile"
     RequestHandler.runtime = PatchrightRuntime(profile_dir=profile_dir, headless=args.headless, app_id=args.app_id, window_class=args.window_class)
     # Playwright/Patchright sync objects are bound to the thread that created them.
     # Use a single-threaded HTTP server so every browser call runs on one thread.

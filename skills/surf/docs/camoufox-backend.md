@@ -27,9 +27,9 @@ SURF_AGENT_BACKEND=camoufox uv run surf-agent --thread main open https://example
 
 ## Runtime data
 
-- profile: `camoufox-profile/`
+- profile: `firefox-profile/` by default, shared by Firefox-family backends
 - port env: `SURF_AGENT_CAMOUFOX_PORT` default `9345`
-- profile env: `SURF_AGENT_CAMOUFOX_PROFILE_DIR`
+- profile env: `SURF_AGENT_CAMOUFOX_PROFILE_DIR` overrides `SURF_AGENT_FIREFOX_PROFILE_DIR` and the shared Firefox profile
 - app/window env: `SURF_AGENT_CAMOUFOX_APP_ID` or `SURF_AGENT_CAMOUFOX_CLASS`
 
 ## Commands

@@ -24,6 +24,7 @@ from surf_agent.cli import (
     SurfAgentError,
     choose_snapshot_diff,
     backend_config_file,
+    default_camoufox_profile_dir,
     default_chrome_profile_dir,
     default_state_dir,
     main,
@@ -214,6 +215,33 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(env["CHROME_DEVTOOLS_AXI_USER_DATA_DIR"], "/tmp/custom-surf-profile")
         self.assertEqual(env["CHROME_DEVTOOLS_AXI_BROWSER_URL"], "http://127.0.0.1:9336")
         self.assertEqual(agent.chrome_profile_dir, Path("/tmp/custom-surf-profile"))
+
+    def test_patchright_defaults_to_chrome_profile_family(self):
+        with TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {"SURF_AGENT_BACKEND": "patchright", "SURF_AGENT_CHROME_PROFILE_DIR": str(Path(tmp) / "chrome-profile")},
+            clear=True,
+        ):
+            agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json")
+
+        self.assertEqual(agent.patchright_profile_dir, Path(tmp) / "chrome-profile")
+
+    def test_camoufox_defaults_to_firefox_profile_family(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(default_camoufox_profile_dir(), default_chrome_profile_dir().parent / "firefox-profile")
+
+    def test_camoufox_profile_env_overrides_firefox_family_default(self):
+        with TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "SURF_AGENT_FIREFOX_PROFILE_DIR": str(Path(tmp) / "firefox-profile"),
+                "SURF_AGENT_CAMOUFOX_PROFILE_DIR": str(Path(tmp) / "camoufox-profile"),
+            },
+            clear=True,
+        ):
+            agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json")
+
+        self.assertEqual(agent.camoufox_profile_dir, Path(tmp) / "camoufox-profile")
 
     def test_bridge_profile_mismatch_rejects_old_auto_connect_bridge(self):
         client = AxiBridgeClient(timeout_s=1, expected_profile_dir=Path("/tmp/surf-profile"), expected_chrome_class="surf-agent")
@@ -464,6 +492,7 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(calls[0]["channel"], "chrome")
         self.assertFalse(calls[0]["headless"])
         self.assertTrue(calls[0]["no_viewport"])
+        self.assertTrue(calls[0]["chromium_sandbox"])
         self.assertEqual(calls[0]["args"], ["--class=surf-agent-window", "--name=surf-agent-test"])
 
     def test_patchright_runtime_open_snapshot_click_and_text(self):
