@@ -167,7 +167,8 @@ class CamoufoxRuntime:
             return "waited\n"
         if name == "screenshot":
             path = str(args["path"])
-            slot.page.screenshot(path=path, full_page=True)
+            full_page = args.get("fullPage") is True
+            slot.page.screenshot(path=path, full_page=full_page)
             return f"screenshot: {path}\n"
         if name == "eval":
             result = slot.page.evaluate(str(args.get("code") or ""))

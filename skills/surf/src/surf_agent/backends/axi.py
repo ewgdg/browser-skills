@@ -16,7 +16,7 @@ from urllib.parse import quote
 
 from ..constants import AXI_BRIDGE_PID_FILE, CHROME_NEW_WINDOW_TIMEOUT_S, DEFAULT_AXI_PORT, SURF_AGENT_WINDOW_TITLE
 from ..errors import BridgeUnavailable, SurfAgentError
-from .base import AgentPage
+from .base import AgentPage, ScreenshotOptions
 
 
 class AxiBridgeUnavailable(BridgeUnavailable):
@@ -257,8 +257,11 @@ class AxiBackend:
     def back(self) -> str:
         return self._run_current(["back"])
 
-    def screenshot(self, path: str) -> str:
-        return self._run_current(["screenshot", path])
+    def screenshot(self, options: ScreenshotOptions) -> str:
+        args = ["screenshot", options.path]
+        if options.full_page:
+            args = ["screenshot", "--full-page", options.path]
+        return self._run_current(args)
 
     def evaluate(self, code: str) -> str:
         return self._run_current(["eval", code])

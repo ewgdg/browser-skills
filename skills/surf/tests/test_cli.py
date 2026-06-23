@@ -19,6 +19,7 @@ from surf_agent.backends.patchright.bridge import SNAPSHOT_REF_LIMIT, Patchright
 from surf_agent.errors import BridgeUnavailable
 from surf_agent.cli import (
     AgentPage,
+    ScreenshotOptions,
     AxiBridgeClient,
     AxiBridgeUnavailable,
     DEFAULT_THREAD,
@@ -31,7 +32,9 @@ from surf_agent.cli import (
     default_chrome_profile_dir,
     default_state_dir,
     main,
+    map_axi_cli_args_to_bridge,
     parse_agent_args,
+    parse_screenshot_output,
     parse_axi_pages,
     parse_do_argv_steps,
     parse_do_script,
@@ -139,6 +142,43 @@ class AxiBackendTests(unittest.TestCase):
         with TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
             agent = SurfAgent(state_file=Path(tmp) / "thread.json")
             self.assertEqual(agent.axi_bin, "npx -y chrome-devtools-axi")
+
+    def test_parse_screenshot_output_defaults_to_viewport_and_accepts_full_page(self):
+        self.assertEqual(parse_screenshot_output(["/tmp/shot.png"]), ScreenshotOptions(path="/tmp/shot.png"))
+        self.assertEqual(parse_screenshot_output(["--output", "/tmp/shot.png"]), ScreenshotOptions(path="/tmp/shot.png"))
+        self.assertEqual(parse_screenshot_output(["--full-page", "/tmp/full.png"]), ScreenshotOptions(path="/tmp/full.png", full_page=True))
+        self.assertEqual(parse_screenshot_output(["--full-page", "--output", "/tmp/full.png"]), ScreenshotOptions(path="/tmp/full.png", full_page=True))
+        self.assertEqual(parse_screenshot_output(["--output", "/tmp/full.png", "--full-page"]), ScreenshotOptions(path="/tmp/full.png", full_page=True))
+
+    def test_parse_screenshot_output_rejects_bad_forms(self):
+        for values in ([], ["--output"], ["--bad", "/tmp/shot.png"], ["/tmp/a.png", "/tmp/b.png"], ["--full-page", "--full-page", "/tmp/a.png"]):
+            with self.subTest(values=values):
+                with self.assertRaises(SurfAgentError):
+                    parse_screenshot_output(values)
+
+    def test_axi_screenshot_mapping_defaults_to_viewport_and_full_page_uses_cli_fallback(self):
+        mapped = map_axi_cli_args_to_bridge(["screenshot", "/tmp/shot.png"])
+        self.assertIsNotNone(mapped)
+        self.assertEqual(mapped[0], "take_screenshot")
+        self.assertEqual(mapped[1], {"filePath": "/tmp/shot.png"})
+
+        self.assertIsNone(map_axi_cli_args_to_bridge(["screenshot", "--full-page", "/tmp/full.png"]))
+
+    def test_axi_screenshot_command_defaults_to_viewport_and_accepts_full_page(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22)))
+            agent = FakeAxiAgent(["selected\n", "screenshot: /tmp/shot.png\n", "selected\n", "screenshot: /tmp/full.png\n"], state_file=state_file)
+
+            self.assertEqual(agent.browser_backend.screenshot(ScreenshotOptions(path="/tmp/shot.png")), "screenshot: /tmp/shot.png\n")
+            self.assertEqual(agent.browser_backend.screenshot(ScreenshotOptions(path="/tmp/full.png", full_page=True)), "screenshot: /tmp/full.png\n")
+
+        self.assertEqual([call[0] for call in agent.calls], [
+            ["bridge", "select_page", {"pageId": 22}],
+            ["bridge", "take_screenshot", {"filePath": "/tmp/shot.png"}],
+            ["bridge", "select_page", {"pageId": 22}],
+            ["axi", "screenshot", "--full-page", "/tmp/full.png"],
+        ])
 
     def test_default_state_dir_uses_surf_agent_data_dir(self):
         self.assertEqual(default_state_dir(), Path(__file__).resolve().parents[1] / ".surf-agent" / "state")
@@ -412,12 +452,19 @@ class AxiBackendTests(unittest.TestCase):
             agent.patchright_client = client
             self.assertEqual(agent.execute_in_window(["open", "https://example.test/"]), "open ok\n")
             self.assertEqual(agent.execute_in_window(["fill", "@pr0", "hello", "world"]), "fill ok\n")
+            self.assertEqual(agent.execute_in_window(["screenshot", "/tmp/viewport.png"]), "screenshot ok\n")
+            self.assertEqual(agent.execute_in_window(["screenshot", "--full-page", "--output", "/tmp/full.png"]), "screenshot ok\n")
             with self.assertRaisesRegex(SurfAgentError, "scroll requires direction"):
                 agent.execute_in_window(["scroll", "sideways"])
 
         self.assertEqual(
             client.calls,
-            [("open", {"thread": "thread", "url": "https://example.test/"}), ("fill", {"thread": "thread", "uid": "@pr0", "text": "hello world"})],
+            [
+                ("open", {"thread": "thread", "url": "https://example.test/"}),
+                ("fill", {"thread": "thread", "uid": "@pr0", "text": "hello world"}),
+                ("screenshot", {"thread": "thread", "path": "/tmp/viewport.png", "fullPage": False}),
+                ("screenshot", {"thread": "thread", "path": "/tmp/full.png", "fullPage": True}),
+            ],
         )
 
     def test_patchright_profile_show_prints_patchright_config(self):
@@ -553,6 +600,7 @@ class AxiBackendTests(unittest.TestCase):
                 self.title_value = "Example"
                 self.actionable = FakeElement()
                 self.keyboard = types.SimpleNamespace(type=self._type, press=self._press)
+                self.screenshot_calls = []
 
             def is_closed(self):
                 return False
@@ -583,6 +631,9 @@ class AxiBackendTests(unittest.TestCase):
 
             def close(self):
                 self.closed = True
+
+            def screenshot(self, path, full_page=False):
+                self.screenshot_calls.append({"path": path, "full_page": full_page})
 
             def bring_to_front(self):
                 self.focused = True
@@ -616,12 +667,41 @@ class AxiBackendTests(unittest.TestCase):
         self.assertTrue(runtime.pages["thread"].page.actionable.clicked)
         self.assertEqual(runtime.call("type", {"thread": "thread", "text": "typed text"}), "typed\n")
         self.assertEqual(runtime.pages["thread"].page.typed, "typed text")
+        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/viewport.png"}), "screenshot: /tmp/viewport.png\n")
+        self.assertEqual(runtime.pages["thread"].page.screenshot_calls[-1], {"path": "/tmp/viewport.png", "full_page": False})
+        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/full.png", "fullPage": True}), "screenshot: /tmp/full.png\n")
+        self.assertEqual(runtime.pages["thread"].page.screenshot_calls[-1], {"path": "/tmp/full.png", "full_page": True})
         self.assertEqual(runtime.call("text", {"thread": "thread"}), "Body text\n")
 
         state = json.loads(runtime.call("state", {"thread": "thread"}))
         self.assertEqual(state, {"backend": "patchright", "open": True, "thread": "thread", "page_id": 1, "url": "https://example.test/", "title": "Example"})
         listing = json.loads(runtime.call("list", {}))
         self.assertEqual(listing, {"backend": "patchright", "pages": [{"thread": "thread", "page_id": 1, "url": "https://example.test/", "title": "Example"}]})
+
+    def test_patchright_bridge_screenshot_uses_viewport_by_default_and_full_page_when_requested(self):
+        class FakePage:
+            def __init__(self):
+                self.screenshot_calls = []
+
+            def is_closed(self):
+                return False
+
+            def screenshot(self, path, full_page=False):
+                self.screenshot_calls.append({"path": path, "full_page": full_page})
+
+        page = FakePage()
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
+        runtime.browser_or_context = object()
+        runtime.pages["thread"] = patchright_bridge.PageSlot(page=page, page_token=1)
+
+        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/viewport.png"}), "screenshot: /tmp/viewport.png\n")
+        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/string-false.png", "fullPage": "false"}), "screenshot: /tmp/string-false.png\n")
+        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/full.png", "fullPage": True}), "screenshot: /tmp/full.png\n")
+        self.assertEqual(page.screenshot_calls, [
+            {"path": "/tmp/viewport.png", "full_page": False},
+            {"path": "/tmp/string-false.png", "full_page": False},
+            {"path": "/tmp/full.png", "full_page": True},
+        ])
 
     def test_patchright_snapshot_limits_indexed_refs(self):
         class FakeElement:
@@ -1402,10 +1482,17 @@ class AxiBackendTests(unittest.TestCase):
             agent.camoufox_client = client
             self.assertEqual(agent.execute_in_window(["open", "https://example.test/"]), "open ok\n")
             self.assertEqual(agent.execute_in_window(["fill", "@cf0", "hello", "world"]), "fill ok\n")
+            self.assertEqual(agent.execute_in_window(["screenshot", "--output", "/tmp/viewport.png"]), "screenshot ok\n")
+            self.assertEqual(agent.execute_in_window(["screenshot", "--output", "/tmp/full.png", "--full-page"]), "screenshot ok\n")
             with self.assertRaisesRegex(SurfAgentError, "scroll requires direction"):
                 agent.execute_in_window(["scroll", "sideways"])
 
-        self.assertEqual(client.calls, [("open", {"thread": "thread", "url": "https://example.test/"}), ("fill", {"thread": "thread", "uid": "@cf0", "text": "hello world"})])
+        self.assertEqual(client.calls, [
+            ("open", {"thread": "thread", "url": "https://example.test/"}),
+            ("fill", {"thread": "thread", "uid": "@cf0", "text": "hello world"}),
+            ("screenshot", {"thread": "thread", "path": "/tmp/viewport.png", "fullPage": False}),
+            ("screenshot", {"thread": "thread", "path": "/tmp/full.png", "fullPage": True}),
+        ])
 
     def test_camoufox_snapshot_diff_does_not_require_axi_state(self):
         class FakeCamoufoxClient:
@@ -1438,6 +1525,31 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(error.getvalue(), "")
         self.assertEqual([name for name, _args in client.calls], ["snapshot", "state", "snapshot", "state"])
 
+
+    def test_camoufox_bridge_screenshot_uses_viewport_by_default_and_full_page_when_requested(self):
+        class FakePage:
+            def __init__(self):
+                self.screenshot_calls = []
+
+            def is_closed(self):
+                return False
+
+            def screenshot(self, path, full_page=False):
+                self.screenshot_calls.append({"path": path, "full_page": full_page})
+
+        page = FakePage()
+        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
+        runtime.browser_or_context = object()
+        runtime.pages["thread"] = PageSlot(page=page, page_token=1)
+
+        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/viewport.png"}), "screenshot: /tmp/viewport.png\n")
+        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/string-false.png", "fullPage": "false"}), "screenshot: /tmp/string-false.png\n")
+        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/full.png", "fullPage": True}), "screenshot: /tmp/full.png\n")
+        self.assertEqual(page.screenshot_calls, [
+            {"path": "/tmp/viewport.png", "full_page": False},
+            {"path": "/tmp/string-false.png", "full_page": False},
+            {"path": "/tmp/full.png", "full_page": True},
+        ])
 
     def test_camoufox_snapshot_passes_playwright_cli_aria_options(self):
         class FakeLocatorGroup:

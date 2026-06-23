@@ -22,6 +22,7 @@ from .backends import (
     AxiBridgeClient,
     AxiBridgeConfigMismatch,
     AgentPage,
+    ScreenshotOptions,
     AxiBridgeUnavailable,
     CamoufoxBridgeClient,
     PatchrightBridgeClient,
@@ -691,12 +692,36 @@ def reject_args(command: str, values: Sequence[str]) -> None:
         raise SurfAgentError(f"{command} does not accept arguments", exit_code=2)
 
 
-def parse_screenshot_output(values: Sequence[str]) -> str:
-    if len(values) == 1:
-        return values[0]
-    if len(values) == 2 and values[0] == "--output":
-        return values[1]
-    raise SurfAgentError("screenshot requires a path or --output <path>", exit_code=2)
+def parse_screenshot_output(values: Sequence[str]) -> ScreenshotOptions:
+    path: str | None = None
+    full_page = False
+    index = 0
+    while index < len(values):
+        value = values[index]
+        if value == "--full-page":
+            if full_page:
+                raise SurfAgentError("screenshot --full-page was provided more than once", exit_code=2)
+            full_page = True
+            index += 1
+            continue
+        if value == "--output":
+            index += 1
+            if index >= len(values):
+                raise SurfAgentError("screenshot --output requires a path", exit_code=2)
+            if path is not None:
+                raise SurfAgentError("screenshot requires exactly one output path", exit_code=2)
+            path = values[index]
+            index += 1
+            continue
+        if value.startswith("--"):
+            raise SurfAgentError(f"unsupported screenshot option: {value}", exit_code=2)
+        if path is not None:
+            raise SurfAgentError("screenshot requires exactly one output path", exit_code=2)
+        path = value
+        index += 1
+    if path is None:
+        raise SurfAgentError("screenshot requires a path or --output <path>", exit_code=2)
+    return ScreenshotOptions(path=path, full_page=full_page)
 
 def unlink_missing_ok(path: Path) -> None:
     try:
@@ -1092,7 +1117,7 @@ def print_help(stream: Any) -> None:
         "  surf-agent [--thread ID] <command...>          run supported browser command in thread page\n\n"
         "Supported browser commands:\n"
         "  open <url>, snapshot, text, eval <code>, click <target>, fill <target> <text>, type <text>,\n"
-        "  press <key>, scroll up|down|top|bottom, screenshot [--output] <path>, back, wait <ms|text>.\n\n"
+        "  press <key>, scroll up|down|top|bottom, screenshot [--full-page] [--output] <path>, back, wait <ms|text>.\n\n"
         "Examples:\n"
         "  surf-agent --thread main state\n"
         "  surf-agent --thread main open https://example.com\n"

@@ -169,6 +169,7 @@ uv run surf-agent --thread main do type -- --emit
 
 ```bash
 uv run surf-agent --thread main screenshot --output /tmp/shot.png
+uv run surf-agent --thread main screenshot --full-page --output /tmp/full-page.png
 uv run surf-agent --thread main eval "document.title"
 ```
 

@@ -28,7 +28,7 @@ from .axi import (
     unwrap_no_arg_iife,
     wrap_script_expression,
 )
-from .base import AgentPage, BrowserBackend
+from .base import AgentPage, BrowserBackend, ScreenshotOptions
 from .camoufox import CamoufoxBackend, CamoufoxBridgeClient
 from .patchright import PatchrightBackend, PatchrightBridgeClient
 
@@ -52,6 +52,7 @@ def create_backend(
 
 __all__ = [
     "AgentPage",
+    "ScreenshotOptions",
     "extract_page_id",
     "find_page",
     "format_bridge_eval_result",

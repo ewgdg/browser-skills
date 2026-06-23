@@ -5,6 +5,12 @@ from typing import Any, Protocol
 
 
 @dataclass(frozen=True)
+class ScreenshotOptions:
+    path: str
+    full_page: bool = False
+
+
+@dataclass(frozen=True)
 class AgentPage:
     page_id: int
     url: str | None = None
@@ -37,7 +43,7 @@ class BrowserBackend(Protocol):
 
     def back(self) -> str: ...
 
-    def screenshot(self, path: str) -> str: ...
+    def screenshot(self, options: ScreenshotOptions) -> str: ...
 
     def evaluate(self, code: str) -> str: ...
 

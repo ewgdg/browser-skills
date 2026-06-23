@@ -12,7 +12,7 @@ from typing import Any, Callable, Sequence
 
 from ...constants import PATCHRIGHT_BACKEND, CHROME_NEW_WINDOW_TIMEOUT_S
 from ...errors import BridgeUnavailable, SurfAgentError
-from ..base import AgentPage
+from ..base import AgentPage, ScreenshotOptions
 
 
 class PatchrightBridgeClient:
@@ -222,8 +222,8 @@ class PatchrightBackend:
     def back(self) -> str:
         return self._call("back")
 
-    def screenshot(self, path: str) -> str:
-        return self._call("screenshot", {"path": path})
+    def screenshot(self, options: ScreenshotOptions) -> str:
+        return self._call("screenshot", {"path": options.path, "fullPage": options.full_page})
 
     def evaluate(self, code: str) -> str:
         return self._call("eval", {"code": code})
