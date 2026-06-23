@@ -7,48 +7,61 @@ description: Browser control through `surf-agent`, backed by a persistent browse
 
 ## Backend policy
 
-Use `surf-agent` for browser operations. Current default implementation uses a persistent AXI browser bridge with a dedicated Chrome profile.
+Use `surf-agent` for browser operations. Default backend is `axi`, backed by a persistent AXI bridge and a dedicated skill-local Chrome profile.
 
-Optional experimental Firefox/Camoufox backend exists for high-fingerprint-resistance trials:
+Optional backends exist, but stay opt-in:
+
+- `camoufox`: experimental Firefox/Camoufox fingerprint-resistance trials.
+- `patchright`: experimental Chrome-channel persistent-profile trials.
+
+Backend selection priority: `SURF_AGENT_BACKEND`, then `.surf-agent/config.json`, then `axi` default. Backend details live in [docs/backends.md](docs/backends.md); AXI internals live in [docs/axi-backend.md](docs/axi-backend.md).
+
+Direct `surf` CLI fallback is removed. Unsupported commands fail clearly instead of switching backends.
+
+## Setup
+
+Run from this skill directory. Default AXI use needs no optional Python extra.
+
+Optional backend setup:
+
+```bash
+uv sync --extra camoufox
+uv run surf-agent setup camoufox
+
+uv sync --extra patchright
+uv run surf-agent setup patchright
+```
+
+Persist optional backend:
 
 ```bash
 uv run surf-agent backend set camoufox
-uv run surf-agent --thread main open https://example.com
-```
-
-Optional experimental Chrome/Patchright backend exists for persistent Chrome-profile trials:
-
-```bash
-uv sync --extra patchright
 uv run surf-agent backend set patchright
-uv run surf-agent --thread main open https://example.com
+uv run surf-agent backend reset
 ```
 
-For one command only, env override still wins:
+Use one backend for one command without changing config:
 
 ```bash
 SURF_AGENT_BACKEND=camoufox uv run surf-agent --thread main open https://example.com
 SURF_AGENT_BACKEND=patchright uv run surf-agent --thread main open https://example.com
 ```
 
-Setup first:
+First use of a dedicated profile may require one-time browser setup/login. For setup without automation/debugging, close Surf Agent automation windows and run `uv run surf-agent profile open https://x.com`.
+
+Only use explicit bridge stop when you intend to kill the persistent browser bridge:
 
 ```bash
-uv sync --extra camoufox
-uv sync --extra patchright
-uv run surf-agent setup camoufox
-uv run surf-agent setup patchright
+uv run surf-agent bridge-stop
 ```
 
-`setup camoufox` runs `python -m camoufox sync`, selects `official/prerelease`, then fetches the browser binary without launching it. `setup patchright` runs `python -m patchright install chrome`.
-
-Camoufox backend supports core browsing commands (`open`, `new`, `snapshot`, `text`, `click`, `fill`, `type`, `press`, `scroll`, `wait`, `back`, `screenshot`, `eval`, `close`, `focus`, `state`, `list`) through a persistent local Python bridge and `camoufox-profile/`. It is experimental: Chrome extensions/profile behavior does not apply, and `close-matching` is not implemented yet. Patchright backend uses the same core commands through a persistent Chrome-channel context and `patchright-profile/`; profile reuse and extension behavior depend on the existing Chrome install, so do not assume perfect extension support.
+## Operating rules
 
 Persistent app-local data lives under `.surf-agent/`: backend config in `.surf-agent/config.json`, thread state in `.surf-agent/state/`.
 
 - One thread owns one remembered browser page id in one dedicated Chrome window.
 - New threads first open a short `Surf Agent` bootstrap in a normal `--new-window` Chrome window so human login/unblock has toolbar, back/forward, and extension controls. `new` then opens the welcome page; `open <url>` navigates directly to the requested URL.
-- The browser backend uses a dedicated skill-local Chrome profile by default, so backend page listing only sees Surf Agent profile pages, not the user's main Chrome tabs.
+- The default browser backend uses a dedicated skill-local Chrome profile, so backend page listing only sees Surf Agent profile pages, not the user's main Chrome tabs.
 - `surf-agent` talks to the browser bridge over local HTTP for normal operations and embeds browser profile defaults.
 - Keep the browser bridge alive. Normal cleanup closes pages/windows only; it must not stop the bridge.
 - Use `--thread` to select a page/window.
@@ -56,20 +69,6 @@ Persistent app-local data lives under `.surf-agent/`: backend config in `.surf-a
 - Use unique thread ids for parallel agents unless intentionally sharing one page.
 - Do not manage tabs directly through raw tab/window commands.
 - If blocked, ask the user to handle it in Chrome, then resume.
-
-Direct `surf` CLI fallback is removed. Unsupported commands fail clearly instead of switching backends.
-
-## Backend details
-
-Normal callers should use `surf-agent` commands only. Current AXI backend/env details live in [docs/axi-backend.md](docs/axi-backend.md). Backend selection priority is `SURF_AGENT_BACKEND`, then `.surf-agent/config.json`, then AXI default.
-
-First use of the dedicated profile may require one-time browser setup/login. For setup without automation/debugging, close Surf Agent automation windows and run `uv run surf-agent profile open https://x.com`.
-
-Only use explicit bridge stop when you intend to kill the persistent browser bridge:
-
-```bash
-uv run surf-agent bridge-stop
-```
 
 ## Base command
 
