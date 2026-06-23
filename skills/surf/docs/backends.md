@@ -37,5 +37,3 @@ uv run surf-agent backend reset
 - [AXI backend](axi-backend.md) — default Chrome bridge backend.
 - [Camoufox backend](camoufox-backend.md) — experimental Firefox/Camoufox backend.
 - [Patchright backend](patchright-backend.md) — experimental Chrome-channel Patchright backend.
-
-Unsupported commands fail clearly instead of switching backends.
