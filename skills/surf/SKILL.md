@@ -17,8 +17,6 @@ Optional backends exist, but stay opt-in:
 Backend selection priority: `SURF_AGENT_BACKEND`, then `.surf-agent/config.json`, then `axi` default. Backend docs: [overview](docs/backends.md), [AXI](docs/axi-backend.md), [Camoufox](docs/camoufox-backend.md), [Patchright](docs/patchright-backend.md).
 
 
-One-time setup, backend switching, profile setup, and bridge restart details live in [docs/setup.md](docs/setup.md).
-
 ## Operating rules
 
 Persistent app-local data lives under `.surf-agent/`: backend config in `.surf-agent/config.json`, thread state in `.surf-agent/state/`.
