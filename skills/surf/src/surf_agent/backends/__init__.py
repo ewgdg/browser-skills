@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from ..constants import CAMOUFOX_BACKEND, DEFAULT_BACKEND
+from ..constants import CAMOUFOX_BACKEND, DEFAULT_BACKEND, PATCHRIGHT_BACKEND
 from ..errors import SurfAgentError
 from .axi import (
     AxiBackend,
@@ -30,13 +30,23 @@ from .axi import (
 )
 from .base import AgentPage, BrowserBackend
 from .camoufox import CamoufoxBackend, CamoufoxBridgeClient
+from .patchright import PatchrightBackend, PatchrightBridgeClient
 
 
-def create_backend(agent: Any, name: str, *, camoufox_client: CamoufoxBridgeClient, welcome_url: Callable[[], str]) -> BrowserBackend:
+def create_backend(
+    agent: Any,
+    name: str,
+    *,
+    camoufox_client: CamoufoxBridgeClient,
+    patchright_client: PatchrightBridgeClient,
+    welcome_url: Callable[[], str],
+) -> BrowserBackend:
     if name == DEFAULT_BACKEND:
         return AxiBackend(agent)
     if name == CAMOUFOX_BACKEND:
         return CamoufoxBackend(agent, client=camoufox_client, welcome_url=welcome_url)
+    if name == PATCHRIGHT_BACKEND:
+        return PatchrightBackend(agent, client=patchright_client, welcome_url=welcome_url)
     raise SurfAgentError(f"unsupported surf-agent backend: {name}", exit_code=2)
 
 
@@ -66,6 +76,8 @@ __all__ = [
     "BrowserBackend",
     "CamoufoxBackend",
     "CamoufoxBridgeClient",
+    "PatchrightBackend",
+    "PatchrightBridgeClient",
     "create_backend",
     "map_axi_cli_args_to_bridge",
 ]

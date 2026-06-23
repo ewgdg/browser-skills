@@ -17,6 +17,10 @@ CAMOUFOX_SETUP_STEPS = (
     ("set", "official/prerelease"),
     ("fetch",),
 )
+PATCHRIGHT_BACKEND = "patchright"
+DEFAULT_PATCHRIGHT_PORT = "9346"
+DEFAULT_PATCHRIGHT_APP_ID = "surf-agent"
+PATCHRIGHT_SETUP_STEPS = (("install", "chrome"),)
 AXI_STATE_DIR = Path.home() / ".chrome-devtools-axi"
 AXI_BRIDGE_PID_FILE = AXI_STATE_DIR / "bridge.pid"
 SURF_AGENT_WINDOW_TITLE = "Surf Agent"

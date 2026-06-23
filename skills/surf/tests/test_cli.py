@@ -13,6 +13,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from surf_agent.backends.camoufox.bridge import ACTIONABLE_SELECTOR, CamoufoxRuntime, PageSlot, RequestHandler, TargetFingerprint
+from surf_agent.backends.patchright.bridge import PatchrightRuntime
 from surf_agent.cli import (
     AgentPage,
     AxiBridgeClient,
@@ -325,6 +326,280 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in run.call_args_list], [[sys.executable, "-m", "camoufox", "sync"]])
         self.assertIn("running:", output.getvalue())
         self.assertIn("uv sync --extra camoufox", error.getvalue())
+
+    def test_backend_config_accepts_patchright_and_resolves_backend(self):
+        with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch.dict("os.environ", {}, clear=True):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["backend", "set", "patchright"]), 0)
+
+            self.assertEqual(json.loads((Path(tmp) / "config.json").read_text()), {"backend": "patchright"})
+            agent = SurfAgent(state_file=Path(tmp) / "thread.json")
+            self.assertEqual(agent.backend, "patchright")
+            show = io.StringIO()
+            with redirect_stdout(show):
+                self.assertEqual(main(["backend", "show"]), 0)
+            self.assertEqual(json.loads(show.getvalue())["backend"], "patchright")
+
+    def test_setup_patchright_runs_install_chrome_with_current_python(self):
+        responses = [subprocess.CompletedProcess(["ignored"], 0, stdout="installed\n", stderr="")]
+        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.subprocess.run", side_effect=responses) as run:
+            output = io.StringIO()
+            error = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(error):
+                self.assertEqual(main(["setup", "patchright"]), 0)
+
+        self.assertEqual([call.args[0] for call in run.call_args_list], [[sys.executable, "-m", "patchright", "install", "chrome"]])
+        self.assertIn("running:", output.getvalue())
+        self.assertIn("Patchright setup complete.", output.getvalue())
+        self.assertEqual(error.getvalue(), "")
+
+    def test_patchright_setup_alias_and_missing_module_hint(self):
+        missing = subprocess.CompletedProcess(["ignored"], 1, stdout="", stderr="No module named patchright\n")
+        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.subprocess.run", return_value=missing) as run:
+            output = io.StringIO()
+            error = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(error):
+                self.assertEqual(main(["patchright", "setup"]), 1)
+
+        self.assertEqual([call.args[0] for call in run.call_args_list], [[sys.executable, "-m", "patchright", "install", "chrome"]])
+        self.assertIn("running:", output.getvalue())
+        self.assertIn("uv sync --extra patchright", error.getvalue())
+
+    def test_patchright_backend_translates_core_commands(self):
+        class FakePatchrightClient:
+            def __init__(self):
+                self.calls = []
+
+            def call_tool(self, name, args=None):
+                self.calls.append((name, args or {}))
+                return f"{name} ok\n"
+
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_BACKEND": "patchright"}, clear=True):
+            agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json")
+            client = FakePatchrightClient()
+            agent.patchright_client = client
+            self.assertEqual(agent.execute_in_window(["open", "https://example.test/"]), "open ok\n")
+            self.assertEqual(agent.execute_in_window(["fill", "@pr0", "hello", "world"]), "fill ok\n")
+            with self.assertRaisesRegex(SurfAgentError, "scroll requires direction"):
+                agent.execute_in_window(["scroll", "sideways"])
+
+        self.assertEqual(
+            client.calls,
+            [("open", {"thread": "thread", "url": "https://example.test/"}), ("fill", {"thread": "thread", "uid": "@pr0", "text": "hello world"})],
+        )
+
+    def test_patchright_profile_show_prints_patchright_config(self):
+        with TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "SURF_AGENT_BACKEND": "patchright",
+                "SURF_AGENT_PATCHRIGHT_PROFILE_DIR": str(Path(tmp) / "patchright-profile"),
+                "SURF_AGENT_PATCHRIGHT_APP_ID": "surf-agent-test",
+                "SURF_AGENT_PATCHRIGHT_CLASS": "surf-agent-window",
+            },
+            clear=True,
+        ):
+            agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                agent.print_profile_show()
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(payload["backend"], "patchright")
+        self.assertEqual(payload["patchright_profile_dir"], str(Path(tmp) / "patchright-profile"))
+        self.assertEqual(payload["patchright_app_id"], "surf-agent-test")
+        self.assertEqual(payload["patchright_class"], "surf-agent-window")
+        self.assertEqual(payload["patchright_bridge_port"], 9346)
+
+    def test_patchright_profile_open_uses_patchright_profile_dir_and_class(self):
+        with TemporaryDirectory() as tmp, patch.dict(
+            "os.environ",
+            {
+                "SURF_AGENT_BACKEND": "patchright",
+                "SURF_AGENT_PATCHRIGHT_APP_ID": "surf-agent-test",
+                "SURF_AGENT_PATCHRIGHT_CLASS": "surf-agent-window",
+            },
+            clear=True,
+        ):
+            profile = Path(tmp) / "patchright-profile"
+            agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json", patchright_profile_dir=profile)
+            pops = []
+            with patch("surf_agent.backends.patchright.backend.subprocess.Popen", side_effect=lambda *a, **kw: pops.append((a, kw)) or object()):
+                with patch.object(agent.patchright_client, "_health_ok", return_value=False):
+                    self.assertEqual(agent.profile_open("https://x.test"), 0)
+
+        self.assertEqual(
+            pops[0][0][0],
+            ["chrome", "--class=surf-agent-window", f"--user-data-dir={profile}", "--new-window", "--name=surf-agent-test", "https://x.test"],
+        )
+
+    def test_patchright_runtime_launches_persistent_chrome_context(self):
+        calls = []
+
+        class FakeContext:
+            def close(self):
+                pass
+
+        class FakePlaywright:
+            def __init__(self):
+                self.chromium = types.SimpleNamespace(launch_persistent_context=self.launch_persistent_context)
+
+            def launch_persistent_context(self, **kwargs):
+                calls.append(kwargs)
+                return FakeContext()
+
+        class FakeManager:
+            def __enter__(self):
+                return FakePlaywright()
+
+            def __exit__(self, exc_type, exc, traceback):
+                pass
+
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"), app_id="surf-agent-test", window_class="surf-agent-window")
+        with patch("surf_agent.backends.patchright.bridge.sync_playwright", return_value=FakeManager()):
+            runtime.start()
+
+        self.assertEqual(calls[0]["user_data_dir"], "/tmp/surf-patchright-test")
+        self.assertEqual(calls[0]["channel"], "chrome")
+        self.assertFalse(calls[0]["headless"])
+        self.assertTrue(calls[0]["no_viewport"])
+        self.assertEqual(calls[0]["args"], ["--class=surf-agent-window", "--name=surf-agent-test"])
+
+    def test_patchright_runtime_open_snapshot_click_and_text(self):
+        class FakeElement:
+            def __init__(self):
+                self.clicked = False
+
+            def evaluate(self, script):
+                if "tagName" in script:
+                    return "button"
+                raise AssertionError(f"unexpected evaluate script: {script}")
+
+            def get_attribute(self, name):
+                return {"role": "button", "aria-label": "Submit"}.get(name, "")
+
+            def inner_text(self, timeout=None):
+                return "Submit"
+
+            def input_value(self, timeout=None):
+                return ""
+
+            def bounding_box(self):
+                return {"x": 1, "y": 2, "width": 3, "height": 4}
+
+            def is_visible(self, timeout=None):
+                return True
+
+            def click(self):
+                self.clicked = True
+
+        class FakeLocatorGroup:
+            def __init__(self, items):
+                self.items = items
+
+            def count(self):
+                return len(self.items)
+
+            def nth(self, index):
+                return self.items[index]
+
+            @property
+            def first(self):
+                return self.items[0]
+
+        class FakeBodyLocator:
+            def inner_text(self, timeout=None):
+                return "Body text"
+
+        class FakePage:
+            def __init__(self):
+                self.url = "about:blank"
+                self.title_value = "Example"
+                self.actionable = FakeElement()
+                self.keyboard = types.SimpleNamespace(type=self._type, press=self._press)
+
+            def is_closed(self):
+                return False
+
+            def goto(self, url, wait_until=None):
+                self.url = url
+
+            def locator(self, selector):
+                if selector == ACTIONABLE_SELECTOR:
+                    return FakeLocatorGroup([self.actionable])
+                if selector == "button":
+                    return FakeLocatorGroup([self.actionable])
+                if selector == "body":
+                    return FakeBodyLocator()
+                raise AssertionError(f"unexpected selector: {selector}")
+
+            def aria_snapshot(self, *args, **kwargs):
+                return '- button "Submit"'
+
+            def title(self):
+                return self.title_value
+
+            def content(self):
+                return "Body text"
+
+            def evaluate(self, code):
+                return {"code": code}
+
+            def close(self):
+                self.closed = True
+
+            def bring_to_front(self):
+                self.focused = True
+
+            def _type(self, text):
+                self.typed = text
+
+            def _press(self, key):
+                self.pressed = key
+
+        class FakeContext:
+            def __init__(self):
+                self.pages = []
+
+            def new_page(self):
+                page = FakePage()
+                self.pages.append(page)
+                return page
+
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"), app_id="surf-agent-test", window_class="surf-agent-window")
+        runtime.browser_or_context = FakeContext()
+
+        self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
+        snapshot = runtime.call("snapshot", {"thread": "thread"})
+        self.assertIn("[ref=pr0]", snapshot)
+        self.assertEqual(runtime.call("click", {"thread": "thread", "uid": "@pr0"}), "clicked\n")
+        self.assertTrue(runtime.pages["thread"].page.actionable.clicked)
+        self.assertEqual(runtime.call("text", {"thread": "thread"}), "Body text\n")
+
+        state = json.loads(runtime.call("state", {"thread": "thread"}))
+        self.assertEqual(state, {"backend": "patchright", "open": True, "thread": "thread", "page_id": 1, "url": "https://example.test/", "title": "Example"})
+        listing = json.loads(runtime.call("list", {}))
+        self.assertEqual(listing, {"backend": "patchright", "pages": [{"thread": "thread", "page_id": 1, "url": "https://example.test/", "title": "Example"}]})
+
+    def test_patchright_bridge_client_ensure_running_spawns_bridge_module_with_profile_and_port(self):
+        from surf_agent.backends.patchright.backend import PatchrightBridgeClient
+
+        profile_dir = Path("/tmp/surf-patchright-profile")
+        client = PatchrightBridgeClient(timeout_s=1.0, port=9555, profile_dir=profile_dir)
+        pops = []
+
+        with (
+            patch.object(client, "_health_ok", side_effect=[False, True]),
+            patch("surf_agent.backends.patchright.backend.subprocess.Popen", side_effect=lambda *a, **kw: pops.append((a, kw)) or object()),
+            patch("surf_agent.backends.patchright.backend.time.monotonic", side_effect=[0.0, 0.0, 0.1]),
+            patch("surf_agent.backends.patchright.backend.time.sleep", return_value=None),
+        ):
+            client._ensure_running()
+
+        command = pops[0][0][0]
+        self.assertEqual(command[:6], [sys.executable, "-m", "surf_agent.backends.patchright.bridge", "--port", "9555", "--profile-dir"])
+        self.assertEqual(command[6], str(profile_dir))
 
     def test_bridge_unavailable_starts_once_then_uses_http(self):
         agent = FakeAxiAgent([AxiBridgeUnavailable("down"), "started\n", "## Pages\n1: Example (https://example.test/)\n"])

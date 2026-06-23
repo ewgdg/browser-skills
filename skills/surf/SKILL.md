@@ -16,22 +16,33 @@ uv run surf-agent backend set camoufox
 uv run surf-agent --thread main open https://example.com
 ```
 
+Optional experimental Chrome/Patchright backend exists for persistent Chrome-profile trials:
+
+```bash
+uv sync --extra patchright
+uv run surf-agent backend set patchright
+uv run surf-agent --thread main open https://example.com
+```
+
 For one command only, env override still wins:
 
 ```bash
 SURF_AGENT_BACKEND=camoufox uv run surf-agent --thread main open https://example.com
+SURF_AGENT_BACKEND=patchright uv run surf-agent --thread main open https://example.com
 ```
 
 Setup first:
 
 ```bash
 uv sync --extra camoufox
+uv sync --extra patchright
 uv run surf-agent setup camoufox
+uv run surf-agent setup patchright
 ```
 
-`setup camoufox` runs `python -m camoufox sync`, selects `official/prerelease`, then fetches the browser binary without launching it.
+`setup camoufox` runs `python -m camoufox sync`, selects `official/prerelease`, then fetches the browser binary without launching it. `setup patchright` runs `python -m patchright install chrome`.
 
-Camoufox backend supports core browsing commands (`open`, `new`, `snapshot`, `text`, `click`, `fill`, `type`, `press`, `scroll`, `wait`, `back`, `screenshot`, `eval`, `close`, `focus`, `state`, `list`) through a persistent local Python bridge and `camoufox-profile/`. It is experimental: Chrome extensions/profile behavior does not apply, and `close-matching` is not implemented yet.
+Camoufox backend supports core browsing commands (`open`, `new`, `snapshot`, `text`, `click`, `fill`, `type`, `press`, `scroll`, `wait`, `back`, `screenshot`, `eval`, `close`, `focus`, `state`, `list`) through a persistent local Python bridge and `camoufox-profile/`. It is experimental: Chrome extensions/profile behavior does not apply, and `close-matching` is not implemented yet. Patchright backend uses the same core commands through a persistent Chrome-channel context and `patchright-profile/`; profile reuse and extension behavior depend on the existing Chrome install, so do not assume perfect extension support.
 
 Persistent app-local data lives under `.surf-agent/`: backend config in `.surf-agent/config.json`, thread state in `.surf-agent/state/`.
 

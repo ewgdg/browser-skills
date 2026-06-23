@@ -24,6 +24,7 @@ from .backends import (
     AgentPage,
     AxiBridgeUnavailable,
     CamoufoxBridgeClient,
+    PatchrightBridgeClient,
     extract_page_id,
     find_page,
     format_bridge_eval_result,
@@ -47,6 +48,10 @@ from .backends import (
 from .constants import (
     CAMOUFOX_BACKEND,
     CAMOUFOX_SETUP_STEPS,
+    DEFAULT_PATCHRIGHT_APP_ID,
+    DEFAULT_PATCHRIGHT_PORT,
+    PATCHRIGHT_BACKEND,
+    PATCHRIGHT_SETUP_STEPS,
     CHROME_NEW_WINDOW_TIMEOUT_S,
     DEFAULT_AXI_BIN,
     DEFAULT_AXI_PORT,
@@ -166,7 +171,10 @@ class SurfAgent:
         state_dir: Path | None = None,
         chrome_profile_dir: Path | None = None,
         camoufox_profile_dir: Path | None = None,
+        patchright_profile_dir: Path | None = None,
         chrome_class: str | None = None,
+        patchright_app_id: str | None = None,
+        patchright_class: str | None = None,
     ) -> None:
         self.axi_bin = axi_bin or os.environ.get("SURF_AGENT_AXI_BIN", DEFAULT_AXI_BIN)
         self.chrome_bin = chrome_bin or os.environ.get("SURF_AGENT_CHROME_BIN") or find_chrome_bin()
@@ -176,19 +184,30 @@ class SurfAgent:
         self.backend = parse_backend_env()
         self.chrome_profile_dir = chrome_profile_dir or default_chrome_profile_dir()
         self.camoufox_profile_dir = camoufox_profile_dir or default_camoufox_profile_dir()
+        self.patchright_profile_dir = patchright_profile_dir or default_patchright_profile_dir()
         self.chrome_class = chrome_class or os.environ.get("SURF_AGENT_CHROME_CLASS") or DEFAULT_CHROME_CLASS
         self.camoufox_app_id = os.environ.get("SURF_AGENT_CAMOUFOX_APP_ID") or os.environ.get("SURF_AGENT_CAMOUFOX_CLASS") or DEFAULT_CAMOUFOX_APP_ID
+        self.patchright_app_id = patchright_app_id or os.environ.get("SURF_AGENT_PATCHRIGHT_APP_ID") or os.environ.get("SURF_AGENT_PATCHRIGHT_CLASS") or DEFAULT_PATCHRIGHT_APP_ID
+        self.patchright_class = patchright_class or os.environ.get("SURF_AGENT_PATCHRIGHT_CLASS") or self.patchright_app_id
         self.chrome_debug_port = parse_port_env("SURF_AGENT_CHROME_DEBUG_PORT", DEFAULT_CHROME_DEBUG_PORT)
         self.camoufox_port = parse_port_env("SURF_AGENT_CAMOUFOX_PORT", DEFAULT_CAMOUFOX_PORT)
+        self.patchright_port = parse_port_env("SURF_AGENT_PATCHRIGHT_PORT", DEFAULT_PATCHRIGHT_PORT)
         self.browser_url = f"http://127.0.0.1:{self.chrome_debug_port}"
         self.camoufox_client = CamoufoxBridgeClient(timeout_s=self.command_timeout_s, port=self.camoufox_port, profile_dir=self.camoufox_profile_dir)
+        self.patchright_client = PatchrightBridgeClient(timeout_s=self.command_timeout_s, port=self.patchright_port, profile_dir=self.patchright_profile_dir)
         self.bridge_client = bridge_client or AxiBridgeClient(
             timeout_s=self.command_timeout_s,
             expected_profile_dir=self.chrome_profile_dir if self._uses_dedicated_chrome_profile() else None,
             expected_chrome_class=self.chrome_class if self._uses_dedicated_chrome_profile() else None,
             expected_browser_url=self.browser_url if self._uses_dedicated_chrome_profile() else None,
         )
-        self.browser_backend = create_backend(self, self.backend, camoufox_client=self.camoufox_client, welcome_url=surf_agent_welcome_url)
+        self.browser_backend = create_backend(
+            self,
+            self.backend,
+            camoufox_client=self.camoufox_client,
+            patchright_client=self.patchright_client,
+            welcome_url=surf_agent_welcome_url,
+        )
 
     def _axi_backend(self) -> Any:
         from .backends import AxiBackend
@@ -301,6 +320,10 @@ class SurfAgent:
             "camoufox_profile_dir": str(self.camoufox_profile_dir),
             "chrome_class": self.chrome_class,
             "chrome_debug_port": self.chrome_debug_port,
+            "patchright_bridge_port": self.patchright_port,
+            "patchright_profile_dir": str(self.patchright_profile_dir),
+            "patchright_app_id": self.patchright_app_id,
+            "patchright_class": self.patchright_class,
             "profile_dir": str(self.chrome_profile_dir),
         }
         print(json.dumps(payload, sort_keys=True))
@@ -308,6 +331,8 @@ class SurfAgent:
     def profile_open(self, url: str = "about:blank") -> int:
         if self.backend == CAMOUFOX_BACKEND:
             return self._camoufox_profile_open(url)
+        if self.backend == PATCHRIGHT_BACKEND:
+            return self._patchright_profile_open(url)
         if self._chrome_debug_endpoint_ready():
             raise SurfAgentError(f"automated Surf Agent Chrome is running at {self.browser_url}; close Surf Agent windows or run `surf-agent bridge-stop` before `profile open`")
         if not self.chrome_bin:
@@ -325,8 +350,19 @@ class SurfAgent:
             url, profile_dir=str(self.camoufox_profile_dir), app_id=self.camoufox_app_id
         )
 
+    def _patchright_profile_open(self, url: str = "about:blank") -> int:
+        return self.browser_backend.profile_open(
+            url,
+            profile_dir=str(self.patchright_profile_dir),
+            app_id=self.patchright_app_id,
+            window_class=self.patchright_class,
+        )
+
     def setup_camoufox(self) -> int:
         return setup_camoufox_backend()
+
+    def setup_patchright(self) -> int:
+        return setup_patchright_backend()
 
     def print_help_to_stderr(self) -> None:
         print_help(sys.stderr)
@@ -463,6 +499,13 @@ def default_camoufox_profile_dir() -> Path:
     return skill_dir() / "camoufox-profile"
 
 
+def default_patchright_profile_dir() -> Path:
+    value = os.environ.get("SURF_AGENT_PATCHRIGHT_PROFILE_DIR")
+    if value:
+        return Path(value).expanduser()
+    return skill_dir() / "patchright-profile"
+
+
 def parse_backend_env() -> str:
     return resolve_backend_preference()[0]
 
@@ -480,8 +523,8 @@ def resolve_backend_preference() -> tuple[str, str]:
 
 def validate_backend_name(value: str, *, source: str = "backend") -> str:
     backend = value.strip().lower()
-    if backend not in {DEFAULT_BACKEND, CAMOUFOX_BACKEND}:
-        raise SurfAgentError(f"{source} must be 'axi' or 'camoufox'", exit_code=2)
+    if backend not in {DEFAULT_BACKEND, CAMOUFOX_BACKEND, PATCHRIGHT_BACKEND}:
+        raise SurfAgentError(f"{source} must be 'axi', 'camoufox', or 'patchright'", exit_code=2)
     return backend
 
 
@@ -991,8 +1034,32 @@ def setup_camoufox_backend() -> int:
     return 0
 
 
+def setup_patchright_backend() -> int:
+    for step in PATCHRIGHT_SETUP_STEPS:
+        command = [sys.executable, "-m", "patchright", *step]
+        print(f"running: {shlex.join(command)}")
+        try:
+            proc = subprocess.run(command, check=False, text=True, capture_output=True)
+        except FileNotFoundError as exc:
+            raise SurfAgentError(f"could not run Python executable {sys.executable!r}", exit_code=1) from exc
+        if proc.stdout:
+            print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
+        if proc.stderr:
+            print(proc.stderr, end="" if proc.stderr.endswith("\n") else "\n", file=sys.stderr)
+        if proc.returncode != 0:
+            detail = (proc.stderr or proc.stdout or f"exit code {proc.returncode}").strip()
+            hint = " Install Patchright support with `uv sync --extra patchright`." if is_patchright_module_missing(detail) else ""
+            raise SurfAgentError(f"Patchright setup failed while running `{shlex.join(command)}`: {detail}.{hint}", exit_code=proc.returncode or 1)
+    print("Patchright setup complete.")
+    return 0
+
+
 def is_camoufox_module_missing(detail: str) -> bool:
     return "No module named" in detail and "camoufox" in detail
+
+
+def is_patchright_module_missing(detail: str) -> bool:
+    return "No module named" in detail and "patchright" in detail
 
 
 def print_help(stream: Any) -> None:
@@ -1000,15 +1067,16 @@ def print_help(stream: Any) -> None:
         "surf-agent: threaded browser helper using a persistent browser bridge\n\n"
         "Usage:\n"
         "  surf-agent [--thread ID] state                 print current page state; does not open a page\n"
-        "  surf-agent list                                list remembered browser threads and clean stale entries\n"        "  surf-agent [--thread ID] new                   replace/create dedicated thread window, print page id\n"
+        "  surf-agent list                                list remembered browser threads and clean stale entries\n"
+        "  surf-agent [--thread ID] new                   replace/create dedicated thread window, print page id\n"
         "  surf-agent [--thread ID] close                 close remembered thread page/window; browser bridge stays alive\n"
         "  surf-agent [--thread ID] focus                 select remembered thread page\n"
         "  surf-agent profile show                         print dedicated profile configuration JSON\n"
         "  surf-agent profile open [url]                   open dedicated profile without automation/debug port\n"
         "  surf-agent backend show                         print selected backend and source\n"
-        "  surf-agent backend set axi|camoufox             persist default backend\n"
+        "  surf-agent backend set axi|camoufox|patchright   persist default backend\n"
         "  surf-agent backend reset                        clear persisted backend\n"
-        "  surf-agent setup camoufox                       install/update Camoufox browser backend\n"
+        "  surf-agent setup camoufox|patchright            install/update optional browser backend\n"
         "  surf-agent close-all                           close all remembered thread pages/windows\n"
         "  surf-agent close-matching <glob>               close remembered thread pages/windows whose thread names match\n"
         "  surf-agent [--thread ID] reset                 clear thread state without closing page\n"
@@ -1025,7 +1093,9 @@ def print_help(stream: Any) -> None:
         "  printf 'open https://example.com\\nsnapshot\\n' | surf-agent --thread main do\n"
         "  surf-agent profile open https://x.com\n"
         "  surf-agent backend set camoufox\n"
+        "  surf-agent backend set patchright\n"
         "  surf-agent setup camoufox\n"
+        "  surf-agent setup patchright\n"
         "  surf-agent --thread docs screenshot --output /tmp/shot.png\n"
         "  surf-agent close-matching 'agent-run-*'\n\n"
         "State: skill-local .surf-agent/state/<thread>.json plus chrome-profile/.\n"
@@ -1048,13 +1118,17 @@ def main(argv: list[str] | None = None) -> int:
                 return set_backend_config(argv[2])
             if len(argv) == 2 and argv[1] == "reset":
                 return reset_backend_config()
-            raise SurfAgentError("usage: surf-agent backend show | backend set axi|camoufox | backend reset", exit_code=2)
+            raise SurfAgentError("usage: surf-agent backend show | backend set axi|camoufox|patchright | backend reset", exit_code=2)
         if command == "setup":
             if len(argv) == 2 and argv[1] == CAMOUFOX_BACKEND:
                 return setup_camoufox_backend()
-            raise SurfAgentError("usage: surf-agent setup camoufox", exit_code=2)
+            if len(argv) == 2 and argv[1] == PATCHRIGHT_BACKEND:
+                return setup_patchright_backend()
+            raise SurfAgentError("usage: surf-agent setup camoufox|patchright", exit_code=2)
         if command == CAMOUFOX_BACKEND and len(argv) == 2 and argv[1] == "setup":
             return setup_camoufox_backend()
+        if command == PATCHRIGHT_BACKEND and len(argv) == 2 and argv[1] == "setup":
+            return setup_patchright_backend()
         agent = SurfAgent(thread=config.thread)
         if command == "state":
             agent.print_state(thread=config.thread)
