@@ -14,13 +14,13 @@ Optional backends exist, but stay opt-in:
 - `camoufox`: experimental Firefox/Camoufox fingerprint-resistance trials.
 - `patchright`: experimental Chrome-channel persistent-profile trials.
 
-Backend selection priority: `SURF_AGENT_BACKEND`, then `.surf-agent/config.json`, then `axi` default. Backend details live in [docs/backends.md](docs/backends.md); AXI internals live in [docs/axi-backend.md](docs/axi-backend.md).
+Backend selection priority: `SURF_AGENT_BACKEND`, then `.surf-agent/config.json`, then `axi` default. Backend docs: [overview](docs/backends.md), [AXI](docs/axi-backend.md), [Camoufox](docs/camoufox-backend.md), [Patchright](docs/patchright-backend.md).
 
 Direct `surf` CLI fallback is removed. Unsupported commands fail clearly instead of switching backends.
 
 ## Setup
 
-Run from this skill directory. Default AXI use needs no optional Python extra.
+Run from this skill directory. Default AXI use needs no optional Python extra. Backend-specific setup details live in the backend docs.
 
 Optional backend setup:
 
