@@ -18,42 +18,7 @@ Backend selection priority: `SURF_AGENT_BACKEND`, then `.surf-agent/config.json`
 
 Direct `surf` CLI fallback is removed. Unsupported commands fail clearly instead of switching backends.
 
-## Setup
-
-Run from this skill directory. Default AXI use needs no optional Python extra. Backend-specific setup details live in the backend docs.
-
-Optional backend setup:
-
-```bash
-uv sync --extra camoufox
-uv run surf-agent setup camoufox
-
-uv sync --extra patchright
-uv run surf-agent setup patchright
-```
-
-Persist optional backend:
-
-```bash
-uv run surf-agent backend set camoufox
-uv run surf-agent backend set patchright
-uv run surf-agent backend reset
-```
-
-Use one backend for one command without changing config:
-
-```bash
-SURF_AGENT_BACKEND=camoufox uv run surf-agent --thread main open https://example.com
-SURF_AGENT_BACKEND=patchright uv run surf-agent --thread main open https://example.com
-```
-
-First use of a dedicated profile may require one-time browser setup/login. For setup without automation/debugging, close Surf Agent automation windows and run `uv run surf-agent profile open https://x.com`.
-
-Only use explicit bridge stop when you intend to kill the persistent browser bridge:
-
-```bash
-uv run surf-agent bridge-stop
-```
+One-time setup, backend switching, profile setup, and bridge restart details live in [docs/setup.md](docs/setup.md).
 
 ## Operating rules
 
