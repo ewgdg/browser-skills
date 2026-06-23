@@ -11,7 +11,9 @@ uv sync --extra patchright
 uv run surf-agent setup patchright
 ```
 
-`setup patchright` runs `python -m patchright install chrome`.
+`setup patchright` checks for the Patchright Python package and a Chrome executable. It does not run Patchright's Chrome installer. When anything is missing, it prints manual Chrome-install instructions so the user controls browser installation.
+
+Install Google Chrome yourself and make it available on PATH as `google-chrome`, or set `SURF_AGENT_CHROME_BIN`.
 
 ## Select backend
 

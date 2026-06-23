@@ -9,7 +9,15 @@ uv sync --extra camoufox
 uv run surf-agent setup camoufox
 ```
 
-`setup camoufox` runs `python -m camoufox sync`, selects `official/prerelease`, then fetches the browser binary without launching it.
+`setup camoufox` does not run Camoufox install/fetch commands. It checks whether the Python package and browser are present, then prints manual setup instructions when anything is missing.
+
+Manual browser setup commands:
+
+```bash
+uv run python -m camoufox sync
+uv run python -m camoufox set official/prerelease
+uv run python -m camoufox fetch
+```
 
 ## Select backend
 

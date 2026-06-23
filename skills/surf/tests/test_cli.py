@@ -362,41 +362,42 @@ class AxiBackendTests(unittest.TestCase):
                 self.assertEqual(main(["profile", "show"]), 0)
             self.assertEqual(json.loads(output.getvalue())["chrome_debug_port"], 9336)
 
-    def test_setup_camoufox_runs_sync_set_fetch_with_current_python(self):
-        responses = [
-            subprocess.CompletedProcess(["ignored"], 0, stdout="synced\n", stderr=""),
-            subprocess.CompletedProcess(["ignored"], 0, stdout="set\n", stderr=""),
-            subprocess.CompletedProcess(["ignored"], 0, stdout="fetched\n", stderr=""),
-        ]
-        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.subprocess.run", side_effect=responses) as run:
+    def test_setup_camoufox_prints_manual_instructions_without_running_installer(self):
+        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.importlib.util.find_spec", return_value=None), patch("surf_agent.cli.subprocess.run") as run:
             output = io.StringIO()
             error = io.StringIO()
             with redirect_stdout(output), redirect_stderr(error):
                 self.assertEqual(main(["setup", "camoufox"]), 0)
 
-        self.assertEqual(
-            [call.args[0] for call in run.call_args_list],
-            [
-                [sys.executable, "-m", "camoufox", "sync"],
-                [sys.executable, "-m", "camoufox", "set", "official/prerelease"],
-                [sys.executable, "-m", "camoufox", "fetch"],
-            ],
-        )
-        self.assertIn("running:", output.getvalue())
-        self.assertIn("Camoufox setup complete.", output.getvalue())
+        run.assert_not_called()
+        self.assertIn("Camoufox setup is manual", output.getvalue())
+        self.assertIn("uv sync --extra camoufox", output.getvalue())
+        self.assertIn("uv run python -m camoufox fetch", output.getvalue())
         self.assertEqual(error.getvalue(), "")
 
-    def test_camoufox_setup_alias_and_missing_module_hint(self):
-        missing = subprocess.CompletedProcess(["ignored"], 1, stdout="", stderr="No module named camoufox\n")
-        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.subprocess.run", return_value=missing) as run:
+    def test_setup_camoufox_reports_already_setup_when_package_and_browser_exist(self):
+        installed = subprocess.CompletedProcess(["ignored"], 0, stdout="Browser\n  Installed                   Yes\n", stderr="")
+        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.importlib.util.find_spec", return_value=object()), patch("surf_agent.cli.subprocess.run", return_value=installed) as run:
             output = io.StringIO()
             error = io.StringIO()
             with redirect_stdout(output), redirect_stderr(error):
-                self.assertEqual(main(["camoufox", "setup"]), 1)
+                self.assertEqual(main(["setup", "camoufox"]), 0)
 
-        self.assertEqual([call.args[0] for call in run.call_args_list], [[sys.executable, "-m", "camoufox", "sync"]])
-        self.assertIn("running:", output.getvalue())
-        self.assertIn("uv sync --extra camoufox", error.getvalue())
+        self.assertEqual(run.call_args.args[0], [sys.executable, "-m", "camoufox", "version"])
+        self.assertIn("Camoufox appears set up", output.getvalue())
+        self.assertEqual(error.getvalue(), "")
+
+    def test_camoufox_setup_alias_prints_manual_instructions(self):
+        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.importlib.util.find_spec", return_value=None), patch("surf_agent.cli.subprocess.run") as run:
+            output = io.StringIO()
+            error = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(error):
+                self.assertEqual(main(["camoufox", "setup"]), 0)
+
+        run.assert_not_called()
+        self.assertIn("Camoufox setup is manual", output.getvalue())
+        self.assertIn("uv sync --extra camoufox", output.getvalue())
+        self.assertEqual(error.getvalue(), "")
 
     def test_backend_config_accepts_patchright_and_resolves_backend(self):
         with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch.dict("os.environ", {}, clear=True):
@@ -412,30 +413,42 @@ class AxiBackendTests(unittest.TestCase):
                 self.assertEqual(main(["backend", "show"]), 0)
             self.assertEqual(json.loads(show.getvalue())["backend"], "patchright")
 
-    def test_setup_patchright_runs_install_chrome_with_current_python(self):
-        responses = [subprocess.CompletedProcess(["ignored"], 0, stdout="installed\n", stderr="")]
-        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.subprocess.run", side_effect=responses) as run:
+    def test_setup_patchright_prints_manual_install_instructions_without_running_installer(self):
+        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.importlib.util.find_spec", return_value=None), patch("surf_agent.cli.find_chrome_bin", return_value=None), patch("surf_agent.cli.subprocess.run") as run:
             output = io.StringIO()
             error = io.StringIO()
             with redirect_stdout(output), redirect_stderr(error):
                 self.assertEqual(main(["setup", "patchright"]), 0)
 
-        self.assertEqual([call.args[0] for call in run.call_args_list], [[sys.executable, "-m", "patchright", "install", "chrome"]])
-        self.assertIn("running:", output.getvalue())
-        self.assertIn("Patchright setup complete.", output.getvalue())
+        run.assert_not_called()
+        self.assertIn("Patchright setup is manual", output.getvalue())
+        self.assertIn("Install Google Chrome yourself", output.getvalue())
+        self.assertIn("uv sync --extra patchright", output.getvalue())
         self.assertEqual(error.getvalue(), "")
 
-    def test_patchright_setup_alias_and_missing_module_hint(self):
-        missing = subprocess.CompletedProcess(["ignored"], 1, stdout="", stderr="No module named patchright\n")
-        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.subprocess.run", return_value=missing) as run:
+    def test_setup_patchright_reports_already_setup_when_package_and_chrome_exist(self):
+        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.importlib.util.find_spec", return_value=object()), patch("surf_agent.cli.find_chrome_bin", return_value="/usr/bin/google-chrome"), patch("surf_agent.cli.subprocess.run") as run:
             output = io.StringIO()
             error = io.StringIO()
             with redirect_stdout(output), redirect_stderr(error):
-                self.assertEqual(main(["patchright", "setup"]), 1)
+                self.assertEqual(main(["setup", "patchright"]), 0)
 
-        self.assertEqual([call.args[0] for call in run.call_args_list], [[sys.executable, "-m", "patchright", "install", "chrome"]])
-        self.assertIn("running:", output.getvalue())
-        self.assertIn("uv sync --extra patchright", error.getvalue())
+        run.assert_not_called()
+        self.assertIn("Patchright appears set up", output.getvalue())
+        self.assertIn("/usr/bin/google-chrome", output.getvalue())
+        self.assertEqual(error.getvalue(), "")
+
+    def test_patchright_setup_alias_prints_same_manual_instructions(self):
+        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.importlib.util.find_spec", return_value=None), patch("surf_agent.cli.find_chrome_bin", return_value=None), patch("surf_agent.cli.subprocess.run") as run:
+            output = io.StringIO()
+            error = io.StringIO()
+            with redirect_stdout(output), redirect_stderr(error):
+                self.assertEqual(main(["patchright", "setup"]), 0)
+
+        run.assert_not_called()
+        self.assertIn("Patchright setup is manual", output.getvalue())
+        self.assertIn("Install Google Chrome yourself", output.getvalue())
+        self.assertEqual(error.getvalue(), "")
 
     def test_patchright_backend_translates_core_commands(self):
         class FakePatchrightClient:

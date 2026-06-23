@@ -90,7 +90,7 @@ class PatchrightBridgeClient:
             if self._health_ok():
                 return
             time.sleep(0.25)
-        raise SurfAgentError("Patchright bridge did not become healthy; install Patchright and run `uv run python -m patchright install chrome`")
+        raise SurfAgentError("Patchright bridge did not become healthy; run `uv sync --extra patchright`, install Google Chrome yourself, and set SURF_AGENT_CHROME_BIN if Chrome is not on PATH")
 
     def _health_ok(self) -> bool:
         try:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import importlib.util
 import difflib
 import io
 import json
@@ -48,11 +49,9 @@ from .backends import (
 )
 from .constants import (
     CAMOUFOX_BACKEND,
-    CAMOUFOX_SETUP_STEPS,
     DEFAULT_PATCHRIGHT_APP_ID,
     DEFAULT_PATCHRIGHT_PORT,
     PATCHRIGHT_BACKEND,
-    PATCHRIGHT_SETUP_STEPS,
     CHROME_NEW_WINDOW_TIMEOUT_S,
     DEFAULT_AXI_BIN,
     DEFAULT_AXI_PORT,
@@ -1047,51 +1046,83 @@ def parse_agent_args(argv: Sequence[str]) -> tuple[AgentConfig, list[str]]:
 
 
 def setup_camoufox_backend() -> int:
-    for step in CAMOUFOX_SETUP_STEPS:
-        command = [sys.executable, "-m", "camoufox", *step]
-        print(f"running: {shlex.join(command)}")
-        try:
-            proc = subprocess.run(command, check=False, text=True, capture_output=True)
-        except FileNotFoundError as exc:
-            raise SurfAgentError(f"could not run Python executable {sys.executable!r}", exit_code=1) from exc
-        if proc.stdout:
-            print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
-        if proc.stderr:
-            print(proc.stderr, end="" if proc.stderr.endswith("\n") else "\n", file=sys.stderr)
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or f"exit code {proc.returncode}").strip()
-            hint = " Install Camoufox support with `uv sync --extra camoufox`." if is_camoufox_module_missing(detail) else ""
-            raise SurfAgentError(f"Camoufox setup failed while running `{shlex.join(command)}`: {detail}.{hint}", exit_code=proc.returncode or 1)
-    print("Camoufox setup complete.")
+    package_installed = python_module_available("camoufox")
+    browser_installed = False
+    browser_status = "unknown"
+    if package_installed:
+        browser_installed, browser_status = camoufox_browser_status()
+
+    if package_installed and browser_installed:
+        print(
+            "Camoufox appears set up.\n"
+            "Python package: installed\n"
+            "Browser: installed\n"
+            "Select it with:\n"
+            "  uv run surf-agent backend set camoufox"
+        )
+        return 0
+
+    print(
+        "Camoufox setup is manual for safety.\n"
+        f"Python package: {'installed' if package_installed else 'missing'}\n"
+        f"Browser: {browser_status}\n"
+        "Install Camoufox Python support with:\n"
+        "  uv sync --extra camoufox\n"
+        "Install/update the Camoufox browser yourself with:\n"
+        "  uv run python -m camoufox sync\n"
+        "  uv run python -m camoufox set official/prerelease\n"
+        "  uv run python -m camoufox fetch\n"
+        "Then select it with:\n"
+        "  uv run surf-agent backend set camoufox"
+    )
     return 0
 
 
 def setup_patchright_backend() -> int:
-    for step in PATCHRIGHT_SETUP_STEPS:
-        command = [sys.executable, "-m", "patchright", *step]
-        print(f"running: {shlex.join(command)}")
-        try:
-            proc = subprocess.run(command, check=False, text=True, capture_output=True)
-        except FileNotFoundError as exc:
-            raise SurfAgentError(f"could not run Python executable {sys.executable!r}", exit_code=1) from exc
-        if proc.stdout:
-            print(proc.stdout, end="" if proc.stdout.endswith("\n") else "\n")
-        if proc.stderr:
-            print(proc.stderr, end="" if proc.stderr.endswith("\n") else "\n", file=sys.stderr)
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or f"exit code {proc.returncode}").strip()
-            hint = " Install Patchright support with `uv sync --extra patchright`." if is_patchright_module_missing(detail) else ""
-            raise SurfAgentError(f"Patchright setup failed while running `{shlex.join(command)}`: {detail}.{hint}", exit_code=proc.returncode or 1)
-    print("Patchright setup complete.")
+    package_installed = python_module_available("patchright")
+    chrome_bin = os.environ.get("SURF_AGENT_CHROME_BIN") or find_chrome_bin()
+
+    if package_installed and chrome_bin:
+        print(
+            "Patchright appears set up.\n"
+            "Python package: installed\n"
+            f"Chrome: {chrome_bin}\n"
+            "Select it with:\n"
+            "  uv run surf-agent backend set patchright"
+        )
+        return 0
+
+    print(
+        "Patchright setup is manual for safety.\n"
+        f"Python package: {'installed' if package_installed else 'missing'}\n"
+        f"Chrome: {chrome_bin or 'missing'}\n"
+        "Install Google Chrome yourself, then make it available on PATH "
+        "as `google-chrome` or set SURF_AGENT_CHROME_BIN.\n"
+        "Install Patchright Python support with:\n"
+        "  uv sync --extra patchright\n"
+        "Then select it with:\n"
+        "  uv run surf-agent backend set patchright"
+    )
     return 0
 
 
-def is_camoufox_module_missing(detail: str) -> bool:
-    return "No module named" in detail and "camoufox" in detail
+def python_module_available(module_name: str) -> bool:
+    return importlib.util.find_spec(module_name) is not None
 
 
-def is_patchright_module_missing(detail: str) -> bool:
-    return "No module named" in detail and "patchright" in detail
+def camoufox_browser_status() -> tuple[bool, str]:
+    command = [sys.executable, "-m", "camoufox", "version"]
+    try:
+        proc = subprocess.run(command, check=False, text=True, capture_output=True, timeout=10)
+    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+        return False, f"unknown ({exc})"
+
+    output = "\n".join(part for part in (proc.stdout, proc.stderr) if part).strip()
+    if proc.returncode != 0:
+        return False, f"missing ({output or f'exit code {proc.returncode}'})"
+    if re.search(r"(?im)^\s*Installed\s+Yes\s*$", output):
+        return True, "installed"
+    return False, "missing"
 
 
 def print_help(stream: Any) -> None:
@@ -1108,7 +1139,7 @@ def print_help(stream: Any) -> None:
         "  surf-agent backend show                         print selected backend and source\n"
         "  surf-agent backend set axi|camoufox|patchright   persist default backend\n"
         "  surf-agent backend reset                        clear persisted backend\n"
-        "  surf-agent setup camoufox|patchright            install/update optional browser backend\n"
+        "  surf-agent setup camoufox|patchright            check setup and print manual backend setup steps\n"
         "  surf-agent close-all                           close all remembered thread pages/windows\n"
         "  surf-agent close-matching <glob>               close remembered thread pages/windows whose thread names match\n"
         "  surf-agent [--thread ID] reset                 clear thread state without closing page\n"

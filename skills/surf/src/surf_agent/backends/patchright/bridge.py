@@ -74,7 +74,7 @@ class PatchrightRuntime:
         if self.browser_or_context is not None:
             return
         if sync_playwright is None:
-            raise RuntimeError("Patchright is not installed. Run `uv sync --extra patchright`, then `uv run python -m patchright install chrome`.")
+            raise RuntimeError("Patchright is not installed. Run `uv sync --extra patchright`, install Google Chrome yourself, and set SURF_AGENT_CHROME_BIN if Chrome is not on PATH.")
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         launch_args = [f"--class={self.window_class}", f"--name={self.app_id}"] if self.app_id or self.window_class else []
         self.manager = sync_playwright()
