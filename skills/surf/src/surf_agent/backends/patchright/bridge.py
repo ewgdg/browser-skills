@@ -30,6 +30,8 @@ SNAPSHOT_BODY_TIMEOUT_MS = 3_000
 SNAPSHOT_LOCATOR_TIMEOUT_MS = 250
 SNAPSHOT_REF_LIMIT = 80
 SNAPSHOT_INDEX_BUDGET_S = 7.0
+SNAPSHOT_DEPTH: int | None = None
+SNAPSHOT_BOXES = False
 
 
 @dataclass(frozen=True)
@@ -299,10 +301,20 @@ class PatchrightRuntime:
         return "\n".join(parts).rstrip() + "\n"
 
     def _aria_snapshot(self, target: Any) -> str:
+        # Match Playwright CLI snapshots: AI-mode ARIA tree, optional depth, optional boxes.
+        options = {
+            "mode": "ai",
+            "timeout": SNAPSHOT_ARIA_TIMEOUT_MS,
+            "depth": SNAPSHOT_DEPTH,
+            "boxes": SNAPSHOT_BOXES,
+        }
         try:
-            return str(target.aria_snapshot(mode="ai", timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
+            return str(target.aria_snapshot(**options))
         except TypeError:
-            return str(target.aria_snapshot(timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
+            try:
+                return str(target.aria_snapshot(mode="ai", timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
+            except TypeError:
+                return str(target.aria_snapshot(timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
 
     def _index_actionable_refs(self, slot: PageSlot) -> list[str]:
         locator = slot.page.locator(ACTIONABLE_SELECTOR)

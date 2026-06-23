@@ -19,6 +19,11 @@ REF_PATTERN = re.compile(r"^(?:cf|e)\d+$")
 STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
 CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
 STARTUP_PAGE_URLS = {"", "about:blank", "about:home", "about:newtab", "chrome://newtab/"}
+SNAPSHOT_ARIA_TIMEOUT_MS = 5_000
+SNAPSHOT_BODY_TIMEOUT_MS = 5_000
+SNAPSHOT_LOCATOR_TIMEOUT_MS = 250
+SNAPSHOT_DEPTH: int | None = None
+SNAPSHOT_BOXES = False
 
 
 @dataclass(frozen=True)
@@ -257,7 +262,7 @@ class CamoufoxRuntime:
 
     def _body_text(self, page: Any) -> str:
         try:
-            text = page.locator("body").inner_text(timeout=5_000)
+            text = page.locator("body").inner_text(timeout=SNAPSHOT_BODY_TIMEOUT_MS)
         except Exception:
             text = page.content()
         return text + ("" if text.endswith("\n") else "\n")
@@ -280,10 +285,20 @@ class CamoufoxRuntime:
         return "\n".join(parts).rstrip() + "\n"
 
     def _aria_snapshot(self, target: Any) -> str:
+        # Match Playwright CLI snapshots where Camoufox exposes compatible options.
+        options = {
+            "mode": "ai",
+            "timeout": SNAPSHOT_ARIA_TIMEOUT_MS,
+            "depth": SNAPSHOT_DEPTH,
+            "boxes": SNAPSHOT_BOXES,
+        }
         try:
-            return str(target.aria_snapshot(mode="ai", timeout=5_000))
+            return str(target.aria_snapshot(**options))
         except TypeError:
-            return str(target.aria_snapshot(timeout=5_000))
+            try:
+                return str(target.aria_snapshot(mode="ai", timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
+            except TypeError:
+                return str(target.aria_snapshot(timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
 
     def _index_actionable_refs(self, slot: PageSlot) -> list[str]:
         locator = slot.page.locator(ACTIONABLE_SELECTOR)
