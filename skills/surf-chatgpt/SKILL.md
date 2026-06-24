@@ -20,7 +20,9 @@ Do **not** use when local reasoning is enough. Browser automation is slower and 
 ## Prerequisites
 
 ```bash
-uv tool install surf-chatgpt
+uv tool install \
+  --with "surf-agent @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
+  "surf-chatgpt @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-chatgpt"
 ```
 
 `surf-chatgpt` depends on `surf-agent` and imports its CLI directly. No separate `surf-agent` executable lookup needed for normal use.

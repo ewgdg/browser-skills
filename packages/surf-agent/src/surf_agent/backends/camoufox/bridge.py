@@ -69,7 +69,7 @@ class CamoufoxRuntime:
         try:
             from camoufox.sync_api import Camoufox
         except ImportError as exc:
-            raise RuntimeError("Camoufox is not installed. Run `uv tool install 'surf-agent[camoufox]'`, then manually run `python -m camoufox fetch`.") from exc
+            raise RuntimeError("Camoufox is not installed. Run `uv tool install \"surf-agent[camoufox] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent\"`, then manually run `python -m camoufox fetch`.") from exc
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         launch_args = [f"--class={self.app_id}", "--name", self.app_id] if self.app_id else []
         self.manager = Camoufox(persistent_context=True, user_data_dir=str(self.profile_dir), headless=self.headless, args=launch_args)

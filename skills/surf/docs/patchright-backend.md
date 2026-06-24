@@ -7,7 +7,7 @@ It may help Chrome-extension workflows, but extension behavior depends on the in
 ## Setup
 
 ```bash
-uv tool install 'surf-agent[patchright]'
+uv tool install "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
 surf-agent setup patchright
 ```
 

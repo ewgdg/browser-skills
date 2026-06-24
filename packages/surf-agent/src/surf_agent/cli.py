@@ -72,6 +72,7 @@ from .constants import (
 from .errors import SurfAgentError
 
 APP_DIRS = PlatformDirs("surf-agent", appauthor=False)
+SURF_AGENT_GIT_PACKAGE = "git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
 
 
 FORBIDDEN_COMMANDS = {
@@ -1122,7 +1123,7 @@ def setup_camoufox_backend() -> int:
         f"Python package: {'installed' if package_installed else 'missing'}\n"
         f"Browser: {browser_status}\n"
         "Install Camoufox Python support with:\n"
-        "  uv tool install 'surf-agent[camoufox]'\n"
+        f"  uv tool install \"surf-agent[camoufox] @ {SURF_AGENT_GIT_PACKAGE}\"\n"
         "Install/update the Camoufox browser yourself with:\n"
         "  python -m camoufox sync\n"
         "  python -m camoufox set official/prerelease\n"
@@ -1154,7 +1155,7 @@ def setup_patchright_backend() -> int:
         "Install Google Chrome yourself, then make it available on PATH "
         "as `google-chrome` or set SURF_AGENT_CHROME_BIN.\n"
         "Install Patchright Python support with:\n"
-        "  uv tool install 'surf-agent[patchright]'\n"
+        f"  uv tool install \"surf-agent[patchright] @ {SURF_AGENT_GIT_PACKAGE}\"\n"
         "Then select it with:\n"
         "  surf-agent backend set patchright"
     )

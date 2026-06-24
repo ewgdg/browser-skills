@@ -19,7 +19,7 @@ Backend selection priority: `SURF_AGENT_BACKEND`, then persisted platform user c
 ## Prerequisites
 
 ```bash
-uv tool install surf-agent
+uv tool install "surf-agent @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
 ```
 
 ## Operating rules

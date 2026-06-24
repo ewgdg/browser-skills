@@ -10,16 +10,18 @@ Currently included:
 ## Install
 
 ```bash
-pi install /path/to/browser-skills
+pi install git:github.com/ewgdg/browser-skills
 ```
 
 ## Python CLIs
 
-Install the browser helper CLIs separately when using these skills outside this repo:
+Install the browser helper CLIs separately:
 
 ```bash
-uv tool install surf-agent
-uv tool install surf-chatgpt
+uv tool install "surf-agent @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
+uv tool install \
+  --with "surf-agent @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
+  "surf-chatgpt @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-chatgpt"
 ```
 
 `surf-chatgpt` depends on the latest available `surf-agent`.

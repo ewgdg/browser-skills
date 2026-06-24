@@ -423,7 +423,7 @@ class AxiBackendTests(unittest.TestCase):
 
         run.assert_not_called()
         self.assertIn("Camoufox setup is manual", output.getvalue())
-        self.assertIn("uv tool install 'surf-agent[camoufox]'", output.getvalue())
+        self.assertIn("surf-agent[camoufox] @ git+https://github.com/ewgdg/browser-skills.git", output.getvalue())
         self.assertIn("python -m camoufox fetch", output.getvalue())
         self.assertEqual(error.getvalue(), "")
 
@@ -448,7 +448,7 @@ class AxiBackendTests(unittest.TestCase):
 
         run.assert_not_called()
         self.assertIn("Camoufox setup is manual", output.getvalue())
-        self.assertIn("uv tool install 'surf-agent[camoufox]'", output.getvalue())
+        self.assertIn("surf-agent[camoufox] @ git+https://github.com/ewgdg/browser-skills.git", output.getvalue())
         self.assertEqual(error.getvalue(), "")
 
     def test_backend_config_accepts_patchright_and_resolves_backend(self):
@@ -475,7 +475,7 @@ class AxiBackendTests(unittest.TestCase):
         run.assert_not_called()
         self.assertIn("Patchright setup is manual", output.getvalue())
         self.assertIn("Install Google Chrome yourself", output.getvalue())
-        self.assertIn("uv tool install 'surf-agent[patchright]'", output.getvalue())
+        self.assertIn("surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git", output.getvalue())
         self.assertEqual(error.getvalue(), "")
 
     def test_setup_patchright_reports_already_setup_when_package_and_chrome_exist(self):

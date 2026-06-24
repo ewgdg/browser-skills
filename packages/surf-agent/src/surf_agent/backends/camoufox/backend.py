@@ -20,7 +20,7 @@ def _camoufox_binary_path() -> str:
         from camoufox.utils import launch_path
     except ImportError:
         raise SurfAgentError(
-            "Camoufox package not installed. Run `uv tool install 'surf-agent[camoufox]'`, "
+            "Camoufox package not installed. Run `uv tool install \"surf-agent[camoufox] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent\"`, "
             "then manually run `python -m camoufox fetch`."
         )
     try:
@@ -103,7 +103,7 @@ class CamoufoxBridgeClient:
             if self._health_ok():
                 return
             time.sleep(0.25)
-        raise SurfAgentError("Camoufox bridge did not become healthy; run `uv tool install 'surf-agent[camoufox]'`, then manually run `python -m camoufox fetch`")
+        raise SurfAgentError("Camoufox bridge did not become healthy; run `uv tool install \"surf-agent[camoufox] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent\"`, then manually run `python -m camoufox fetch`")
 
     def _health_ok(self) -> bool:
         try:

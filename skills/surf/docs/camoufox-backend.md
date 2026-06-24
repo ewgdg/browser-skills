@@ -5,7 +5,7 @@ Camoufox is experimental. Use it for Firefox/Camoufox fingerprint-resistance tri
 ## Setup
 
 ```bash
-uv tool install 'surf-agent[camoufox]'
+uv tool install "surf-agent[camoufox] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
 surf-agent setup camoufox
 ```
 
