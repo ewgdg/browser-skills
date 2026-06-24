@@ -12,7 +12,7 @@ from .surf import SurfRunner
 class AskOptions:
     session_policy: str = "ephemeral"
     session_url: str | None = None
-    window_id: int | None = None
+    thread: str | None = None
     keep_open: bool = False
     model_query: str | None = None
     thinking_label: str | None = None
@@ -29,7 +29,7 @@ def ask_chatgpt(user_prompt: str, options: AskOptions, *, surf: SurfRunner | Non
         ReusableAskOptions(
             session_policy=options.session_policy,
             session_url=options.session_url,
-            window_id=options.window_id,
+            thread=options.thread,
             keep_open=options.keep_open,
             model_query=options.model_query,
             start_new=options.start_new,

@@ -26,17 +26,17 @@ class JsonArgumentParser(argparse.ArgumentParser):
 def build_parser() -> argparse.ArgumentParser:
     parser = JsonArgumentParser(
         prog="surf-chatgpt",
-        description="Compact external ChatGPT consultation through surf browser automation.",
+        description="Compact external ChatGPT consultation through surf-agent browser automation.",
     )
     subparsers = parser.add_subparsers(dest="command", parser_class=JsonArgumentParser)
 
-    ask = subparsers.add_parser("ask", help="Forward stdin to ChatGPT through surf. Defaults to ephemeral one-shot mode.")
+    ask = subparsers.add_parser("ask", help="Forward stdin to ChatGPT through surf-agent. Defaults to ephemeral one-shot mode.")
     ask.add_argument("--ephemeral", action="store_true", help="Use a temporary controlled browser session. Default when no session option is given.")
     ask.add_argument("--session", help="Continue a ChatGPT session by conversation id or https://chatgpt.com/c/<id> URL.")
-    ask.add_argument("--window-id", type=int, help="Continue in an existing one-tab surf window returned by --keep-open.")
+    ask.add_argument("--thread", help="Continue in an existing surf-agent thread returned by --keep-open.")
     ask.add_argument("--new", action="store_true", help="Start a new ChatGPT session and return its session id/url.")
-    ask.add_argument("--current", action="store_true", help="Use current active ChatGPT tab.")
-    ask.add_argument("--keep-open", action="store_true", help="Keep the opened one-tab window open and return its window_id for follow-up.")
+    ask.add_argument("--current", action="store_true", help="Use the default surf-agent thread (main).")
+    ask.add_argument("--keep-open", action="store_true", help="Keep the opened surf-agent thread open and return its thread for follow-up.")
     ask.add_argument("--model", help="ChatGPT model query, e.g. pro, gpt-5.5, gpt-5.5-pro, or gpt-5.4. Best available fuzzy match is selected from the web UI.")
     ask.add_argument("--thinking", choices=("low", "medium", "high"), help="ChatGPT thinking level. Maps low/medium/high to the web UI levels.")
     ask.add_argument("--timeout", type=int, default=2700, help="ChatGPT wait timeout in seconds. Default: 2700.")
@@ -45,7 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     session = subparsers.add_parser("session", help="Discover ChatGPT web sessions from the browser. No local alias state.")
     session_sub = session.add_subparsers(dest="session_command", parser_class=JsonArgumentParser)
 
-    session_current = session_sub.add_parser("current", help="Return the active ChatGPT conversation id/url, if the active tab is a conversation.")
+    session_current = session_sub.add_parser("current", help="Return the ChatGPT conversation id/url for a surf-agent thread.")
+    session_current.add_argument("--thread", default="main", help="surf-agent thread to inspect. Default: main.")
     session_current.add_argument("--format", choices=("json", "text"), default="json")
 
     session_search = session_sub.add_parser("search", help="Search real ChatGPT web sessions using ChatGPT's own search UI.")
@@ -100,7 +101,7 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
     options = AskOptions(
         session_policy=session_policy,
         session_url=_normalize_session_url(args.session) if args.session else None,
-        window_id=args.window_id,
+        thread=args.thread,
         keep_open=args.keep_open,
         model_query=model_choice.model_query,
         thinking_label=model_choice.thinking_label,
@@ -113,10 +114,10 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
 
 
 def _session_policy(args: argparse.Namespace) -> str:
-    if args.ephemeral or not (args.session or args.current or args.new or args.window_id):
+    if args.ephemeral or not (args.session or args.current or args.new or args.thread):
         return "ephemeral"
-    if args.window_id is not None:
-        return "window"
+    if args.thread:
+        return "thread"
     if args.current:
         return "current"
     if args.new:
@@ -125,16 +126,16 @@ def _session_policy(args: argparse.Namespace) -> str:
 
 
 def _validate_ask_args(args: argparse.Namespace) -> None:
-    explicit_session = bool(args.session or args.current or args.new or args.window_id is not None or args.keep_open)
+    explicit_session = bool(args.session or args.current or args.new or args.thread or args.keep_open)
     if args.ephemeral and explicit_session:
-        raise SkillError("invalid_args", "--ephemeral cannot be combined with --session, --window-id, --new, --current, or --keep-open")
-    if args.keep_open and not (args.session or args.current or args.new or args.window_id is not None):
-        raise SkillError("invalid_args", "--keep-open requires --session, --window-id, --new, or --current")
-    session_modes = [bool(args.session), bool(args.current), bool(args.new), args.window_id is not None]
+        raise SkillError("invalid_args", "--ephemeral cannot be combined with --session, --thread, --new, --current, or --keep-open")
+    if args.keep_open and not (args.session or args.current or args.new or args.thread):
+        raise SkillError("invalid_args", "--keep-open requires --session, --thread, --new, or --current")
+    session_modes = [bool(args.session), bool(args.current), bool(args.new), bool(args.thread)]
     if sum(session_modes) > 1:
-        raise SkillError("invalid_args", "choose only one of --session, --window-id, --new, or --current")
-    if args.window_id is not None and args.window_id <= 0:
-        raise SkillError("invalid_args", "--window-id must be positive")
+        raise SkillError("invalid_args", "choose only one of --session, --thread, --new, or --current")
+    if args.thread is not None and not args.thread.strip():
+        raise SkillError("invalid_args", "--thread cannot be empty")
     if args.timeout <= 0:
         raise SkillError("invalid_args", "--timeout must be positive")
 
@@ -153,34 +154,37 @@ def _normalize_session_url(value: str) -> str:
 
 def _handle_session(args: argparse.Namespace) -> dict[str, Any]:
     if args.session_command == "current":
-        return _current_session_result()
+        return _current_session_result(args.thread)
     if args.session_command == "search":
         return search_web_sessions(args.query, limit=args.limit)
     raise SkillError("invalid_args", "unknown session command")
 
 
-def _current_session_result() -> dict[str, Any]:
-    tabs = _tabs_from_surf(SurfRunner().run_json(["tab.list"], timeout=10))
-    active_chatgpt = [tab for tab in tabs if tab.get("active") and _is_chatgpt_url(str(tab.get("url", "")))]
-    if not active_chatgpt:
+def _current_session_result(thread: str) -> dict[str, Any]:
+    clean_thread = thread.strip()
+    if not clean_thread:
+        raise SkillError("invalid_args", "--thread cannot be empty", exit_code=2)
+    runner = SurfRunner()
+    url = runner.eval_code(clean_thread, "() => location.href", timeout=10)
+    if not isinstance(url, str) or not _is_chatgpt_url(url):
         return {
             "ok": True,
             "source": SOURCE_LABEL,
             "session": None,
-            "warning": "no active ChatGPT tab found",
+            "warning": "surf-agent thread is not on ChatGPT",
+            "thread": clean_thread,
         }
-
-    tab = active_chatgpt[0]
-    url = str(tab.get("url", ""))
+    title = runner.eval_code(clean_thread, "() => document.title", timeout=5)
     session_id = _conversation_id_from_url(url)
     if session_id is None:
         return {
             "ok": True,
             "source": SOURCE_LABEL,
             "session": None,
-            "warning": "active ChatGPT tab is not a conversation URL",
+            "warning": "surf-agent thread is not a conversation URL",
             "active_url": url,
-            "title": tab.get("title"),
+            "title": title if isinstance(title, str) else None,
+            "thread": clean_thread,
         }
 
     return {
@@ -189,9 +193,9 @@ def _current_session_result() -> dict[str, Any]:
         "session": {
             "id": session_id,
             "url": url,
-            "title": tab.get("title"),
-            "tab_id": _coerce_int(tab.get("id") or tab.get("tabId") or tab.get("tab_id")),
-            "window_id": _coerce_int(tab.get("windowId") or tab.get("window_id")),
+            "title": title if isinstance(title, str) else None,
+            "thread": clean_thread,
+            "thread_id": clean_thread,
         },
     }
 
@@ -222,30 +226,6 @@ def _conversation_id_from_url(url: str) -> str | None:
     return None
 
 
-def _tabs_from_surf(data: Any) -> list[dict[str, Any]]:
-    if isinstance(data, list):
-        return [tab for tab in data if isinstance(tab, dict)]
-    if isinstance(data, dict):
-        for key in ("tabs", "items", "result"):
-            value = data.get(key)
-            if isinstance(value, list):
-                return [tab for tab in value if isinstance(tab, dict)]
-        nested = data.get("result")
-        if isinstance(nested, dict):
-            return _tabs_from_surf(nested)
-    raise SkillError("parse_error", "surf tab.list JSON was not a tab list")
-
-
-def _coerce_int(value: Any) -> int | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
-
-
 def _emit(result: dict[str, Any], fmt: str, stdout: IO[str]) -> None:
     if fmt == "json":
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")), file=stdout)
@@ -255,8 +235,8 @@ def _emit(result: dict[str, Any], fmt: str, stdout: IO[str]) -> None:
         return
     if "answer" in result:
         session = result.get("session") or {}
-        window_suffix = f" | window_id={session.get('window_id')}" if session.get("window_id") is not None else ""
-        print(f"external ChatGPT via surf | session={session.get('policy')}{window_suffix}", file=stdout)
+        thread_suffix = f" | thread={session.get('thread')}" if session.get("thread") is not None else ""
+        print(f"external ChatGPT via surf-agent | session={session.get('policy')}{thread_suffix}", file=stdout)
         print("---", file=stdout)
         print(result.get("answer", ""), file=stdout)
         return
@@ -287,7 +267,7 @@ def _emit_error(exc: SkillError, fmt: str, stdout: IO[str]) -> None:
 
 def _emit_error_dict(result: dict[str, Any], stdout: IO[str]) -> None:
     error = result.get("error") or {}
-    print(f"external ChatGPT via surf error: {error.get('type', 'unknown')}", file=stdout)
+    print(f"external ChatGPT via surf-agent error: {error.get('type', 'unknown')}", file=stdout)
     print(error.get("message", "unknown error"), file=stdout)
     if error.get("hint"):
         print(f"hint: {error['hint']}", file=stdout)

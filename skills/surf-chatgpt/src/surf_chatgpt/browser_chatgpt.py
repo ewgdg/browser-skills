@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import uuid
 import time
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 from urllib.parse import urlparse
-import re
 
 from .errors import SkillError
 from .extract import clean_response
@@ -47,7 +47,7 @@ FINISHED_SELECTOR = (
 class ReusableAskOptions:
     session_policy: str
     session_url: str | None = None
-    window_id: int | None = None
+    thread: str | None = None
     keep_open: bool = False
     model_query: str | None = None
     start_new: bool = False
@@ -87,7 +87,7 @@ def ask_reusable_session(
             # Do not discard a completed answer just because ChatGPT/Surf hangs while reading
             # the final conversation URL. This happens after send/response on heavy pages.
             warnings.append(f"session_url_unavailable:{exc.type}")
-            url = options.session_url or _tab_url_best_effort(runner, target) or CHATGPT_HOME
+            url = options.session_url or CHATGPT_HOME
 
         session_id = _session_id_from_url(url)
 
@@ -103,8 +103,8 @@ def ask_reusable_session(
                 "id": session_id,
                 "url": url,
                 "reused": target.reused,
-                "tab_id": target.tab_id,
-                "window_id": target.window_id,
+                "thread": target.thread,
+                "thread_id": target.thread,
                 "saved": False,
             },
         }
@@ -115,19 +115,9 @@ def ask_reusable_session(
 
 @dataclass(frozen=True)
 class BrowserTarget:
-    tab_id: int
-    window_id: int | None
+    thread: str
     reused: bool
     close_after: bool = False
-    scope: str = "tab"
-
-    @property
-    def command_id(self) -> int:
-        if self.scope == "window":
-            if self.window_id is None:
-                raise SkillError("parse_error", "browser target missing window id")
-            return self.window_id
-        return self.tab_id
 
 
 @dataclass(frozen=True)
@@ -141,122 +131,51 @@ def _resolve_target(runner: SurfRunner, options: ReusableAskOptions) -> BrowserT
     if options.session_policy == "ephemeral":
         return _open_ephemeral_chatgpt_target(runner)
     if options.session_policy == "current":
-        return _active_chatgpt_tab(runner)
-    if options.session_policy == "window":
-        if options.window_id is None:
-            raise SkillError("invalid_args", "--window-id is required for window session mode")
-        return _existing_window_chatgpt_target(runner, options.window_id)
+        return _existing_thread_chatgpt_target(options.thread or "main")
+    if options.session_policy == "thread":
+        if not options.thread:
+            raise SkillError("invalid_args", "--thread is required for thread session mode")
+        return _existing_thread_chatgpt_target(options.thread)
     if options.start_new or options.session_policy == "new":
         return _open_chatgpt_url(runner, CHATGPT_HOME, reused=False, close_after=not options.keep_open)
     if options.session_url:
         return _open_chatgpt_url(runner, options.session_url, reused=True, close_after=not options.keep_open)
-    raise SkillError("invalid_args", "browser session mode requires --new, --session ID_OR_URL, --window-id, or --current")
+    raise SkillError("invalid_args", "browser session mode requires --new, --session ID_OR_URL, --thread, or --current")
 
 
 def _open_ephemeral_chatgpt_target(runner: SurfRunner) -> BrowserTarget:
-    target = _open_background_window(runner, reused=False, close_after=True)
-    _navigate_window(runner, target, CHATGPT_HOME)
-    return target
+    return _open_chatgpt_url(runner, CHATGPT_HOME, reused=False, close_after=True)
 
 
 def _open_chatgpt_url(runner: SurfRunner, url: str, *, reused: bool, close_after: bool) -> BrowserTarget:
-    target = _open_background_window(runner, reused=reused, close_after=close_after)
-    _navigate_window(runner, target, url)
-    return target
+    thread = _new_thread_id()
+    runner.new(thread, timeout=30)
+    runner.open(thread, url, timeout=30)
+    return BrowserTarget(thread=thread, reused=reused, close_after=close_after)
 
 
-def _existing_window_chatgpt_target(runner: SurfRunner, window_id: int) -> BrowserTarget:
-    matches = [tab for tab in _list_tabs(runner) if _coerce_int(tab.get("windowId") or tab.get("window_id")) == window_id]
-    if not matches:
-        raise SkillError("invalid_args", f"no surf window found for --window-id {window_id}")
-    if len(matches) > 1:
-        raise SkillError("invalid_args", f"--window-id {window_id} has multiple tabs; expected one ChatGPT tab")
-    tab = matches[0]
-    url = str(tab.get("url", ""))
-    if not _is_chatgpt_url(url):
-        raise SkillError("invalid_args", f"--window-id {window_id} is not a ChatGPT window")
-    tab_id = _coerce_int(tab.get("id") or tab.get("tabId") or tab.get("tab_id"))
-    if tab_id is None:
-        raise SkillError("parse_error", "ChatGPT window tab is missing id")
-    return BrowserTarget(tab_id=tab_id, window_id=window_id, reused=True, close_after=False, scope="window")
+def _existing_thread_chatgpt_target(thread: str) -> BrowserTarget:
+    clean = thread.strip()
+    if not clean:
+        raise SkillError("invalid_args", "--thread cannot be empty")
+    return BrowserTarget(thread=clean, reused=True, close_after=False)
 
 
-def _open_background_window(runner: SurfRunner, *, reused: bool, close_after: bool) -> BrowserTarget:
-    # No URL: surf opens its neutral surf-agent page first, letting window rules keep it unfocused.
-    data = runner.run_json(["window.new"], timeout=30)
-    tab_id = _extract_int(data, "tabId", "tab_id", "id", "_resolvedTabId")
-    window_id = _extract_int(data, "windowId", "window_id")
-    if tab_id is None:
-        raise SkillError("parse_error", "surf window.new JSON missing tab id")
-    if window_id is None:
-        raise SkillError("parse_error", "surf window.new JSON missing window id")
-    return BrowserTarget(tab_id=tab_id, window_id=window_id, reused=reused, close_after=close_after, scope="window")
-
-
-def _navigate_window(runner: SurfRunner, target: BrowserTarget, url: str) -> None:
-    if target.window_id is None:
-        raise SkillError("parse_error", "browser target missing window id")
-    runner.run_json_on_window(target.window_id, ["navigate", url], timeout=30)
+def _new_thread_id() -> str:
+    return f"surf-chatgpt-{os.getpid()}-{uuid.uuid4().hex[:12]}"
 
 
 def _close_target_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
     try:
-        if target.window_id is not None:
-            runner.run_json(["window.close", str(target.window_id)], timeout=10)
-        else:
-            runner.run_json(["tab.close", str(target.tab_id)], timeout=10)
+        runner.close(target.thread, timeout=10)
     except SkillError:
         # Preserve primary answer/error; cleanup failure is not useful to caller.
         pass
 
 
-def _active_chatgpt_tab(runner: SurfRunner) -> BrowserTarget:
-    tabs = _list_tabs(runner)
-    matches = [tab for tab in tabs if bool(tab.get("active")) and _is_chatgpt_url(str(tab.get("url", "")))]
-    if not matches:
-        raise SkillError("invalid_args", "no active ChatGPT tab found")
-    if len(matches) > 1:
-        raise SkillError("invalid_args", "multiple active ChatGPT tabs found")
-    tab = matches[0]
-    tab_id = _coerce_int(tab.get("id") or tab.get("tabId") or tab.get("tab_id"))
-    if tab_id is None:
-        raise SkillError("parse_error", "active ChatGPT tab is missing id")
-    return BrowserTarget(
-        tab_id=tab_id,
-        window_id=_coerce_int(tab.get("windowId") or tab.get("window_id")),
-        reused=True,
-    )
-
-
-def _find_tab_by_id(runner: SurfRunner, tab_id: int) -> dict[str, Any] | None:
-    for tab in _list_tabs(runner):
-        candidate = _coerce_int(tab.get("id") or tab.get("tabId") or tab.get("tab_id"))
-        if candidate == tab_id:
-            return tab
-    return None
-
-
-def _list_tabs(runner: SurfRunner) -> list[dict[str, Any]]:
-    return _as_tab_list(runner.run_json(["tab.list"], timeout=10))
-
-
-def _as_tab_list(data: Any) -> list[dict[str, Any]]:
-    if isinstance(data, list):
-        return [item for item in data if isinstance(item, dict)]
-    if isinstance(data, dict):
-        for key in ("tabs", "items", "result"):
-            value = data.get(key)
-            if isinstance(value, list):
-                return [item for item in value if isinstance(item, dict)]
-        nested = data.get("result")
-        if isinstance(nested, dict):
-            return _as_tab_list(nested)
-    return []
-
-
 def _wait_load_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
     try:
-        _run_json_on_target(runner, target, ["wait.load", "--timeout", "30000"], timeout=35)
+        runner.wait(target.thread, "1000", timeout=35)
     except SkillError as exc:
         if exc.type not in {"timeout", "ui_changed"}:
             raise
@@ -471,32 +390,16 @@ def _is_new_assistant_content(snapshot: dict[str, Any], baseline: dict[str, Any]
 
 def _refresh_target_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
     try:
-        _run_json_on_target(runner, target, ["tab.reload"], timeout=15)
+        _run_js_file(runner, target, "return (() => { location.reload(); return true; })();", timeout=15)
     except SkillError:
         # Refresh is recovery only. Keep original response wait error semantics if it fails.
         pass
-
-
-def _tab_url_best_effort(runner: SurfRunner, target: BrowserTarget) -> str | None:
-    try:
-        tab = _find_tab_by_id(runner, target.tab_id)
-    except SkillError:
-        return None
-    if tab and _is_chatgpt_url(str(tab.get("url", ""))):
-        return str(tab["url"])
-    return None
 
 
 def _current_url(runner: SurfRunner, target: BrowserTarget) -> str:
     last_url: str | None = None
     # New conversations usually rewrite `/` to `/c/<id>` after first answer; give it a brief
     # chance so named sessions persist the continuity URL, not just the ChatGPT home URL.
-    tab_url = _tab_url_best_effort(runner, target)
-    if tab_url and _is_conversation_url(tab_url):
-        return tab_url
-    if tab_url:
-        last_url = tab_url
-
     deadline = time.time() + 2
     while time.time() < deadline:
         result = _run_js_file(runner, target, "return location.href;", timeout=2)
@@ -507,23 +410,13 @@ def _current_url(runner: SurfRunner, target: BrowserTarget) -> str:
         time.sleep(0.3)
     if last_url:
         return last_url
-    tab = _find_tab_by_id(runner, target.tab_id)
-    if tab and _is_chatgpt_url(str(tab.get("url", ""))):
-        return str(tab["url"])
     raise SkillError("parse_error", "could not read ChatGPT conversation URL")
 
 
-def _run_json_on_target(runner: SurfRunner, target: BrowserTarget, args: list[str], *, timeout: int) -> Any:
-    if target.scope == "window":
-        return runner.run_json_on_window(target.command_id, args, timeout=timeout)
-    return runner.run_json_on_tab(target.command_id, args, timeout=timeout)
-
-
 def _run_js_file(runner: SurfRunner, target: BrowserTarget, code: str, *, timeout: int) -> Any:
-    path = _write_temp_js(code)
+    path = _write_temp_js(_surf_agent_function_source(code))
     try:
-        data = _run_json_on_target(runner, target, ["js", "--file", path], timeout=timeout)
-        return _unwrap_js_result(data)
+        return runner.eval_file(target.thread, path, timeout=timeout)
     finally:
         try:
             os.unlink(path)
@@ -531,25 +424,15 @@ def _run_js_file(runner: SurfRunner, target: BrowserTarget, code: str, *, timeou
             pass
 
 
+def _surf_agent_function_source(body: str) -> str:
+    return "async () => {\n" + body + "\n}"
+
+
 def _write_temp_js(code: str) -> str:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".js", prefix="surf-chatgpt-", dir="/tmp", delete=False) as handle:
         handle.write(code)
         handle.write("\n")
         return handle.name
-
-
-def _unwrap_js_result(data: Any) -> Any:
-    current = data
-    for _ in range(4):
-        if isinstance(current, dict):
-            if "result" in current:
-                current = current["result"]
-                continue
-            if "value" in current and set(current.keys()).issubset({"value", "type", "description"}):
-                current = current["value"]
-                continue
-        break
-    return current
 
 
 def _status_js() -> str:
@@ -906,45 +789,6 @@ return (() => {{
   return {{ candidates, stopVisible: Boolean(scope.querySelector(stopSelector)) }};
 }})();
 """.strip()
-
-
-def _extract_int(data: Any, *keys: str) -> int | None:
-    for value in _walk_values(data, keys):
-        coerced = _coerce_int(value)
-        if coerced is not None:
-            return coerced
-    if isinstance(data, str):
-        if any(key.lower().startswith("window") for key in keys):
-            match = re.search(r"\bWindow\s+(\d+)\b", data, flags=re.I)
-            if match:
-                return int(match.group(1))
-        if any("tab" in key.lower() or key in {"id", "_resolvedTabId"} for key in keys):
-            match = re.search(r"\btab\s+(\d+)\b", data, flags=re.I)
-            if match:
-                return int(match.group(1))
-    return None
-
-
-def _walk_values(data: Any, keys: Iterable[str]) -> Iterable[Any]:
-    if isinstance(data, dict):
-        for key in keys:
-            if key in data:
-                yield data[key]
-        for value in data.values():
-            yield from _walk_values(value, keys)
-    elif isinstance(data, list):
-        for item in data:
-            yield from _walk_values(item, keys)
-
-
-def _coerce_int(value: Any) -> int | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
 
 
 def _is_chatgpt_url(url: str) -> bool:

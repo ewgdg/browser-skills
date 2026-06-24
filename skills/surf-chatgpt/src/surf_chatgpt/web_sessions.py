@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import tempfile
-from typing import Any, Iterable
+import uuid
+from typing import Any
 
 from . import SOURCE_LABEL
 from .errors import SkillError
@@ -33,31 +33,20 @@ def search_web_sessions(query: str, *, limit: int = 10, surf: SurfRunner | None 
 
 
 class _Target:
-    def __init__(self, tab_id: int, window_id: int):
-        self.tab_id = tab_id
-        self.window_id = window_id
+    def __init__(self, thread: str):
+        self.thread = thread
 
 
 def _open_temp_chatgpt_window(runner: SurfRunner) -> _Target:
-    # No URL: surf opens its neutral surf-agent page first, letting window rules keep it unfocused.
-    data = runner.run_json(["window.new"], timeout=30)
-    tab_id = _extract_int(data, "tabId", "tab_id", "id", "_resolvedTabId")
-    window_id = _extract_int(data, "windowId", "window_id")
-    if tab_id is None:
-        raise SkillError("parse_error", "surf window.new JSON missing tab id")
-    if window_id is None:
-        raise SkillError("parse_error", "surf window.new JSON missing window id")
-    target = _Target(tab_id=tab_id, window_id=window_id)
-    runner.run_json_on_window(target.window_id, ["navigate", CHATGPT_HOME], timeout=30)
-    return target
+    thread = f"surf-chatgpt-search-{os.getpid()}-{uuid.uuid4().hex[:12]}"
+    runner.new(thread, timeout=30)
+    runner.open(thread, CHATGPT_HOME, timeout=30)
+    return _Target(thread)
 
 
 def _close_temp_target(runner: SurfRunner, target: _Target) -> None:
     try:
-        if target.window_id is not None:
-            runner.run_json(["window.close", str(target.window_id)], timeout=10)
-        else:
-            runner.run_json(["tab.close", str(target.tab_id)], timeout=10)
+        runner.close(target.thread, timeout=10)
     except SkillError:
         # Search result/error matters more than cleanup diagnostics; do not dump browser state.
         pass
@@ -65,7 +54,7 @@ def _close_temp_target(runner: SurfRunner, target: _Target) -> None:
 
 def _wait_load_best_effort(runner: SurfRunner, target: _Target) -> None:
     try:
-        runner.run_json_on_window(target.window_id, ["wait.load", "--timeout", "30000"], timeout=35)
+        runner.wait(target.thread, "1000", timeout=35)
     except SkillError as exc:
         if exc.type not in {"timeout", "ui_changed"}:
             raise
@@ -116,10 +105,9 @@ def _normalize_sessions(raw: Any, limit: int) -> list[dict[str, str]]:
 
 
 def _run_js_file(runner: SurfRunner, target: _Target, code: str, *, timeout: int) -> Any:
-    path = _write_temp_js(code)
+    path = _write_temp_js(_surf_agent_function_source(code))
     try:
-        data = runner.run_json_on_window(target.window_id, ["js", "--file", path], timeout=timeout)
-        return _unwrap_js_result(data)
+        return runner.eval_file(target.thread, path, timeout=timeout)
     finally:
         try:
             os.unlink(path)
@@ -127,64 +115,15 @@ def _run_js_file(runner: SurfRunner, target: _Target, code: str, *, timeout: int
             pass
 
 
+def _surf_agent_function_source(body: str) -> str:
+    return "async () => {\n" + body + "\n}"
+
+
 def _write_temp_js(code: str) -> str:
     with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".js", prefix="surf-chatgpt-search-", dir="/tmp", delete=False) as handle:
         handle.write(code)
         handle.write("\n")
         return handle.name
-
-
-def _unwrap_js_result(data: Any) -> Any:
-    current = data
-    for _ in range(4):
-        if isinstance(current, dict):
-            if "result" in current:
-                current = current["result"]
-                continue
-            if "value" in current and set(current.keys()).issubset({"value", "type", "description"}):
-                current = current["value"]
-                continue
-        break
-    return current
-
-
-def _extract_int(data: Any, *keys: str) -> int | None:
-    for value in _walk_values(data, keys):
-        coerced = _coerce_int(value)
-        if coerced is not None:
-            return coerced
-    if isinstance(data, str):
-        if any(key.lower().startswith("window") for key in keys):
-            match = re.search(r"\bWindow\s+(\d+)\b", data, flags=re.I)
-            if match:
-                return int(match.group(1))
-        if any("tab" in key.lower() or key in {"id", "_resolvedTabId"} for key in keys):
-            match = re.search(r"\btab\s+(\d+)\b", data, flags=re.I)
-            if match:
-                return int(match.group(1))
-    return None
-
-
-def _walk_values(data: Any, keys: Iterable[str]) -> Iterable[Any]:
-    if isinstance(data, dict):
-        for key in keys:
-            if key in data:
-                yield data[key]
-        for value in data.values():
-            yield from _walk_values(value, keys)
-    elif isinstance(data, list):
-        for item in data:
-            yield from _walk_values(item, keys)
-
-
-def _coerce_int(value: Any) -> int | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.isdigit():
-        return int(value)
-    return None
 
 
 def _search_sessions_js(query: str, limit: int) -> str:

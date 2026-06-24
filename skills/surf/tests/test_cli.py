@@ -1,5 +1,6 @@
 import io
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -16,6 +17,7 @@ import surf_agent.backends.camoufox.bridge as camoufox_bridge
 import surf_agent.backends.patchright.bridge as patchright_bridge
 from surf_agent.backends.camoufox.bridge import ACTIONABLE_SELECTOR, CamoufoxRuntime, PageSlot, RequestHandler, TargetFingerprint
 from surf_agent.backends.patchright.bridge import SNAPSHOT_REF_LIMIT, PatchrightRuntime
+from surf_agent.backends.axi import AxiBackend
 from surf_agent.errors import BridgeUnavailable
 from surf_agent.cli import (
     AgentPage,
@@ -34,6 +36,7 @@ from surf_agent.cli import (
     main,
     map_axi_cli_args_to_bridge,
     parse_agent_args,
+    parse_eval_code,
     parse_screenshot_output,
     parse_axi_pages,
     parse_do_argv_steps,
@@ -113,6 +116,11 @@ class FakeAxiAgent(SurfAgent):
         self.responses = list(responses)
         self.calls = []
         self.bridge_client = FakeBridgeClient(self)
+        # Keep tests isolated from a developer's persisted surf-agent backend config.
+        # Tests that intentionally cover Patchright set SURF_AGENT_BACKEND explicitly.
+        if os.environ.get("SURF_AGENT_BACKEND") not in {"camoufox", "patchright"}:
+            self.backend = "axi"
+            self.browser_backend = AxiBackend(self)
 
     def next_response(self, command):
         if not self.responses:
@@ -124,6 +132,9 @@ class FakeAxiAgent(SurfAgent):
 
     def _ensure_dedicated_chrome_running(self):
         return None
+
+    def _chrome_debug_endpoint_ready(self):
+        return True
 
     def _subprocess_run(self, command, **kwargs):
         self.calls.append((list(command), kwargs))
@@ -1001,6 +1012,57 @@ class AxiBackendTests(unittest.TestCase):
 
             self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": "() => (1)"}]])
             self.assertEqual(output.getvalue(), "result: 1\n")
+
+    def test_eval_stdin_preserves_multiline_code(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22, url="https://example.test/")))
+            source = "() => {\n  return 1;\n}"
+            agent = FakeAxiAgent(["selected\n", "1\n"], state_file=state_file)
+            output = io.StringIO()
+            with patch("sys.stdin", io.StringIO(source)), redirect_stdout(output):
+                self.assertEqual(agent.run_in_window(["eval", "--stdin"]), 0)
+
+            self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": source}]])
+            self.assertEqual(output.getvalue(), "result: 1\n")
+
+    def test_eval_file_reads_code(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(22, url="https://example.test/")))
+            script = Path(tmp) / "script.js"
+            source = "() => {\n  return document.title;\n}\n"
+            script.write_text(source, encoding="utf-8")
+            agent = FakeAxiAgent(["selected\n", '"Example"\n'], state_file=state_file)
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(agent.run_in_window(["eval", "--file", str(script)]), 0)
+
+            self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": source.strip()}]])
+            self.assertEqual(output.getvalue(), 'result: "Example"\n')
+
+    def test_eval_rejects_conflicting_sources(self):
+        cases = [
+            ["--stdin", "--file", "x"],
+            ["--stdin", "1"],
+            ["--file", "x", "1"],
+            ["--stdin", "--stdin"],
+            ["--file", "x", "--file", "y"],
+        ]
+        for values in cases:
+            with self.subTest(values=values):
+                with self.assertRaisesRegex(SurfAgentError, "exactly one source"):
+                    parse_eval_code(values, stdin=io.StringIO("1"))
+
+    def test_eval_rejects_unknown_option_and_missing_file_path(self):
+        with self.assertRaisesRegex(SurfAgentError, "unsupported eval option: --bad"):
+            parse_eval_code(["--bad"], stdin=io.StringIO("1"))
+        with self.assertRaisesRegex(SurfAgentError, "eval --file requires a path"):
+            parse_eval_code(["--file"], stdin=io.StringIO("1"))
+
+    def test_eval_file_missing_is_usage_error(self):
+        with self.assertRaisesRegex(SurfAgentError, "could not read eval file"):
+            parse_eval_code(["--file", "/tmp/definitely-missing-surf-agent-eval.js"])
 
     def test_select_page_failure_stops_before_action(self):
         with TemporaryDirectory() as tmp:

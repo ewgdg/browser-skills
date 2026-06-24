@@ -1,63 +1,53 @@
-import json
 import subprocess
 import unittest
 
 from surf_chatgpt.errors import SkillError
-from surf_chatgpt.surf import SurfRunner
+from surf_chatgpt.surf import SurfRunner, unwrap_eval_text
 
 
 class SurfWrapperTests(unittest.TestCase):
-    def test_run_json_parses_response(self):
+    def test_run_text_uses_surf_agent_thread(self):
         def fake_run(command, **kwargs):
-            self.assertEqual(command, ["surf", "tab.list", "--json"])
-            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"tabs": []}), stderr="")
+            self.assertEqual(command, ["surf-agent", "--thread", "chat", "open", "https://chatgpt.com/"])
+            return subprocess.CompletedProcess(command, 0, stdout="opened\n", stderr="")
 
-        data = SurfRunner(runner=fake_run).run_json(["tab.list"])
-        self.assertEqual(data["tabs"], [])
+        output = SurfRunner(command_prefix=["surf-agent"], runner=fake_run).run_text(["open", "https://chatgpt.com/"], thread="chat")
+        self.assertEqual(output, "opened\n")
 
-    def test_run_json_on_tab_places_global_tab_id_before_command(self):
+    def test_eval_file_parses_result_prefix_json(self):
         def fake_run(command, **kwargs):
-            self.assertEqual(command[:3], ["surf", "--tab-id", "123"])
-            self.assertEqual(command[3:5], ["js", "--file"])
-            self.assertIn("--json", command)
-            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"result": {"value": "ok"}}), stderr="")
+            self.assertEqual(command, ["surf-agent", "--thread", "chat", "eval", "--file", "/tmp/x.js"])
+            return subprocess.CompletedProcess(command, 0, stdout='result: {"ok": true}\n', stderr="")
 
-        data = SurfRunner(runner=fake_run).run_json_on_tab(123, ["js", "--file", "/tmp/x.js"])
-        self.assertEqual(data["result"]["value"], "ok")
+        data = SurfRunner(command_prefix=["surf-agent"], runner=fake_run).eval_file("chat", "/tmp/x.js")
+        self.assertEqual(data, {"ok": True})
 
-    def test_run_json_on_window_places_global_window_id_before_command(self):
-        def fake_run(command, **kwargs):
-            self.assertEqual(command[:3], ["surf", "--window-id", "456"])
-            self.assertEqual(command[3:5], ["navigate", "https://chatgpt.com/"])
-            self.assertIn("--json", command)
-            return subprocess.CompletedProcess(command, 0, stdout=json.dumps({"success": True}), stderr="")
-
-        data = SurfRunner(runner=fake_run).run_json_on_window(456, ["navigate", "https://chatgpt.com/"])
-        self.assertTrue(data["success"])
+    def test_unwrap_eval_text_supports_strings_and_bare_text(self):
+        self.assertEqual(unwrap_eval_text('result: "hello"\n'), "hello")
+        self.assertEqual(unwrap_eval_text("result: plain text\n"), "plain text")
+        self.assertIsNone(unwrap_eval_text(""))
 
     def test_nonzero_login_classified(self):
         def fake_run(command, **kwargs):
             return subprocess.CompletedProcess(command, 1, stdout="", stderr="Error: ChatGPT login required")
 
         with self.assertRaises(SkillError) as ctx:
-            SurfRunner(runner=fake_run).run_json(["tab.list"])
+            SurfRunner(command_prefix=["surf-agent"], runner=fake_run).run_text(["state"])
         self.assertEqual(ctx.exception.type, "login_required")
 
-    def test_bad_json_classified(self):
-        def fake_run(command, **kwargs):
-            return subprocess.CompletedProcess(command, 0, stdout="not json", stderr="")
-
+    def test_invalid_json_like_eval_output_classified(self):
         with self.assertRaises(SkillError) as ctx:
-            SurfRunner(runner=fake_run).run_json(["tab.list"])
+            unwrap_eval_text("result: {not json}\n")
         self.assertEqual(ctx.exception.type, "parse_error")
 
-    def test_missing_surf_classified(self):
+    def test_missing_surf_agent_classified(self):
         def fake_run(command, **kwargs):
-            raise FileNotFoundError("surf")
+            raise FileNotFoundError("surf-agent")
 
         with self.assertRaises(SkillError) as ctx:
-            SurfRunner(runner=fake_run).run_json(["tab.list"])
+            SurfRunner(runner=fake_run).run_text(["state"])
         self.assertEqual(ctx.exception.type, "surf_unavailable")
+        self.assertIn("surf-agent", ctx.exception.message)
 
 
 if __name__ == "__main__":

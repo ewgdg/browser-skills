@@ -171,6 +171,8 @@ uv run surf-agent --thread main do type -- --emit
 uv run surf-agent --thread main screenshot --output /tmp/shot.png
 uv run surf-agent --thread main screenshot --full-page --output /tmp/full-page.png
 uv run surf-agent --thread main eval "document.title"
+printf 'document.title' | uv run surf-agent --thread main eval --stdin
+uv run surf-agent --thread main eval --file /tmp/script.js
 ```
 
 Unsupported commands fail clearly. Direct surf fallback is not available.

@@ -279,9 +279,7 @@ class SurfAgent:
         if command == "screenshot":
             return self.browser_backend.screenshot(parse_screenshot_output(values))
         if command == "eval":
-            if not values:
-                raise SurfAgentError("eval requires code", exit_code=2)
-            return self.browser_backend.evaluate(" ".join(values))
+            return self.browser_backend.evaluate(parse_eval_code(values, stdin=sys.stdin))
         if command == "back":
             reject_args(command, values)
             return self.browser_backend.back()
@@ -689,6 +687,49 @@ def require_arg_count(values: Sequence[str], expected: int, message: str) -> Non
 def reject_args(command: str, values: Sequence[str]) -> None:
     if values:
         raise SurfAgentError(f"{command} does not accept arguments", exit_code=2)
+
+
+def parse_eval_code(values: Sequence[str], *, stdin: Any | None = None) -> str:
+    source_kind: str | None = None
+    source_value: str | None = None
+    inline: list[str] = []
+    index = 0
+    while index < len(values):
+        value = values[index]
+        if value == "--stdin":
+            if source_kind is not None or inline:
+                raise SurfAgentError("eval accepts exactly one source: code, --stdin, or --file <path>", exit_code=2)
+            source_kind = "stdin"
+            index += 1
+            continue
+        if value == "--file":
+            if source_kind is not None or inline:
+                raise SurfAgentError("eval accepts exactly one source: code, --stdin, or --file <path>", exit_code=2)
+            index += 1
+            if index >= len(values):
+                raise SurfAgentError("eval --file requires a path", exit_code=2)
+            source_kind = "file"
+            source_value = values[index]
+            index += 1
+            continue
+        if value.startswith("--") and not inline:
+            raise SurfAgentError(f"unsupported eval option: {value}", exit_code=2)
+        if source_kind is not None:
+            raise SurfAgentError("eval accepts exactly one source: code, --stdin, or --file <path>", exit_code=2)
+        inline.extend(values[index:])
+        break
+
+    if inline:
+        return " ".join(inline)
+    if source_kind == "stdin":
+        return (stdin or sys.stdin).read()
+    if source_kind == "file":
+        assert source_value is not None
+        try:
+            return Path(source_value).read_text(encoding="utf-8")
+        except OSError as exc:
+            raise SurfAgentError(f"could not read eval file {source_value}: {exc}", exit_code=2) from exc
+    raise SurfAgentError("eval requires code, --stdin, or --file <path>", exit_code=2)
 
 
 def parse_screenshot_output(values: Sequence[str]) -> ScreenshotOptions:
@@ -1147,12 +1188,14 @@ def print_help(stream: Any) -> None:
         "  surf-agent [--thread ID] do [-]                run newline-separated steps from stdin\n"
         "  surf-agent [--thread ID] <command...>          run supported browser command in thread page\n\n"
         "Supported browser commands:\n"
-        "  open <url>, snapshot, text, eval <code>, click <target>, fill <target> <text>, type <text>,\n"
+        "  open <url>, snapshot, text, eval <code|--stdin|--file path>, click <target>, fill <target> <text>, type <text>,\n"
         "  press <key>, scroll up|down|top|bottom, screenshot [--full-page] [--output] <path>, back, wait <ms|text>.\n\n"
         "Examples:\n"
         "  surf-agent --thread main state\n"
         "  surf-agent --thread main open https://example.com\n"
         "  surf-agent --thread main snapshot\n"
+        "  printf 'document.title' | surf-agent --thread main eval --stdin\n"
+        "  surf-agent --thread main eval --file /tmp/script.js\n"
         "  printf 'open https://example.com\\nsnapshot\\n' | surf-agent --thread main do\n"
         "  surf-agent profile open https://x.com\n"
         "  surf-agent backend set camoufox\n"

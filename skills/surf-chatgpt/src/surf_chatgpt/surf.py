@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
+import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
@@ -13,11 +17,14 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 @dataclass
 class SurfRunner:
-    executable: str = "surf"
+    command_prefix: Sequence[str] | None = None
     runner: Runner = subprocess.run
 
-    def run_json(self, args: Sequence[str], timeout: int = 30, *, global_args: Sequence[str] | None = None) -> Any:
-        command = [self.executable, *(global_args or ()), *args, "--json"]
+    def run_text(self, args: Sequence[str], timeout: int = 30, *, thread: str | None = None) -> str:
+        command = [*self._command_prefix()]
+        if thread:
+            command.extend(["--thread", thread])
+        command.extend(args)
         try:
             proc = self.runner(
                 command,
@@ -27,23 +34,71 @@ class SurfRunner:
                 check=False,
             )
         except FileNotFoundError as exc:
-            raise SkillError("surf_unavailable", "surf executable not found") from exc
+            raise SkillError("surf_unavailable", "surf-agent executable not found") from exc
         except subprocess.TimeoutExpired as exc:
-            raise SkillError("timeout", f"surf command timed out after {timeout}s") from exc
+            raise SkillError("timeout", f"surf-agent command timed out after {timeout}s") from exc
 
         if proc.returncode != 0:
             raise classify_surf_failure(proc.returncode, proc.stdout, proc.stderr)
+        return proc.stdout or ""
 
-        stdout = (proc.stdout or "").strip()
-        if not stdout:
-            raise SkillError("parse_error", "surf returned empty JSON output")
+    def new(self, thread: str, timeout: int = 30) -> str:
+        return self.run_text(["new"], timeout=timeout, thread=thread)
+
+    def open(self, thread: str, url: str, timeout: int = 30) -> str:
+        return self.run_text(["open", url], timeout=timeout, thread=thread)
+
+    def close(self, thread: str, timeout: int = 10) -> str:
+        return self.run_text(["close"], timeout=timeout, thread=thread)
+
+    def wait(self, thread: str, duration_or_text: str, timeout: int = 35) -> str:
+        return self.run_text(["wait", duration_or_text], timeout=timeout, thread=thread)
+
+    def eval_file(self, thread: str, path: str, timeout: int = 30) -> Any:
+        output = self.run_text(["eval", "--file", path], timeout=timeout, thread=thread)
+        return unwrap_eval_text(output)
+
+    def eval_code(self, thread: str, code: str, timeout: int = 30) -> Any:
+        path = _write_temp_js(code)
         try:
-            return json.loads(stdout)
-        except json.JSONDecodeError as exc:
-            raise SkillError("parse_error", f"surf returned non-JSON output: {compact_message(stdout)}") from exc
+            return self.eval_file(thread, path, timeout=timeout)
+        finally:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
 
-    def run_json_on_tab(self, tab_id: int, args: Sequence[str], timeout: int = 30) -> Any:
-        return self.run_json(args, timeout=timeout, global_args=["--tab-id", str(tab_id)])
+    def _command_prefix(self) -> list[str]:
+        if self.command_prefix is not None:
+            return list(self.command_prefix)
+        return default_surf_agent_command()
 
-    def run_json_on_window(self, window_id: int, args: Sequence[str], timeout: int = 30) -> Any:
-        return self.run_json(args, timeout=timeout, global_args=["--window-id", str(window_id)])
+
+def default_surf_agent_command() -> list[str]:
+    if shutil.which("surf-agent"):
+        return ["surf-agent"]
+    sibling = Path(__file__).resolve().parents[3] / "surf"
+    if (sibling / "pyproject.toml").exists():
+        return ["uv", "--project", str(sibling), "run", "surf-agent"]
+    return ["surf-agent"]
+
+
+def _write_temp_js(code: str) -> str:
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".js", prefix="surf-chatgpt-eval-", dir="/tmp", delete=False) as handle:
+        handle.write(code)
+        handle.write("\n")
+        return handle.name
+
+
+def unwrap_eval_text(output: str) -> Any:
+    raw = (output or "").strip()
+    if raw.startswith("result:"):
+        raw = raw[len("result:") :].strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        if raw.startswith("{") or raw.startswith("[") or raw.startswith('"'):
+            raise SkillError("parse_error", f"surf-agent returned non-JSON eval output: {compact_message(raw)}") from exc
+        return raw

@@ -2,43 +2,39 @@ import unittest
 from pathlib import Path
 
 from surf_chatgpt.errors import SkillError
-from surf_chatgpt.web_sessions import _extract_int, search_web_sessions
+from surf_chatgpt.web_sessions import search_web_sessions
 
 
 class FakeSurfRunner:
     def __init__(self, js_result):
         self.js_result = js_result
         self.commands = []
-        self.tab_commands = []
         self.js_code = ""
 
-    def run_json(self, args, timeout=30):
-        self.commands.append(list(args))
-        if args == ["window.new"]:
-            return {"success": True, "tabId": 10, "windowId": 20}
-        if args == ["window.close", "20"]:
-            return {"success": True}
-        raise AssertionError(f"unexpected command: {args}")
+    def new(self, thread, timeout=30):
+        self.commands.append((thread, ["new"]))
+        return "created\n"
 
-    def run_json_on_window(self, window_id, args, timeout=30):
-        self.tab_commands.append((window_id, list(args)))
-        if args[0] == "navigate":
-            return {"success": True}
-        if args[0] == "wait.load":
-            return {"success": True}
-        if args[0] == "js":
-            self.js_code = Path(args[2]).read_text(encoding="utf-8")
-            return {"result": {"value": self.js_result}}
-        raise AssertionError(f"unexpected window command: {args}")
+    def open(self, thread, url, timeout=30):
+        self.commands.append((thread, ["open", url]))
+        return "opened\n"
+
+    def close(self, thread, timeout=10):
+        self.commands.append((thread, ["close"]))
+        return "closed\n"
+
+    def wait(self, thread, duration_or_text, timeout=35):
+        self.commands.append((thread, ["wait", duration_or_text]))
+        return "waited\n"
+
+    def eval_file(self, thread, path, timeout=30):
+        self.commands.append((thread, ["eval", "--file", path]))
+        self.js_code = Path(path).read_text(encoding="utf-8")
+        return self.js_result
 
 
 class WebSessionSearchTests(unittest.TestCase):
-    def test_extract_int_supports_surf_window_string_json_output(self):
-        text = "Window 1009095011 (tab 1009095012)\nUse --window-id 1009095011 to target this window"
-        self.assertEqual(_extract_int(text, "windowId"), 1009095011)
-        self.assertEqual(_extract_int(text, "tabId"), 1009095012)
-
-    def test_search_returns_compact_deduped_limited_sessions_and_closes_window(self):
+    def test_search_returns_compact_deduped_limited_sessions_and_closes_thread(self):
         surf = FakeSurfRunner(
             {
                 "status": "ok",
@@ -50,12 +46,14 @@ class WebSessionSearchTests(unittest.TestCase):
             }
         )
         result = search_web_sessions("alpha", limit=2, surf=surf)
+        thread = surf.commands[0][0]
         self.assertTrue(result["ok"])
         self.assertEqual(result["query"], "alpha")
         self.assertEqual([item["id"] for item in result["sessions"]], ["a", "b"])
-        self.assertEqual(surf.commands[0], ["window.new"])
-        self.assertEqual(surf.tab_commands[0], (20, ["navigate", "https://chatgpt.com/"]))
-        self.assertEqual(surf.commands[-1], ["window.close", "20"])
+        self.assertEqual(surf.commands[0], (thread, ["new"]))
+        self.assertEqual(surf.commands[1], (thread, ["open", "https://chatgpt.com/"]))
+        self.assertEqual(surf.commands[-1], (thread, ["close"]))
+        self.assertIn("async () =>", surf.js_code)
         self.assertIn("Search", surf.js_code)
         self.assertIn("/c/", surf.js_code)
 
@@ -64,14 +62,14 @@ class WebSessionSearchTests(unittest.TestCase):
         result = search_web_sessions("not found", limit=5, surf=surf)
         self.assertEqual(result["sessions"], [])
         self.assertIn("no matching", result["warning"])
-        self.assertEqual(surf.commands[-1], ["window.close", "20"])
+        self.assertEqual(surf.commands[-1][1], ["close"])
 
-    def test_search_login_required_is_structured_and_closes_window(self):
+    def test_search_login_required_is_structured_and_closes_thread(self):
         surf = FakeSurfRunner({"status": "login_required"})
         with self.assertRaises(SkillError) as ctx:
             search_web_sessions("x", surf=surf)
         self.assertEqual(ctx.exception.type, "login_required")
-        self.assertEqual(surf.commands[-1], ["window.close", "20"])
+        self.assertEqual(surf.commands[-1][1], ["close"])
 
     def test_search_captcha_is_structured(self):
         surf = FakeSurfRunner({"status": "captcha_or_cloudflare"})
