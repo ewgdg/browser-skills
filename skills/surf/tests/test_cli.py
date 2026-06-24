@@ -32,8 +32,10 @@ from surf_agent.cli import (
     backend_config_file,
     default_camoufox_profile_dir,
     default_chrome_profile_dir,
+    default_firefox_profile_dir,
     default_state_dir,
     main,
+    skill_data_dir,
     map_axi_cli_args_to_bridge,
     parse_agent_args,
     parse_eval_code,
@@ -192,7 +194,7 @@ class AxiBackendTests(unittest.TestCase):
         ])
 
     def test_default_state_dir_uses_surf_agent_data_dir(self):
-        self.assertEqual(default_state_dir(), Path(__file__).resolve().parents[1] / ".surf-agent" / "state")
+        self.assertEqual(default_state_dir(), Path(__file__).resolve().parents[1] / ".surf-agent" / "threads")
 
     def test_backend_config_commands_and_priority(self):
         with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch.dict("os.environ", {}, clear=True):
@@ -280,9 +282,14 @@ class AxiBackendTests(unittest.TestCase):
 
         self.assertEqual(agent.patchright_profile_dir, Path(tmp) / "chrome-profile")
 
+    def test_default_profiles_live_under_skill_data_dir(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertEqual(default_chrome_profile_dir(), skill_data_dir() / "profiles" / "chrome")
+            self.assertEqual(default_firefox_profile_dir(), skill_data_dir() / "profiles" / "firefox")
+
     def test_camoufox_defaults_to_firefox_profile_family(self):
         with patch.dict("os.environ", {}, clear=True):
-            self.assertEqual(default_camoufox_profile_dir(), default_chrome_profile_dir().parent / "firefox-profile")
+            self.assertEqual(default_camoufox_profile_dir(), skill_data_dir() / "profiles" / "firefox")
 
     def test_camoufox_profile_env_overrides_firefox_family_default(self):
         with TemporaryDirectory() as tmp, patch.dict(

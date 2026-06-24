@@ -7,7 +7,7 @@ CHROME_DEVTOOLS_AXI_PORT=9335
 CHROME_DEVTOOLS_AXI_BROWSER_URL=http://127.0.0.1:9336
 ```
 
-`surf-agent` launches dedicated Chrome itself with `--user-data-dir=<skill-dir>/chrome-profile`, `--remote-debugging-port=9336`, and `--class=surf-agent`, then points AXI at that browser URL. Thread windows are normal Chrome `--new-window` windows with the same profile and `--class=surf-agent` for window-manager rules. Raw `--app=<url>` remains a possible future mode if a bare app shell is preferable to toolbar/extension UX. The profile lives under top-level `chrome-profile/` in this skill directory; that directory is git-ignored.
+`surf-agent` launches dedicated Chrome itself with `--user-data-dir=<skill-dir>/.surf-agent/profiles/chrome`, `--remote-debugging-port=9336`, and `--class=surf-agent`, then points AXI at that browser URL. Thread windows are normal Chrome `--new-window` windows with the same profile and `--class=surf-agent` for window-manager rules. Raw `--app=<url>` remains a possible future mode if a bare app shell is preferable to toolbar/extension UX. The profile lives under `.surf-agent/profiles/chrome/` with other skill-local runtime data.
 
 Optional overrides:
 
@@ -16,8 +16,8 @@ Optional overrides:
 export SURF_AGENT_AXI_BIN="npx -y chrome-devtools-axi"
 # Chrome launcher for dedicated windows; auto-detected when possible
 export SURF_AGENT_CHROME_BIN="google-chrome"
-# Dedicated profile directory; default: <skill-dir>/chrome-profile
-export SURF_AGENT_CHROME_PROFILE_DIR="./chrome-profile"
+# Dedicated profile directory; default: <skill-dir>/.surf-agent/profiles/chrome
+export SURF_AGENT_CHROME_PROFILE_DIR="./.surf-agent/profiles/chrome"
 # Linux window class; default: surf-agent
 export SURF_AGENT_CHROME_CLASS="surf-agent"
 # Dedicated Chrome remote debugging port; default 9336

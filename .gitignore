@@ -3,7 +3,3 @@ __pycache__/
 *.pyc
 
 .pytest_cache/
-skills/*/.surf-agent/
-skills/*/.cache/
-skills/*/chrome-profile/
-skills/*/camoufox-profile/

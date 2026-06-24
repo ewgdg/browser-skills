@@ -19,7 +19,7 @@ Backend selection priority: `SURF_AGENT_BACKEND`, then `.surf-agent/config.json`
 
 ## Operating rules
 
-Persistent app-local data lives under `.surf-agent/`: backend config in `.surf-agent/config.json`, thread state in `.surf-agent/state/`.
+Persistent app-local data lives under `.surf-agent/`: backend config in `.surf-agent/config.json`, thread state in `.surf-agent/threads/`, browser profiles in `.surf-agent/profiles/`.
 
 - One thread owns one remembered browser page id in one dedicated Chrome window.
 - New threads first open a short `Surf Agent` bootstrap in a normal `--new-window` Chrome window so human login/unblock has toolbar, back/forward, and extension controls. `new` then opens the welcome page; `open <url>` navigates directly to the requested URL.

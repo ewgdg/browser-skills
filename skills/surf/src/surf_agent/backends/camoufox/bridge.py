@@ -533,7 +533,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--app-id", default=os.environ.get("SURF_AGENT_CAMOUFOX_APP_ID") or os.environ.get("SURF_AGENT_CAMOUFOX_CLASS") or DEFAULT_CAMOUFOX_APP_ID)
     args = parser.parse_args(argv)
-    profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / "firefox-profile"
+    profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / ".surf-agent" / "profiles" / "firefox"
     RequestHandler.runtime = CamoufoxRuntime(profile_dir=profile_dir, headless=args.headless, app_id=args.app_id)
     # Playwright/Camoufox sync objects are bound to the thread that created them.
     # Use a single-threaded HTTP server so every browser call runs on one thread.

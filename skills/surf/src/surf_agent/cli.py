@@ -464,7 +464,7 @@ def default_state_file(*, thread: str = DEFAULT_THREAD, state_dir: Path | None =
 
 
 def default_state_dir(*, state_dir: Path | None = None) -> Path:
-    return state_dir or skill_state_dir()
+    return state_dir or skill_threads_dir()
 
 
 def skill_dir() -> Path:
@@ -475,8 +475,8 @@ def skill_data_dir() -> Path:
     return skill_dir() / ".surf-agent"
 
 
-def skill_state_dir() -> Path:
-    return skill_data_dir() / "state"
+def skill_threads_dir() -> Path:
+    return skill_data_dir() / "threads"
 
 
 def backend_config_file() -> Path:
@@ -487,14 +487,14 @@ def default_chrome_profile_dir() -> Path:
     value = os.environ.get("SURF_AGENT_CHROME_PROFILE_DIR") or os.environ.get("CHROME_DEVTOOLS_AXI_USER_DATA_DIR")
     if value:
         return Path(value).expanduser()
-    return skill_dir() / "chrome-profile"
+    return skill_data_dir() / "profiles" / "chrome"
 
 
 def default_firefox_profile_dir() -> Path:
     value = os.environ.get("SURF_AGENT_FIREFOX_PROFILE_DIR")
     if value:
         return Path(value).expanduser()
-    return skill_dir() / "firefox-profile"
+    return skill_data_dir() / "profiles" / "firefox"
 
 
 def default_camoufox_profile_dir() -> Path:
@@ -1204,7 +1204,7 @@ def print_help(stream: Any) -> None:
         "  surf-agent setup patchright\n"
         "  surf-agent --thread docs screenshot --output /tmp/shot.png\n"
         "  surf-agent close-matching 'agent-run-*'\n\n"
-        "State: skill-local .surf-agent/state/<thread>.json plus chrome-profile/.\n"
+        "State: skill-local .surf-agent/threads/<thread>.json plus .surf-agent/profiles/.\n"
         "Browser bridge: dedicated profile env is embedded; setup/login may be needed once. New threads start in a window titled Surf Agent.\n"
     )
 

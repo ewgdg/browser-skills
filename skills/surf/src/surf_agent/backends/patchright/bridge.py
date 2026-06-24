@@ -571,7 +571,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--app-id", default=os.environ.get("SURF_AGENT_PATCHRIGHT_APP_ID") or os.environ.get("SURF_AGENT_PATCHRIGHT_CLASS") or DEFAULT_PATCHRIGHT_APP_ID)
     parser.add_argument("--class", dest="window_class", default=os.environ.get("SURF_AGENT_PATCHRIGHT_CLASS") or os.environ.get("SURF_AGENT_PATCHRIGHT_APP_ID") or DEFAULT_PATCHRIGHT_APP_ID)
     args = parser.parse_args(argv)
-    profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / "chrome-profile"
+    profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / ".surf-agent" / "profiles" / "chrome"
     RequestHandler.runtime = PatchrightRuntime(profile_dir=profile_dir, headless=args.headless, app_id=args.app_id, window_class=args.window_class)
     # Playwright/Patchright sync objects are bound to the thread that created them.
     # Use a single-threaded HTTP server so every browser call runs on one thread.
