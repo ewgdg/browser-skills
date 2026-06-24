@@ -83,13 +83,14 @@ Use returned ChatGPT session id/url for conversation continuity, or returned sur
 
 ```bash
 surf-chatgpt ask --new 'first prompt'
+surf-chatgpt ask --keep-open 'first prompt'
 surf-chatgpt ask --new --keep-open 'first prompt'
 surf-chatgpt ask --session '<session-id>' 'follow up'
 surf-chatgpt ask --session 'https://chatgpt.com/c/<session-id>' 'follow up by URL'
 surf-chatgpt ask --thread '<thread-id>' 'follow up in kept thread'
 surf-chatgpt ask --current 'follow up in default thread'
 ```
-`--new` and `--session` create a surf-agent thread and close it by default. Add `--keep-open` to leave it open; JSON includes `session.thread` / `session.thread_id`, reusable with `--thread`. `--current` targets surf-agent thread `main`.
+`--new` and `--session` create a surf-agent thread and close it by default. Add `--keep-open` to leave it open; `--keep-open` alone implies `--new`. JSON includes `session.thread` / `session.thread_id`, reusable with `--thread`. `--current` targets surf-agent thread `main`.
 
 ## Web session discovery
 

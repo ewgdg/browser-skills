@@ -44,13 +44,16 @@ class CliValidationTests(unittest.TestCase):
                 self.assertEqual(payload["error"]["type"], "invalid_args")
                 self.assertIn("unrecognized arguments", payload["error"]["message"])
 
-    def test_keep_open_requires_explicit_session_mode(self):
-        out = io.StringIO()
-        code = cli.main(["ask", "--keep-open"], stdin=io.StringIO("x"), stdout=out)
-        self.assertNotEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["type"], "invalid_args")
-        self.assertIn("--keep-open requires", payload["error"]["message"])
+    def test_keep_open_without_session_mode_implies_new_session(self):
+        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "new", "thread": "t"}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "--keep-open"], stdin=io.StringIO("x"), stdout=out)
+        self.assertEqual(code, 0)
+        options = mocked.call_args.args[1]
+        self.assertEqual(options.session_policy, "new")
+        self.assertTrue(options.start_new)
+        self.assertTrue(options.keep_open)
 
     def test_keep_open_is_passed_to_client(self):
         fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "session", "thread": "t"}}

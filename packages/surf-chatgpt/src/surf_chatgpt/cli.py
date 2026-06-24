@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--thread", help="Continue in an existing surf-agent thread returned by --keep-open.")
     ask.add_argument("--new", action="store_true", help="Start a new ChatGPT session and return its session id/url.")
     ask.add_argument("--current", action="store_true", help="Use the default surf-agent thread (main).")
-    ask.add_argument("--keep-open", action="store_true", help="Keep the opened surf-agent thread open and return its thread for follow-up.")
+    ask.add_argument("--keep-open", action="store_true", help="Keep the opened surf-agent thread open and return its thread for follow-up. Without a session option, implies --new.")
     ask.add_argument("--model", help="ChatGPT model query, e.g. pro, gpt-5.5, gpt-5.5-pro, or gpt-5.4. Best available fuzzy match is selected from the web UI.")
     ask.add_argument("--thinking", choices=("low", "medium", "high"), help="ChatGPT thinking level. Maps low/medium/high to the web UI levels.")
     ask.add_argument("--timeout", type=int, default=2700, help="ChatGPT wait timeout in seconds. Default: 2700.")
@@ -108,29 +108,33 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
         requested_model=args.model,
         requested_thinking=args.thinking,
         timeout=args.timeout,
-        start_new=args.new,
+        start_new=args.new or _keep_open_implies_new(args),
     )
     return ask_chatgpt(user_prompt, options)
 
 
 def _session_policy(args: argparse.Namespace) -> str:
-    if args.ephemeral or not (args.session or args.current or args.new or args.thread):
+    if args.ephemeral:
         return "ephemeral"
     if args.thread:
         return "thread"
     if args.current:
         return "current"
-    if args.new:
+    if args.new or _keep_open_implies_new(args):
         return "new"
-    return "session"
+    if args.session:
+        return "session"
+    return "ephemeral"
+
+
+def _keep_open_implies_new(args: argparse.Namespace) -> bool:
+    return bool(args.keep_open and not (args.session or args.current or args.new or args.thread))
 
 
 def _validate_ask_args(args: argparse.Namespace) -> None:
     explicit_session = bool(args.session or args.current or args.new or args.thread or args.keep_open)
     if args.ephemeral and explicit_session:
         raise SkillError("invalid_args", "--ephemeral cannot be combined with --session, --thread, --new, --current, or --keep-open")
-    if args.keep_open and not (args.session or args.current or args.new or args.thread):
-        raise SkillError("invalid_args", "--keep-open requires --session, --thread, --new, or --current")
     session_modes = [bool(args.session), bool(args.current), bool(args.new), bool(args.thread)]
     if sum(session_modes) > 1:
         raise SkillError("invalid_args", "choose only one of --session, --thread, --new, or --current")
