@@ -110,7 +110,7 @@ Failure classes include `login_required`, `captcha_or_cloudflare`, `ui_changed`,
 ```bash
 uv run surf-chatgpt --help
 uv run -m surf_chatgpt --help
-uv run python -m unittest discover -s ../../tests/surf-chatgpt
+uv run python -m unittest discover
 uv run surf-chatgpt ask --format json < /dev/null; test $? -ne 0
 uv run surf-chatgpt ask --help | grep -q -- '--session' && uv run surf-chatgpt ask --help | grep -q -- '--thread' && ! uv run surf-chatgpt ask --help | grep -q -- '--window-id'
 uv run surf-chatgpt session search --help | grep -q -- '--limit'
