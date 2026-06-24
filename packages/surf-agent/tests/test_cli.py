@@ -230,6 +230,22 @@ class AxiBackendTests(unittest.TestCase):
             self.assertEqual(default_chrome_profile_dir(), Path(APP_DIRS.user_data_dir) / "profiles" / "chrome")
             self.assertNotEqual(default_chrome_profile_dir(), package_local / "profiles" / "chrome")
 
+    def test_keyboard_interrupt_exits_without_traceback(self):
+        class InterruptingAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def run_in_window(self, argv):
+                raise KeyboardInterrupt()
+
+        error = io.StringIO()
+        with patch("surf_agent.cli.SurfAgent", InterruptingAgent), redirect_stderr(error):
+            exit_code = main(["snapshot"])
+
+        self.assertEqual(exit_code, 130)
+        self.assertEqual(error.getvalue(), "surf-agent: interrupted\n")
+        self.assertNotIn("Traceback", error.getvalue())
+
     def test_backend_config_commands_and_priority(self):
         with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch.dict("os.environ", {}, clear=True):
             output = io.StringIO()

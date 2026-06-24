@@ -18,6 +18,18 @@ class CliValidationTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"]["type"], "empty_prompt")
 
+    def test_keyboard_interrupt_is_structured_without_traceback(self):
+        out = io.StringIO()
+        err = io.StringIO()
+        with patch("surf_chatgpt.cli.ask_chatgpt", side_effect=KeyboardInterrupt):
+            code = cli.main(["ask"], stdin=io.StringIO("x"), stdout=out, stderr=err)
+
+        self.assertEqual(code, 130)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["error"]["type"], "interrupted")
+        self.assertEqual(err.getvalue(), "")
+        self.assertNotIn("Traceback", out.getvalue())
+
     def test_positional_prompt_is_passed_to_client_and_ignores_stdin(self):
         fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
         with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:

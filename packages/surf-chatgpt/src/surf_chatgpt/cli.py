@@ -64,6 +64,9 @@ def main(argv: list[str] | None = None, *, stdin: IO[str] | None = None, stdout:
     parser = build_parser()
     try:
         args = parser.parse_args(argv)
+    except KeyboardInterrupt:
+        print("surf-chatgpt: interrupted", file=stderr)
+        return 130
     except SkillError as exc:
         _emit_error(exc, "json", stdout)
         return exc.exit_code
@@ -83,6 +86,10 @@ def main(argv: list[str] | None = None, *, stdin: IO[str] | None = None, stdout:
             result = _handle_session(args)
             _emit(result, args.format, stdout)
             return 0
+    except KeyboardInterrupt:
+        fmt = getattr(args, "format", "json")
+        _emit_error(SkillError("interrupted", "interrupted", hint="", exit_code=130), fmt, stdout)
+        return 130
     except SkillError as exc:
         fmt = getattr(args, "format", "json")
         _emit_error(exc, fmt, stdout)

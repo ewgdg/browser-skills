@@ -1292,6 +1292,9 @@ def main(argv: list[str] | None = None) -> int:
         if command == "--":
             argv = argv[1:]
         return agent.run_in_window(argv)
+    except KeyboardInterrupt:
+        print("surf-agent: interrupted", file=sys.stderr)
+        return 130
     except SurfAgentError as exc:
         print(f"surf-agent: {exc}", file=sys.stderr)
         return exc.exit_code
