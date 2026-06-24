@@ -18,6 +18,22 @@ class CliValidationTests(unittest.TestCase):
         self.assertFalse(payload["ok"])
         self.assertEqual(payload["error"]["type"], "empty_prompt")
 
+    def test_positional_prompt_is_passed_to_client_and_ignores_stdin(self):
+        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "argv prompt"], stdin=io.StringIO("stdin prompt"), stdout=out)
+        self.assertEqual(code, 0)
+        self.assertEqual(mocked.call_args.args[0], "argv prompt")
+
+    def test_dash_prefixed_prompt_uses_argparse_separator(self):
+        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "--", "-dash prompt"], stdin=io.StringIO(""), stdout=out)
+        self.assertEqual(code, 0)
+        self.assertEqual(mocked.call_args.args[0], "-dash prompt")
+
     def test_prompt_shaping_flags_are_removed_except_thread_session_flag(self):
         for flag in ("--mode", "--max-chars", "--max-words"):
             with self.subTest(flag=flag):

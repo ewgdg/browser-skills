@@ -30,7 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", parser_class=JsonArgumentParser)
 
-    ask = subparsers.add_parser("ask", help="Forward stdin to ChatGPT through surf-agent. Defaults to ephemeral one-shot mode.")
+    ask = subparsers.add_parser("ask", help="Forward a prompt argument or stdin to ChatGPT through surf-agent. Defaults to ephemeral one-shot mode.")
     ask.add_argument("--ephemeral", action="store_true", help="Use a temporary controlled browser session. Default when no session option is given.")
     ask.add_argument("--session", help="Continue a ChatGPT session by conversation id or https://chatgpt.com/c/<id> URL.")
     ask.add_argument("--thread", help="Continue in an existing surf-agent thread returned by --keep-open.")
@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--thinking", choices=("low", "medium", "high"), help="ChatGPT thinking level. Maps low/medium/high to the web UI levels.")
     ask.add_argument("--timeout", type=int, default=2700, help="ChatGPT wait timeout in seconds. Default: 2700.")
     ask.add_argument("--format", choices=("json", "text"), default="json")
-
+    ask.add_argument("prompt", nargs="?", help="Prompt text. If omitted, read stdin. Use -- before prompts that start with -.")
     session = subparsers.add_parser("session", help="Discover ChatGPT web sessions from the browser. No local alias state.")
     session_sub = session.add_subparsers(dest="session_command", parser_class=JsonArgumentParser)
 
@@ -92,9 +92,9 @@ def main(argv: list[str] | None = None, *, stdin: IO[str] | None = None, stdout:
 
 def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
     _validate_ask_args(args)
-    user_prompt = stdin.read()
+    user_prompt = args.prompt if args.prompt is not None else stdin.read()
     if not user_prompt.strip():
-        raise SkillError("empty_prompt", "stdin prompt is empty")
+        raise SkillError("empty_prompt", "prompt is empty")
 
     session_policy = _session_policy(args)
     model_choice = normalize_model_choice(args.model, args.thinking)

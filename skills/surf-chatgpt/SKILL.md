@@ -15,7 +15,7 @@ Do **not** use when local reasoning is enough. Browser automation is slower and 
 - Include only relevant snippets. Do not dump whole repos, huge logs, or browser output.
 - Treat result as external advice, not authority. Local agent remains responsible.
 - Label local results as **external ChatGPT via surf-agent** when reporting to user.
-- Prompt sent upstream is exactly stdin; no hidden tooling/agent handoff text is prepended.
+- Prompt sent upstream is exactly the positional prompt argument, or stdin when no prompt argument is given; no hidden tooling/agent handoff text is prepended.
 
 ## Prerequisites
 
@@ -35,13 +35,16 @@ Also required:
 ## Commands
 
 ```bash
+surf-chatgpt ask 'Question...'
 printf 'Question...' | surf-chatgpt ask
 printf 'Critique this plan: ...' | surf-chatgpt ask --format text
-printf 'Question...' | surf-chatgpt ask --thinking high
-printf 'Follow up...' | surf-chatgpt ask --session '<session-id>' --model gpt-5.5 --thinking medium
-printf 'Follow up in kept browser thread...' | surf-chatgpt ask --thread '<thread-id>'
+surf-chatgpt ask --thinking high 'Question...'
+surf-chatgpt ask --session '<session-id>' --model gpt-5.5 --thinking medium 'Follow up...'
+surf-chatgpt ask --thread '<thread-id>' 'Follow up in kept browser thread...'
 surf-chatgpt --help
 ```
+
+Use stdin/heredoc for long prompts, multiline context, or sensitive text. Positional prompts are shell-visible/history-prone.
 
 Default output is compact JSON:
 
@@ -60,10 +63,10 @@ Errors are structured and nonzero:
 `--model` is a fuzzy query against models visible in ChatGPT's web model picker. No silent fallback: if no usable match is found, command fails with `model_unavailable`.
 
 ```bash
-printf 'Question...' | surf-chatgpt ask --thinking high
-printf 'Question...' | surf-chatgpt ask --model pro
-printf 'Question...' | surf-chatgpt ask --model gpt-5.5
-printf 'Question...' | surf-chatgpt ask --model gpt-5.5:high
+surf-chatgpt ask --thinking high 'Question...'
+surf-chatgpt ask --model pro 'Question...'
+surf-chatgpt ask --model gpt-5.5 'Question...'
+surf-chatgpt ask --model gpt-5.5:high 'Question...'
 ```
 
 Thinking mapping: `low` -> `Instant`, `medium` -> `Medium`, `high` -> `High`.
@@ -72,21 +75,20 @@ Thinking mapping: `low` -> `Instant`, `medium` -> `Medium`, `high` -> `High`.
 
 ### Default: ephemeral one-shot
 
-`ask` defaults to an ephemeral surf-agent thread. It creates a temporary ChatGPT thread, optionally selects model/thinking, sends stdin, extracts response, returns compact output, then closes the thread. If ChatGPT rewrites to `https://chatgpt.com/c/<id>` before cleanup, returned `session` includes id/url for follow-up.
+`ask` defaults to an ephemeral surf-agent thread. It creates a temporary ChatGPT thread, optionally selects model/thinking, sends the prompt argument or stdin, extracts response, returns compact output, then closes the thread. If ChatGPT rewrites to `https://chatgpt.com/c/<id>` before cleanup, returned `session` includes id/url for follow-up.
 
 ### Explicit continuity
 
 Use returned ChatGPT session id/url for conversation continuity, or returned surf-agent `thread` for browser-thread continuity.
 
 ```bash
-printf 'first prompt' | surf-chatgpt ask --new
-printf 'first prompt' | surf-chatgpt ask --new --keep-open
-printf 'follow up' | surf-chatgpt ask --session '<session-id>'
-printf 'follow up by URL' | surf-chatgpt ask --session 'https://chatgpt.com/c/<session-id>'
-printf 'follow up in kept thread' | surf-chatgpt ask --thread '<thread-id>'
-printf 'follow up in default thread' | surf-chatgpt ask --current
+surf-chatgpt ask --new 'first prompt'
+surf-chatgpt ask --new --keep-open 'first prompt'
+surf-chatgpt ask --session '<session-id>' 'follow up'
+surf-chatgpt ask --session 'https://chatgpt.com/c/<session-id>' 'follow up by URL'
+surf-chatgpt ask --thread '<thread-id>' 'follow up in kept thread'
+surf-chatgpt ask --current 'follow up in default thread'
 ```
-
 `--new` and `--session` create a surf-agent thread and close it by default. Add `--keep-open` to leave it open; JSON includes `session.thread` / `session.thread_id`, reusable with `--thread`. `--current` targets surf-agent thread `main`.
 
 ## Web session discovery
@@ -116,6 +118,7 @@ Failure classes include `login_required`, `captcha_or_cloudflare`, `ui_changed`,
 ```bash
 surf-chatgpt --help
 surf-chatgpt ask --format json < /dev/null; test $? -ne 0
+surf-chatgpt ask --help | grep -q -- 'prompt'
 surf-chatgpt ask --help | grep -q -- '--session' && surf-chatgpt ask --help | grep -q -- '--thread' && ! surf-chatgpt ask --help | grep -q -- '--window-id'
 surf-chatgpt session search --help | grep -q -- '--limit'
 ```
@@ -123,5 +126,5 @@ surf-chatgpt session search --help | grep -q -- '--limit'
 Optional live smoke only when user permits browser ChatGPT use:
 
 ```bash
-printf 'Reply with one word: ok' | surf-chatgpt ask --ephemeral
+surf-chatgpt ask --ephemeral 'Reply with one word: ok'
 ```
