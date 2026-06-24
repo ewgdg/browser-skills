@@ -20,14 +20,14 @@ def _camoufox_binary_path() -> str:
         from camoufox.utils import launch_path
     except ImportError:
         raise SurfAgentError(
-            "Camoufox package not installed. Run `uv sync --extra camoufox`, "
-            "then manually run `uv run python -m camoufox fetch`."
+            "Camoufox package not installed. Run `uv tool install 'surf-agent[camoufox]'`, "
+            "then manually run `python -m camoufox fetch`."
         )
     try:
         return launch_path()
     except Exception as exc:
         raise SurfAgentError(
-            f"Camoufox binary not found: {exc}. Manually run `uv run python -m camoufox fetch`."
+            f"Camoufox binary not found: {exc}. Manually run `python -m camoufox fetch`."
         )
 
 
@@ -103,7 +103,7 @@ class CamoufoxBridgeClient:
             if self._health_ok():
                 return
             time.sleep(0.25)
-        raise SurfAgentError("Camoufox bridge did not become healthy; run `uv sync --extra camoufox`, then manually run `uv run python -m camoufox fetch`")
+        raise SurfAgentError("Camoufox bridge did not become healthy; run `uv tool install 'surf-agent[camoufox]'`, then manually run `python -m camoufox fetch`")
 
     def _health_ok(self) -> bool:
         try:

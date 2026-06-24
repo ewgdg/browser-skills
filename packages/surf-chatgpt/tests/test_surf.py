@@ -1,5 +1,6 @@
 import subprocess
 import unittest
+from unittest.mock import patch
 
 from surf_chatgpt.errors import SkillError
 from surf_chatgpt.surf import SurfRunner, unwrap_eval_text
@@ -26,6 +27,16 @@ class SurfWrapperTests(unittest.TestCase):
         self.assertEqual(unwrap_eval_text('result: "hello"\n'), "hello")
         self.assertEqual(unwrap_eval_text("result: plain text\n"), "plain text")
         self.assertIsNone(unwrap_eval_text(""))
+
+    def test_default_runner_calls_surf_agent_public_api_directly(self):
+        def fake_main(argv):
+            self.assertEqual(argv, ["--thread", "chat", "state"])
+            print("ok")
+            return 0
+
+        with patch("surf_agent.run_cli", fake_main):
+            output = SurfRunner().run_text(["state"], thread="chat")
+        self.assertEqual(output, "ok\n")
 
     def test_nonzero_login_classified(self):
         def fake_run(command, **kwargs):

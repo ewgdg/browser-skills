@@ -6,6 +6,12 @@ resolution-markers = [
     "python_full_version < '3.12'",
 ]
 
+[manifest]
+members = [
+    "surf-agent",
+    "surf-chatgpt",
+]
+
 [[package]]
 name = "ansicon"
 version = "1.89.0"
@@ -918,7 +924,10 @@ wheels = [
 [[package]]
 name = "surf-agent"
 version = "0.1.0"
-source = { editable = "." }
+source = { editable = "packages/surf-agent" }
+dependencies = [
+    { name = "platformdirs" },
+]
 
 [package.optional-dependencies]
 camoufox = [
@@ -932,8 +941,20 @@ patchright = [
 requires-dist = [
     { name = "cloverlabs-camoufox", marker = "extra == 'camoufox'", specifier = ">=0.6.0" },
     { name = "patchright", marker = "extra == 'patchright'" },
+    { name = "platformdirs" },
 ]
 provides-extras = ["camoufox", "patchright"]
+
+[[package]]
+name = "surf-chatgpt"
+version = "0.1.0"
+source = { editable = "packages/surf-chatgpt" }
+dependencies = [
+    { name = "surf-agent" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "surf-agent", editable = "packages/surf-agent" }]
 
 [[package]]
 name = "typing-extensions"

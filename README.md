@@ -13,13 +13,23 @@ Currently included:
 pi install /path/to/browser-skills
 ```
 
+## Python CLIs
+
+Install the browser helper CLIs separately when using these skills outside this repo:
+
+```bash
+uv tool install surf-agent
+uv tool install surf-chatgpt
+```
+
+`surf-chatgpt` depends on the latest available `surf-agent`.
+
 ## Develop
 
 ```bash
-uv --project skills/surf run surf-agent --help
-cd skills/surf && uv run python -m unittest discover
-uv --project skills/surf-chatgpt run python -m unittest discover -s skills/surf-chatgpt/tests
-uv --project skills/surf-chatgpt run python -m unittest discover -s tests/surf-chatgpt
+uv --directory packages/surf-agent run surf-agent --help
+uv --directory packages/surf-agent run python -m unittest discover -s tests
+uv --directory packages/surf-chatgpt run python -m unittest discover -s tests
 ```
 
-Skill runtime payload lives under `skills/<skill>/`. Tests are inside each skill dir under `tests/`.
+Skill payload lives under `skills/<skill>/`. Python packages live under `packages/<dist-name>/`.

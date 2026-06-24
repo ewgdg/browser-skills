@@ -2,4 +2,8 @@ __pycache__/
 *.pyc
 .pytest_cache/
 tests/
+packages/*/.venv/
+packages/*/.pytest_cache/
+packages/*/**/__pycache__/
+packages/*/**/*.pyc
 plans/

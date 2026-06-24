@@ -1,7 +1,9 @@
 import io
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import sys
 import threading
 import types
@@ -20,6 +22,7 @@ from surf_agent.backends.patchright.bridge import SNAPSHOT_REF_LIMIT, Patchright
 from surf_agent.backends.axi import AxiBackend
 from surf_agent.errors import BridgeUnavailable
 from surf_agent.cli import (
+    APP_DIRS,
     AgentPage,
     ScreenshotOptions,
     AxiBridgeClient,
@@ -34,6 +37,9 @@ from surf_agent.cli import (
     default_chrome_profile_dir,
     default_firefox_profile_dir,
     default_state_dir,
+    surf_agent_config_dir,
+    surf_agent_data_dir,
+    surf_agent_state_dir,
     main,
     skill_data_dir,
     map_axi_cli_args_to_bridge,
@@ -114,7 +120,13 @@ class FakeBridgeClient:
 
 class FakeAxiAgent(SurfAgent):
     def __init__(self, responses, *args, **kwargs):
-        super().__init__(axi_bin="axi", chrome_bin="chrome", command_timeout_s=1, *args, **kwargs)
+        self._surf_agent_home_tmp = None
+        if "SURF_AGENT_HOME" not in os.environ:
+            self._surf_agent_home_tmp = tempfile.mkdtemp(prefix="surf-agent-test-home-")
+            with patch.dict("os.environ", {"SURF_AGENT_HOME": self._surf_agent_home_tmp}, clear=False):
+                super().__init__(axi_bin="axi", chrome_bin="chrome", command_timeout_s=1, *args, **kwargs)
+        else:
+            super().__init__(axi_bin="axi", chrome_bin="chrome", command_timeout_s=1, *args, **kwargs)
         self.responses = list(responses)
         self.calls = []
         self.bridge_client = FakeBridgeClient(self)
@@ -135,6 +147,12 @@ class FakeAxiAgent(SurfAgent):
     def _ensure_dedicated_chrome_running(self):
         return None
 
+    def __del__(self):
+        tmp = getattr(self, "_surf_agent_home_tmp", None)
+        if tmp is not None:
+            shutil.rmtree(tmp, ignore_errors=True)
+            self._surf_agent_home_tmp = None
+
     def _chrome_debug_endpoint_ready(self):
         return True
 
@@ -152,7 +170,7 @@ class FakeAxiAgent(SurfAgent):
 
 class AxiBackendTests(unittest.TestCase):
     def test_constructs_without_backend_env(self):
-        with TemporaryDirectory() as tmp, patch.dict("os.environ", {}, clear=True):
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_HOME": tmp}, clear=True):
             agent = SurfAgent(state_file=Path(tmp) / "thread.json")
             self.assertEqual(agent.axi_bin, "npx -y chrome-devtools-axi")
 
@@ -193,8 +211,24 @@ class AxiBackendTests(unittest.TestCase):
             ["axi", "screenshot", "--full-page", "/tmp/full.png"],
         ])
 
-    def test_default_state_dir_uses_surf_agent_data_dir(self):
-        self.assertEqual(default_state_dir(), Path(__file__).resolve().parents[1] / ".surf-agent" / "threads")
+    def test_surf_agent_home_overrides_all_default_roots(self):
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_HOME": tmp}, clear=True):
+            home = Path(tmp)
+            self.assertEqual(surf_agent_config_dir(), home)
+            self.assertEqual(surf_agent_state_dir(), home)
+            self.assertEqual(surf_agent_data_dir(), home)
+            self.assertEqual(backend_config_file(), home / "config.json")
+            self.assertEqual(default_state_dir(), home / "threads")
+            self.assertEqual(default_chrome_profile_dir(), home / "profiles" / "chrome")
+            self.assertEqual(default_firefox_profile_dir(), home / "profiles" / "firefox")
+
+    def test_platformdirs_fallback_replaces_package_local_data_dir(self):
+        with patch.dict("os.environ", {}, clear=True):
+            package_local = Path(__file__).resolve().parents[1] / ".surf-agent"
+            self.assertEqual(backend_config_file(), Path(APP_DIRS.user_config_dir) / "config.json")
+            self.assertEqual(default_state_dir(), Path(APP_DIRS.user_state_dir) / "threads")
+            self.assertEqual(default_chrome_profile_dir(), Path(APP_DIRS.user_data_dir) / "profiles" / "chrome")
+            self.assertNotEqual(default_chrome_profile_dir(), package_local / "profiles" / "chrome")
 
     def test_backend_config_commands_and_priority(self):
         with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch.dict("os.environ", {}, clear=True):
@@ -282,13 +316,13 @@ class AxiBackendTests(unittest.TestCase):
 
         self.assertEqual(agent.patchright_profile_dir, Path(tmp) / "chrome-profile")
 
-    def test_default_profiles_live_under_skill_data_dir(self):
-        with patch.dict("os.environ", {}, clear=True):
+    def test_default_profiles_live_under_surf_agent_data_dir(self):
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_HOME": tmp}, clear=True):
             self.assertEqual(default_chrome_profile_dir(), skill_data_dir() / "profiles" / "chrome")
             self.assertEqual(default_firefox_profile_dir(), skill_data_dir() / "profiles" / "firefox")
 
     def test_camoufox_defaults_to_firefox_profile_family(self):
-        with patch.dict("os.environ", {}, clear=True):
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_HOME": tmp}, clear=True):
             self.assertEqual(default_camoufox_profile_dir(), skill_data_dir() / "profiles" / "firefox")
 
     def test_camoufox_profile_env_overrides_firefox_family_default(self):
@@ -389,8 +423,8 @@ class AxiBackendTests(unittest.TestCase):
 
         run.assert_not_called()
         self.assertIn("Camoufox setup is manual", output.getvalue())
-        self.assertIn("uv sync --extra camoufox", output.getvalue())
-        self.assertIn("uv run python -m camoufox fetch", output.getvalue())
+        self.assertIn("uv tool install 'surf-agent[camoufox]'", output.getvalue())
+        self.assertIn("python -m camoufox fetch", output.getvalue())
         self.assertEqual(error.getvalue(), "")
 
     def test_setup_camoufox_reports_already_setup_when_package_and_browser_exist(self):
@@ -414,7 +448,7 @@ class AxiBackendTests(unittest.TestCase):
 
         run.assert_not_called()
         self.assertIn("Camoufox setup is manual", output.getvalue())
-        self.assertIn("uv sync --extra camoufox", output.getvalue())
+        self.assertIn("uv tool install 'surf-agent[camoufox]'", output.getvalue())
         self.assertEqual(error.getvalue(), "")
 
     def test_backend_config_accepts_patchright_and_resolves_backend(self):
@@ -441,7 +475,7 @@ class AxiBackendTests(unittest.TestCase):
         run.assert_not_called()
         self.assertIn("Patchright setup is manual", output.getvalue())
         self.assertIn("Install Google Chrome yourself", output.getvalue())
-        self.assertIn("uv sync --extra patchright", output.getvalue())
+        self.assertIn("uv tool install 'surf-agent[patchright]'", output.getvalue())
         self.assertEqual(error.getvalue(), "")
 
     def test_setup_patchright_reports_already_setup_when_package_and_chrome_exist(self):
@@ -910,7 +944,7 @@ class AxiBackendTests(unittest.TestCase):
             self.assertEqual(commands[0], ["bridge", "list_pages", {}])
             self.assertEqual(commands[1][0], "chrome")
             self.assertEqual(commands[1][1], "--class=surf-agent")
-            self.assertEqual(commands[1][2], f"--user-data-dir={default_chrome_profile_dir()}")
+            self.assertEqual(commands[1][2], f"--user-data-dir={agent.chrome_profile_dir}")
             self.assertEqual(commands[1][3], "--new-window")
             self.assertEqual(commands[1][4], "data:text/html,%3Ctitle%3ESurf%20Agent%3C%2Ftitle%3ESurf%20Agent")
             self.assertEqual(commands[2:], [["bridge", "list_pages", {}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": "() => (JSON.stringify({title:document.title,href:location.href}))"}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "navigate_page", {"type": "url", "url": "https://example.test/"}]])
@@ -939,7 +973,7 @@ class AxiBackendTests(unittest.TestCase):
 
             self.assertEqual(output.getvalue(), "22\n")
             commands = [call[0] for call in agent.calls]
-            self.assertEqual(commands[1], ["chrome", "--class=surf-agent", f"--user-data-dir={default_chrome_profile_dir()}", "--new-window", "data:text/html,%3Ctitle%3ESurf%20Agent%3C%2Ftitle%3ESurf%20Agent"])
+            self.assertEqual(commands[1], ["chrome", "--class=surf-agent", f"--user-data-dir={agent.chrome_profile_dir}", "--new-window", "data:text/html,%3Ctitle%3ESurf%20Agent%3C%2Ftitle%3ESurf%20Agent"])
             self.assertEqual(commands[2:6], [["bridge", "list_pages", {}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": "() => (JSON.stringify({title:document.title,href:location.href}))"}], ["bridge", "select_page", {"pageId": 22}]])
             self.assertEqual(commands[6][0:2], ["bridge", "navigate_page"])
             self.assertIn("open%20%26lt%3Burl%26gt%3B", commands[6][2]["url"])
@@ -975,7 +1009,7 @@ class AxiBackendTests(unittest.TestCase):
             self.assertEqual(commands[0], ["bridge", "list_pages", {}])
             self.assertEqual(commands[1][0], "chrome")
             self.assertEqual(commands[1][1], "--class=surf-agent")
-            self.assertEqual(commands[1][2], f"--user-data-dir={default_chrome_profile_dir()}")
+            self.assertEqual(commands[1][2], f"--user-data-dir={agent.chrome_profile_dir}")
             self.assertEqual(commands[1][3], "--new-window")
             self.assertEqual(commands[1][4], "data:text/html,%3Ctitle%3ESurf%20Agent%3C%2Ftitle%3ESurf%20Agent")
             self.assertEqual(commands[2:], [["bridge", "list_pages", {}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": "() => (JSON.stringify({title:document.title,href:location.href}))"}]])

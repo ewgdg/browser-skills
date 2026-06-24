@@ -3,7 +3,7 @@ name = "surf-chatgpt"
 version = "0.1.0"
 description = "Bundled skill CLI for compact ChatGPT consultation through surf-agent"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["surf-agent"]
 
 [project.scripts]
 surf-chatgpt = "surf_chatgpt.cli:main"

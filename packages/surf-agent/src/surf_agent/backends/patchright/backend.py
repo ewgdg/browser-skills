@@ -44,7 +44,7 @@ class PatchrightBridgeClient:
         except TimeoutError as exc:
             raise BridgeUnavailable(
                 f"Patchright bridge tool {name} timed out after {self.timeout_s:g}s; "
-                "restart it with `uv run surf-agent bridge-stop` if it stays wedged"
+                "restart it with `surf-agent bridge-stop` if it stays wedged"
             ) from exc
         except urllib.error.URLError as exc:
             raise BridgeUnavailable(f"Patchright bridge call failed: {exc}") from exc
@@ -90,7 +90,7 @@ class PatchrightBridgeClient:
             if self._health_ok():
                 return
             time.sleep(0.25)
-        raise SurfAgentError("Patchright bridge did not become healthy; run `uv sync --extra patchright`, install Google Chrome yourself, and set SURF_AGENT_CHROME_BIN if Chrome is not on PATH")
+        raise SurfAgentError("Patchright bridge did not become healthy; run `uv tool install 'surf-agent[patchright]'`, install Google Chrome yourself, and set SURF_AGENT_CHROME_BIN if Chrome is not on PATH")
 
     def _health_ok(self) -> bool:
         try:

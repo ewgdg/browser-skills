@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, Sequence
 from urllib.parse import quote, urlparse, urlunparse
 
+from platformdirs import PlatformDirs
+
 from .backends import (
     AxiBridgeClient,
     AxiBridgeConfigMismatch,
@@ -68,6 +70,9 @@ from .constants import (
     SURF_AGENT_WINDOW_TITLE,
 )
 from .errors import SurfAgentError
+
+APP_DIRS = PlatformDirs("surf-agent", appauthor=False)
+
 
 FORBIDDEN_COMMANDS = {
     "ai",
@@ -464,37 +469,46 @@ def default_state_file(*, thread: str = DEFAULT_THREAD, state_dir: Path | None =
 
 
 def default_state_dir(*, state_dir: Path | None = None) -> Path:
-    return state_dir or skill_threads_dir()
+    return state_dir or surf_agent_state_dir() / "threads"
 
 
-def skill_dir() -> Path:
-    return Path(__file__).resolve().parents[2]
+def surf_agent_home() -> Path | None:
+    value = os.environ.get("SURF_AGENT_HOME")
+    return Path(value).expanduser() if value else None
+
+
+def surf_agent_config_dir() -> Path:
+    return surf_agent_home() or Path(APP_DIRS.user_config_dir)
+
+
+def surf_agent_state_dir() -> Path:
+    return surf_agent_home() or Path(APP_DIRS.user_state_dir)
+
+
+def surf_agent_data_dir() -> Path:
+    return surf_agent_home() or Path(APP_DIRS.user_data_dir)
 
 
 def skill_data_dir() -> Path:
-    return skill_dir() / ".surf-agent"
-
-
-def skill_threads_dir() -> Path:
-    return skill_data_dir() / "threads"
+    return surf_agent_data_dir()
 
 
 def backend_config_file() -> Path:
-    return skill_data_dir() / "config.json"
+    return surf_agent_config_dir() / "config.json"
 
 
 def default_chrome_profile_dir() -> Path:
     value = os.environ.get("SURF_AGENT_CHROME_PROFILE_DIR") or os.environ.get("CHROME_DEVTOOLS_AXI_USER_DATA_DIR")
     if value:
         return Path(value).expanduser()
-    return skill_data_dir() / "profiles" / "chrome"
+    return surf_agent_data_dir() / "profiles" / "chrome"
 
 
 def default_firefox_profile_dir() -> Path:
     value = os.environ.get("SURF_AGENT_FIREFOX_PROFILE_DIR")
     if value:
         return Path(value).expanduser()
-    return skill_data_dir() / "profiles" / "firefox"
+    return surf_agent_data_dir() / "profiles" / "firefox"
 
 
 def default_camoufox_profile_dir() -> Path:
@@ -1099,7 +1113,7 @@ def setup_camoufox_backend() -> int:
             "Python package: installed\n"
             "Browser: installed\n"
             "Select it with:\n"
-            "  uv run surf-agent backend set camoufox"
+            "  surf-agent backend set camoufox"
         )
         return 0
 
@@ -1108,13 +1122,13 @@ def setup_camoufox_backend() -> int:
         f"Python package: {'installed' if package_installed else 'missing'}\n"
         f"Browser: {browser_status}\n"
         "Install Camoufox Python support with:\n"
-        "  uv sync --extra camoufox\n"
+        "  uv tool install 'surf-agent[camoufox]'\n"
         "Install/update the Camoufox browser yourself with:\n"
-        "  uv run python -m camoufox sync\n"
-        "  uv run python -m camoufox set official/prerelease\n"
-        "  uv run python -m camoufox fetch\n"
+        "  python -m camoufox sync\n"
+        "  python -m camoufox set official/prerelease\n"
+        "  python -m camoufox fetch\n"
         "Then select it with:\n"
-        "  uv run surf-agent backend set camoufox"
+        "  surf-agent backend set camoufox"
     )
     return 0
 
@@ -1129,7 +1143,7 @@ def setup_patchright_backend() -> int:
             "Python package: installed\n"
             f"Chrome: {chrome_bin}\n"
             "Select it with:\n"
-            "  uv run surf-agent backend set patchright"
+            "  surf-agent backend set patchright"
         )
         return 0
 
@@ -1140,9 +1154,9 @@ def setup_patchright_backend() -> int:
         "Install Google Chrome yourself, then make it available on PATH "
         "as `google-chrome` or set SURF_AGENT_CHROME_BIN.\n"
         "Install Patchright Python support with:\n"
-        "  uv sync --extra patchright\n"
+        "  uv tool install 'surf-agent[patchright]'\n"
         "Then select it with:\n"
-        "  uv run surf-agent backend set patchright"
+        "  surf-agent backend set patchright"
     )
     return 0
 
@@ -1204,7 +1218,7 @@ def print_help(stream: Any) -> None:
         "  surf-agent setup patchright\n"
         "  surf-agent --thread docs screenshot --output /tmp/shot.png\n"
         "  surf-agent close-matching 'agent-run-*'\n\n"
-        "State: skill-local .surf-agent/threads/<thread>.json plus .surf-agent/profiles/.\n"
+        "State: platform user dirs by default; set SURF_AGENT_HOME to keep config, threads, and profiles together.\n"
         "Browser bridge: dedicated profile env is embedded; setup/login may be needed once. New threads start in a window titled Surf Agent.\n"
     )
 

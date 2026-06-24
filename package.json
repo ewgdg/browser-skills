@@ -9,9 +9,10 @@
   "files": [
     "README.md",
     "skills/*/SKILL.md",
-    "skills/*/pyproject.toml",
-    "skills/*/uv.lock",
-    "skills/*/src/**/*.py",
-    "skills/*/scripts/**"
+    "skills/*/docs/**",
+    "pyproject.toml",
+    "uv.lock",
+    "packages/*/pyproject.toml",
+    "packages/*/src/**/*.py"
   ]
 }

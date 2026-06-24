@@ -7,8 +7,8 @@ It may help Chrome-extension workflows, but extension behavior depends on the in
 ## Setup
 
 ```bash
-uv sync --extra patchright
-uv run surf-agent setup patchright
+uv tool install 'surf-agent[patchright]'
+surf-agent setup patchright
 ```
 
 `setup patchright` checks for the Patchright Python package and a Chrome executable. It does not run Patchright's Chrome installer. When anything is missing, it prints manual Chrome-install instructions so the user controls browser installation.
@@ -20,18 +20,18 @@ Install Google Chrome yourself and make it available on PATH as `google-chrome`,
 Persist Patchright:
 
 ```bash
-uv run surf-agent backend set patchright
+surf-agent backend set patchright
 ```
 
 Use once without changing config:
 
 ```bash
-SURF_AGENT_BACKEND=patchright uv run surf-agent --thread main open https://example.com
+SURF_AGENT_BACKEND=patchright surf-agent --thread main open https://example.com
 ```
 
 ## Runtime data
 
-- profile: `.surf-agent/profiles/chrome/` by default, shared with AXI because both are Chrome-family backends
+- profile: platform user data dir `profiles/chrome/` by default, or `$SURF_AGENT_HOME/profiles/chrome`, shared with AXI because both are Chrome-family backends
 - port env: `SURF_AGENT_PATCHRIGHT_PORT` default `9346`
 - profile env: `SURF_AGENT_PATCHRIGHT_PROFILE_DIR` overrides the shared Chrome profile
 - app/window env: `SURF_AGENT_PATCHRIGHT_APP_ID` or `SURF_AGENT_PATCHRIGHT_CLASS`

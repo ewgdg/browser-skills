@@ -5,31 +5,25 @@ import json
 import os
 import re
 import sys
-import time
 import threading
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+
+from platformdirs import PlatformDirs
 from typing import Any
 from urllib.parse import urlparse
 
-from ...constants import DEFAULT_PATCHRIGHT_APP_ID
-
-try:
-    from patchright.sync_api import sync_playwright
-except ImportError:
-    sync_playwright = None
+from ...constants import DEFAULT_CAMOUFOX_APP_ID
 
 ACTIONABLE_SELECTOR = "a,button,input,textarea,select,[role=button],[role=link],[contenteditable=true]"
-REF_PATTERN = re.compile(r"^(?:pr|e)\d+$")
+REF_PATTERN = re.compile(r"^(?:cf|e)\d+$")
 STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
 CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
 STARTUP_PAGE_URLS = {"", "about:blank", "about:home", "about:newtab", "chrome://newtab/"}
-SNAPSHOT_ARIA_TIMEOUT_MS = 3_000
-SNAPSHOT_BODY_TIMEOUT_MS = 3_000
+SNAPSHOT_ARIA_TIMEOUT_MS = 5_000
+SNAPSHOT_BODY_TIMEOUT_MS = 5_000
 SNAPSHOT_LOCATOR_TIMEOUT_MS = 250
-SNAPSHOT_REF_LIMIT = 80
-SNAPSHOT_INDEX_BUDGET_S = 7.0
 SNAPSHOT_DEPTH: int | None = None
 SNAPSHOT_BOXES = False
 
@@ -59,12 +53,11 @@ class PageSlot:
     ref_map: dict[str, RefTarget] = field(default_factory=dict)
 
 
-class PatchrightRuntime:
-    def __init__(self, *, profile_dir: Path, headless: bool = False, app_id: str = DEFAULT_PATCHRIGHT_APP_ID, window_class: str | None = None) -> None:
+class CamoufoxRuntime:
+    def __init__(self, *, profile_dir: Path, headless: bool = False, app_id: str = DEFAULT_CAMOUFOX_APP_ID) -> None:
         self.profile_dir = profile_dir
         self.headless = headless
         self.app_id = app_id
-        self.window_class = window_class or app_id
         self.manager: Any | None = None
         self.browser_or_context: Any | None = None
         self.pages: dict[str, PageSlot] = {}
@@ -73,21 +66,14 @@ class PatchrightRuntime:
     def start(self) -> None:
         if self.browser_or_context is not None:
             return
-        if sync_playwright is None:
-            raise RuntimeError("Patchright is not installed. Run `uv sync --extra patchright`, install Google Chrome yourself, and set SURF_AGENT_CHROME_BIN if Chrome is not on PATH.")
+        try:
+            from camoufox.sync_api import Camoufox
+        except ImportError as exc:
+            raise RuntimeError("Camoufox is not installed. Run `uv tool install 'surf-agent[camoufox]'`, then manually run `python -m camoufox fetch`.") from exc
         self.profile_dir.mkdir(parents=True, exist_ok=True)
-        launch_args = [f"--class={self.window_class}", f"--name={self.app_id}"] if self.app_id or self.window_class else []
-        self.manager = sync_playwright()
-        playwright = self.manager.__enter__()
-        # Chrome channel keeps existing Chrome profile behavior; bundled browsers break that reuse.
-        self.browser_or_context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(self.profile_dir),
-            channel="chrome",
-            headless=self.headless,
-            no_viewport=True,
-            chromium_sandbox=True,
-            args=launch_args,
-        )
+        launch_args = [f"--class={self.app_id}", "--name", self.app_id] if self.app_id else []
+        self.manager = Camoufox(persistent_context=True, user_data_dir=str(self.profile_dir), headless=self.headless, args=launch_args)
+        self.browser_or_context = self.manager.__enter__()
 
     def stop(self) -> str:
         if self.manager is not None:
@@ -104,11 +90,11 @@ class PatchrightRuntime:
         if name == "state":
             slot = self.pages.get(thread)
             if not slot:
-                return json.dumps({"backend": "patchright", "open": False, "thread": thread}) + "\n"
-            return json.dumps({"backend": "patchright", "open": True, "thread": thread, **self._metadata(slot)}) + "\n"
+                return json.dumps({"backend": "camoufox", "open": False, "thread": thread}) + "\n"
+            return json.dumps({"backend": "camoufox", "open": True, "thread": thread, **self._metadata(slot)}) + "\n"
         if name == "list":
             rows = [{"thread": key, **self._metadata(slot)} for key, slot in sorted(self.pages.items())]
-            return json.dumps({"backend": "patchright", "pages": rows}, sort_keys=True) + "\n"
+            return json.dumps({"backend": "camoufox", "pages": rows}, sort_keys=True) + "\n"
         if name == "close":
             old = self.pages.pop(thread, None)
             if old:
@@ -193,11 +179,11 @@ class PatchrightRuntime:
         if name == "focus":
             slot.page.bring_to_front()
             return "focused\n"
-        raise RuntimeError(f"unsupported Patchright command: {name}")
+        raise RuntimeError(f"unsupported Camoufox command: {name}")
 
     def _context(self) -> Any:
         if self.browser_or_context is None:
-            raise RuntimeError("Patchright runtime is not started")
+            raise RuntimeError("Camoufox runtime is not started")
         # persistent_context=True returns BrowserContext. Non-persistent would return Browser.
         if hasattr(self.browser_or_context, "new_page") and hasattr(self.browser_or_context, "pages"):
             return self.browser_or_context
@@ -302,7 +288,7 @@ class PatchrightRuntime:
         return "\n".join(parts).rstrip() + "\n"
 
     def _aria_snapshot(self, target: Any) -> str:
-        # Match Playwright CLI snapshots: AI-mode ARIA tree, optional depth, optional boxes.
+        # Match Playwright CLI snapshots where Camoufox exposes compatible options.
         options = {
             "mode": "ai",
             "timeout": SNAPSHOT_ARIA_TIMEOUT_MS,
@@ -321,19 +307,16 @@ class PatchrightRuntime:
         locator = slot.page.locator(ACTIONABLE_SELECTOR)
         slot.ref_map.clear()
         lines: list[str] = []
-        deadline = time.monotonic() + SNAPSHOT_INDEX_BUDGET_S
         try:
-            count = min(locator.count(), SNAPSHOT_REF_LIMIT)
+            count = min(locator.count(), 200)
         except Exception:
             return lines
         for index in range(count):
-            if time.monotonic() >= deadline:
-                break
             item = locator.nth(index)
             try:
-                if not item.is_visible(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS):
+                if not item.is_visible(timeout=250):
                     continue
-                ref = f"pr{len(slot.ref_map)}"
+                ref = f"cf{len(slot.ref_map)}"
                 fingerprint = self._fingerprint_locator(item)
                 target = RefTarget(
                     ref=ref,
@@ -355,23 +338,23 @@ class PatchrightRuntime:
         return f'{label} "{name}"' if name else label
 
     def _fingerprint_locator(self, locator: Any) -> TargetFingerprint:
-        tag = self._safe(lambda: self._locator_evaluate(locator, "el => el.tagName.toLowerCase()", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
-        role = self._safe(lambda: self._locator_get_attribute(locator, "role", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
-        text = self._safe(lambda: locator.inner_text(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
-        value = self._safe(lambda: locator.input_value(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        tag = self._safe(lambda: locator.evaluate("el => el.tagName.toLowerCase()"), "")
+        role = self._safe(lambda: locator.get_attribute("role"), "")
+        text = self._safe(lambda: locator.inner_text(timeout=250), "")
+        value = self._safe(lambda: locator.input_value(timeout=250), "")
         name = ""
         for attr in ("aria-label", "placeholder", "title", "alt"):
-            name = self._safe(lambda attr=attr: self._locator_get_attribute(locator, attr, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+            name = self._safe(lambda attr=attr: locator.get_attribute(attr), "")
             if name:
                 break
         if not name:
-            name = text or value or self._safe(lambda: self._locator_get_attribute(locator, "href", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+            name = text or value or self._safe(lambda: locator.get_attribute("href"), "")
         bbox = self._bbox(locator)
         return TargetFingerprint(tag=normalize_text(tag), role=normalize_text(role), name=normalize_text(name), text=normalize_text(text or value), bbox=bbox)
 
     def _bbox(self, locator: Any) -> dict[str, float] | None:
         try:
-            box = self._locator_bounding_box(locator, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS)
+            box = locator.bounding_box()
         except Exception:
             return None
         if not isinstance(box, dict):
@@ -405,26 +388,8 @@ class PatchrightRuntime:
           return parts.join(' > ');
         }
         """
-        value = self._safe(lambda: self._locator_evaluate(locator, script, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        value = self._safe(lambda: locator.evaluate(script), "")
         return value or None
-
-    def _locator_evaluate(self, locator: Any, script: str, *, timeout: int) -> Any:
-        try:
-            return locator.evaluate(script, timeout=timeout)
-        except TypeError:
-            return locator.evaluate(script)
-
-    def _locator_get_attribute(self, locator: Any, name: str, *, timeout: int) -> Any:
-        try:
-            return locator.get_attribute(name, timeout=timeout)
-        except TypeError:
-            return locator.get_attribute(name)
-
-    def _locator_bounding_box(self, locator: Any, *, timeout: int) -> Any:
-        try:
-            return locator.bounding_box(timeout=timeout)
-        except TypeError:
-            return locator.bounding_box()
 
     def _target_locator(self, slot: PageSlot, target: str) -> Any:
         normalized = target[1:] if target.startswith("@") else target
@@ -517,7 +482,7 @@ class PatchrightRuntime:
 
 
 class RequestHandler(BaseHTTPRequestHandler):
-    runtime: PatchrightRuntime
+    runtime: CamoufoxRuntime
 
     def do_GET(self) -> None:
         if urlparse(self.path).path != "/health":
@@ -562,18 +527,19 @@ def normalize_text(value: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", type=int, default=int(os.environ.get("SURF_AGENT_PATCHRIGHT_PORT", "9346")))
+    parser.add_argument("--port", type=int, default=int(os.environ.get("SURF_AGENT_CAMOUFOX_PORT", "9345")))
     parser.add_argument(
         "--profile-dir",
-        default=os.environ.get("SURF_AGENT_PATCHRIGHT_PROFILE_DIR") or os.environ.get("SURF_AGENT_CHROME_PROFILE_DIR") or os.environ.get("CHROME_DEVTOOLS_AXI_USER_DATA_DIR") or "",
+        default=os.environ.get("SURF_AGENT_CAMOUFOX_PROFILE_DIR") or os.environ.get("SURF_AGENT_FIREFOX_PROFILE_DIR") or "",
     )
     parser.add_argument("--headless", action="store_true")
-    parser.add_argument("--app-id", default=os.environ.get("SURF_AGENT_PATCHRIGHT_APP_ID") or os.environ.get("SURF_AGENT_PATCHRIGHT_CLASS") or DEFAULT_PATCHRIGHT_APP_ID)
-    parser.add_argument("--class", dest="window_class", default=os.environ.get("SURF_AGENT_PATCHRIGHT_CLASS") or os.environ.get("SURF_AGENT_PATCHRIGHT_APP_ID") or DEFAULT_PATCHRIGHT_APP_ID)
+    parser.add_argument("--app-id", default=os.environ.get("SURF_AGENT_CAMOUFOX_APP_ID") or os.environ.get("SURF_AGENT_CAMOUFOX_CLASS") or DEFAULT_CAMOUFOX_APP_ID)
     args = parser.parse_args(argv)
-    profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else Path.cwd() / ".surf-agent" / "profiles" / "chrome"
-    RequestHandler.runtime = PatchrightRuntime(profile_dir=profile_dir, headless=args.headless, app_id=args.app_id, window_class=args.window_class)
-    # Playwright/Patchright sync objects are bound to the thread that created them.
+    home = os.environ.get("SURF_AGENT_HOME")
+    default_profile_dir = (Path(home).expanduser() if home else Path(PlatformDirs("surf-agent", appauthor=False).user_data_dir)) / "profiles" / "firefox"
+    profile_dir = Path(args.profile_dir).expanduser() if args.profile_dir else default_profile_dir
+    RequestHandler.runtime = CamoufoxRuntime(profile_dir=profile_dir, headless=args.headless, app_id=args.app_id)
+    # Playwright/Camoufox sync objects are bound to the thread that created them.
     # Use a single-threaded HTTP server so every browser call runs on one thread.
     server = HTTPServer(("127.0.0.1", args.port), RequestHandler)
     try:

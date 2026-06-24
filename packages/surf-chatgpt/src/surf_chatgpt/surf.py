@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
-from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -21,6 +21,9 @@ class SurfRunner:
     runner: Runner = subprocess.run
 
     def run_text(self, args: Sequence[str], timeout: int = 30, *, thread: str | None = None) -> str:
+        if self.command_prefix is None and self.runner is subprocess.run:
+            return run_surf_agent_main(args, thread=thread)
+
         command = [*self._command_prefix()]
         if thread:
             command.extend(["--thread", thread])
@@ -71,16 +74,28 @@ class SurfRunner:
     def _command_prefix(self) -> list[str]:
         if self.command_prefix is not None:
             return list(self.command_prefix)
-        return default_surf_agent_command()
-
-
-def default_surf_agent_command() -> list[str]:
-    if shutil.which("surf-agent"):
         return ["surf-agent"]
-    sibling = Path(__file__).resolve().parents[3] / "surf"
-    if (sibling / "pyproject.toml").exists():
-        return ["uv", "--project", str(sibling), "run", "surf-agent"]
-    return ["surf-agent"]
+
+
+def run_surf_agent_main(args: Sequence[str], *, thread: str | None = None) -> str:
+    try:
+        from surf_agent import run_cli as surf_agent_main
+    except ImportError as exc:
+        raise SkillError("surf_unavailable", "surf-agent package not installed") from exc
+
+    argv: list[str] = []
+    if thread:
+        argv.extend(["--thread", thread])
+    argv.extend(args)
+
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    # Direct API call avoids PATH coupling when surf-chatgpt and surf-agent share one tool env.
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        returncode = surf_agent_main(argv)
+    if returncode != 0:
+        raise classify_surf_failure(returncode, stdout.getvalue(), stderr.getvalue())
+    return stdout.getvalue()
 
 
 def _write_temp_js(code: str) -> str:

@@ -5,8 +5,8 @@ Camoufox is experimental. Use it for Firefox/Camoufox fingerprint-resistance tri
 ## Setup
 
 ```bash
-uv sync --extra camoufox
-uv run surf-agent setup camoufox
+uv tool install 'surf-agent[camoufox]'
+surf-agent setup camoufox
 ```
 
 `setup camoufox` does not run Camoufox install/fetch commands. It checks whether the Python package and browser are present, then prints manual setup instructions when anything is missing.
@@ -14,9 +14,9 @@ uv run surf-agent setup camoufox
 Manual browser setup commands:
 
 ```bash
-uv run python -m camoufox sync
-uv run python -m camoufox set official/prerelease
-uv run python -m camoufox fetch
+python -m camoufox sync
+python -m camoufox set official/prerelease
+python -m camoufox fetch
 ```
 
 ## Select backend
@@ -24,18 +24,18 @@ uv run python -m camoufox fetch
 Persist Camoufox:
 
 ```bash
-uv run surf-agent backend set camoufox
+surf-agent backend set camoufox
 ```
 
 Use once without changing config:
 
 ```bash
-SURF_AGENT_BACKEND=camoufox uv run surf-agent --thread main open https://example.com
+SURF_AGENT_BACKEND=camoufox surf-agent --thread main open https://example.com
 ```
 
 ## Runtime data
 
-- profile: `.surf-agent/profiles/firefox/` by default, shared by Firefox-family backends
+- profile: platform user data dir `profiles/firefox/` by default, or `$SURF_AGENT_HOME/profiles/firefox`, shared by Firefox-family backends
 - port env: `SURF_AGENT_CAMOUFOX_PORT` default `9345`
 - profile env: `SURF_AGENT_CAMOUFOX_PROFILE_DIR` overrides `SURF_AGENT_FIREFOX_PROFILE_DIR` and the shared Firefox profile
 - app/window env: `SURF_AGENT_CAMOUFOX_APP_ID` or `SURF_AGENT_CAMOUFOX_CLASS`
