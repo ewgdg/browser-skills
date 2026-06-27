@@ -34,6 +34,8 @@ SNAPSHOT_REF_LIMIT = 80
 SNAPSHOT_INDEX_BUDGET_S = 7.0
 SNAPSHOT_DEPTH: int | None = None
 SNAPSHOT_BOXES = False
+CDP_NEW_WINDOW_TIMEOUT_S = 3.0
+CDP_NEW_WINDOW_POLL_INTERVAL_S = 0.05
 
 
 @dataclass(frozen=True)
@@ -120,21 +122,31 @@ class PatchrightRuntime:
             raise RuntimeError("scroll requires direction: up, down, top, or bottom")
         self.start()
         if name == "new":
-            slot = self._new_page(thread)
             url = str(args.get("url") or "about:blank")
-            if url != "about:blank":
-                slot.page.goto(url, wait_until="domcontentloaded")
+            slot = self._new_page(thread, url=url)
             slot.ref_map.clear()
             return self._format_opened(slot.page)
         if name == "open":
             url = str(args["url"])
+            existing = self.pages.get(thread)
+            if not existing or not self._page_is_open(existing.page):
+                slot = self._new_page(thread, url=url)
+                slot.ref_map.clear()
+                return self._format_opened(slot.page)
 
             def open_page(slot: PageSlot) -> str:
                 slot.page.goto(url, wait_until="domcontentloaded")
                 slot.ref_map.clear()
                 return self._format_opened(slot.page)
 
-            return self._with_live_page(thread, open_page)
+            try:
+                return open_page(existing)
+            except Exception as exc:
+                if not self._is_closed_target_error(exc):
+                    raise
+                slot = self._new_page(thread, url=url)
+                slot.ref_map.clear()
+                return self._format_opened(slot.page)
         slot = self._page(thread)
         if name == "back":
             slot.page.go_back(wait_until="domcontentloaded")
@@ -205,56 +217,106 @@ class PatchrightRuntime:
             return self.browser_or_context
         return self.browser_or_context.new_context()
 
-    def _with_live_page(self, thread: str, action: Any) -> str:
-        slot = self._page(thread)
-        try:
-            return action(slot)
-        except Exception as exc:
-            if not self._is_closed_target_error(exc):
-                raise
-            slot = self._new_page(thread)
-            return action(slot)
-
     def _page(self, thread: str) -> PageSlot:
         slot = self.pages.get(thread)
         if slot and self._page_is_open(slot.page):
             return slot
         return self._new_page(thread)
 
-    def _new_page(self, thread: str) -> PageSlot:
+    def _new_page(self, thread: str, url: str | None = None) -> PageSlot:
         old = self.pages.pop(thread, None)
         if old and self._page_is_open(old.page):
             old.page.close()
+        target_url = str(url or "about:blank")
         try:
-            page = self._adopt_unowned_page() or self._context().new_page()
+            page = self._create_new_window_page(target_url)
         except Exception as exc:
             if not self._is_closed_target_error(exc):
                 raise
             # Manual window close can close the whole persistent context; recreate it.
             self._restart_closed_context()
-            page = self._adopt_unowned_page() or self._context().new_page()
+            page = self._create_new_window_page(target_url)
         slot = PageSlot(page=page, page_token=self._next_page_token)
         self._next_page_token += 1
         self.pages[thread] = slot
         return slot
 
-    def _adopt_unowned_page(self) -> Any | None:
-        owned_pages = {id(slot.page) for slot in self.pages.values()}
+    def _create_new_window_page(self, url: str) -> Any:
+        context = self._context()
+        anchor_page, close_anchor = self._cdp_anchor_page(context)
+        excluded_page_ids = {id(page) for page in self._open_owned_pages()}
+        excluded_page_ids.add(id(anchor_page))
+        created_page = None
         try:
-            context_pages = list(self._context().pages)
-        except Exception as exc:
-            if self._is_closed_target_error(exc):
-                return None
-            raise
-        candidates = [page for page in context_pages if id(page) not in owned_pages and self._page_is_open(page)]
-        if not candidates:
-            return None
-        startup_pages = [page for page in candidates if self._page_url(page) in STARTUP_PAGE_URLS]
-        adopted = startup_pages[0] if startup_pages else candidates[0]
-        for page in candidates:
-            if page is not adopted:
+            self._close_unowned_pages(context, keep_ids={id(anchor_page)})
+            session = context.new_cdp_session(anchor_page)
+            session.send("Target.createTarget", {"url": url, "newWindow": True, "background": False})
+            created_page = self._wait_for_created_target_page(context, url, excluded_page_ids)
+            return created_page
+        finally:
+            if close_anchor and self._page_is_open(anchor_page):
+                anchor_page.close()
+            keep_ids = {id(created_page)} if created_page is not None else set()
+            self._close_unowned_pages(context, keep_ids=keep_ids)
+
+    def _cdp_anchor_page(self, context: Any) -> tuple[Any, bool]:
+        owned_pages = self._open_owned_pages()
+        if owned_pages:
+            return owned_pages[0], False
+        for page in list(context.pages):
+            if self._page_is_open(page):
+                return page, True
+        # Patchright CDP sessions need a page anchor. This temporary page must never become
+        # the controlled thread page; it is closed after Target.createTarget finishes.
+        return context.new_page(), True
+
+    def _open_owned_pages(self) -> list[Any]:
+        return [slot.page for slot in self.pages.values() if self._page_is_open(slot.page)]
+
+    def _close_unowned_pages(self, context: Any, *, keep_ids: set[int] | None = None) -> None:
+        keep_ids = keep_ids or set()
+        owned_ids = {id(page) for page in self._open_owned_pages()}
+        for page in list(context.pages):
+            if id(page) in keep_ids or id(page) in owned_ids or not self._page_is_open(page):
+                continue
+            try:
                 page.close()
-        return adopted
+            except Exception as exc:
+                if not self._is_closed_target_error(exc):
+                    raise
+
+    def _wait_for_created_target_page(self, context: Any, url: str, excluded_page_ids: set[int]) -> Any:
+        deadline = time.monotonic() + CDP_NEW_WINDOW_TIMEOUT_S
+        latest_candidates: list[Any] = []
+        while time.monotonic() < deadline:
+            candidates = [
+                page
+                for page in list(context.pages)
+                if id(page) not in excluded_page_ids and self._page_is_open(page)
+            ]
+            matching = [page for page in candidates if self._page_matches_requested_url(page, url)]
+            if matching:
+                return matching[-1]
+            latest_candidates = candidates
+            time.sleep(CDP_NEW_WINDOW_POLL_INTERVAL_S)
+        if len(latest_candidates) == 1:
+            return latest_candidates[0]
+        raise RuntimeError(f"Patchright CDP Target.createTarget did not expose a new page for {url!r}")
+
+    def _page_matches_requested_url(self, page: Any, requested_url: str) -> bool:
+        page_url = self._page_url(page)
+        if requested_url in STARTUP_PAGE_URLS:
+            return page_url in STARTUP_PAGE_URLS
+        if page_url == requested_url:
+            return True
+        return self._normalized_url(page_url) == self._normalized_url(requested_url)
+
+    def _normalized_url(self, value: str) -> str:
+        parsed = urlparse(value)
+        if parsed.scheme in {"http", "https"} and parsed.netloc:
+            path = parsed.path or "/"
+            return parsed._replace(path=path).geturl()
+        return value
 
     def _page_url(self, page: Any) -> str:
         return str(getattr(page, "url", "") or "")

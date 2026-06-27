@@ -626,6 +626,238 @@ class AxiBackendTests(unittest.TestCase):
         self.assertTrue(calls[0]["chromium_sandbox"])
         self.assertEqual(calls[0]["args"], ["--class=surf-agent-window", "--name=surf-agent-test"])
 
+
+    def test_patchright_new_page_uses_cdp_target_create_window_with_owned_anchor(self):
+        class FakePage:
+            def __init__(self, url="about:blank"):
+                self.url = url
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            def close(self):
+                self.closed = True
+
+        class FakeSession:
+            def __init__(self, context):
+                self.context = context
+
+            def send(self, method, params):
+                self.context.cdp_calls.append((method, params))
+                page = FakePage(params["url"])
+                self.context.pages.append(page)
+                return {"targetId": "target-1"}
+
+        class FakeContext:
+            def __init__(self, pages):
+                self.pages = pages
+                self.cdp_calls = []
+                self.new_page_calls = 0
+
+            def new_page(self):
+                self.new_page_calls += 1
+                page = FakePage()
+                self.pages.append(page)
+                return page
+
+            def new_cdp_session(self, page):
+                self.anchor = page
+                return FakeSession(self)
+
+        anchor = FakePage("https://owned.test/")
+        context = FakeContext([anchor])
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
+        runtime.browser_or_context = context
+        runtime.pages["owned"] = patchright_bridge.PageSlot(page=anchor, page_token=1)
+        runtime._next_page_token = 2
+
+        slot = runtime._new_page("thread", url="https://welcome.test/")
+
+        self.assertIsNot(slot.page, anchor)
+        self.assertEqual(slot.page.url, "https://welcome.test/")
+        self.assertEqual(context.new_page_calls, 0)
+        self.assertEqual(context.cdp_calls, [("Target.createTarget", {"url": "https://welcome.test/", "newWindow": True, "background": False})])
+
+    def test_patchright_new_page_closes_restored_pages_instead_of_adopting_them(self):
+        class FakePage:
+            def __init__(self, url):
+                self.url = url
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            def close(self):
+                self.closed = True
+
+        class FakeSession:
+            def __init__(self, context):
+                self.context = context
+
+            def send(self, method, params):
+                self.context.cdp_calls.append((method, params))
+                page = FakePage(params["url"])
+                self.context.pages.append(page)
+                return {"targetId": "target-1"}
+
+        class FakeContext:
+            def __init__(self, pages):
+                self.pages = pages
+                self.cdp_calls = []
+                self.new_page_calls = 0
+
+            def new_page(self):
+                self.new_page_calls += 1
+                page = FakePage("about:blank")
+                self.pages.append(page)
+                return page
+
+            def new_cdp_session(self, page):
+                self.anchor = page
+                return FakeSession(self)
+
+        restored = FakePage("https://restored.test/")
+        newtab = FakePage("about:blank")
+        context = FakeContext([restored, newtab])
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
+        runtime.browser_or_context = context
+
+        slot = runtime._new_page("thread", url="https://welcome.test/")
+
+        self.assertIsNot(slot.page, restored)
+        self.assertIsNot(slot.page, newtab)
+        self.assertEqual(slot.page.url, "https://welcome.test/")
+        self.assertTrue(restored.closed)
+        self.assertTrue(newtab.closed)
+        self.assertFalse(slot.page.closed)
+        self.assertEqual(context.new_page_calls, 0)
+        self.assertEqual(context.cdp_calls, [("Target.createTarget", {"url": "https://welcome.test/", "newWindow": True, "background": False})])
+
+    def test_patchright_new_page_restarts_closed_context_then_retries_cdp(self):
+        class FakePage:
+            def __init__(self, url="about:blank"):
+                self.url = url
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            def close(self):
+                self.closed = True
+
+        class FakeSession:
+            def __init__(self, context):
+                self.context = context
+
+            def send(self, method, params):
+                self.context.cdp_calls.append((method, params))
+                if self.context.fail_closed:
+                    raise RuntimeError(patchright_bridge.CLOSED_TARGET_MESSAGE)
+                page = FakePage(params["url"])
+                self.context.pages.append(page)
+                return {"targetId": "target-1"}
+
+        class FakeContext:
+            def __init__(self, *, fail_closed=False):
+                self.pages = []
+                self.cdp_calls = []
+                self.fail_closed = fail_closed
+                self.new_page_calls = 0
+
+            def new_page(self):
+                self.new_page_calls += 1
+                page = FakePage()
+                self.pages.append(page)
+                return page
+
+            def new_cdp_session(self, page):
+                return FakeSession(self)
+
+        first_context = FakeContext(fail_closed=True)
+        second_context = FakeContext()
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
+        runtime.browser_or_context = first_context
+        restarts = []
+
+        def restart():
+            restarts.append(True)
+            runtime.browser_or_context = second_context
+
+        with patch.object(runtime, "_restart_closed_context", side_effect=restart):
+            slot = runtime._new_page("thread", url="https://welcome.test/")
+
+        self.assertEqual(len(restarts), 1)
+        self.assertEqual(slot.page.url, "https://welcome.test/")
+        self.assertEqual(first_context.cdp_calls, [("Target.createTarget", {"url": "https://welcome.test/", "newWindow": True, "background": False})])
+        self.assertEqual(second_context.cdp_calls, [("Target.createTarget", {"url": "https://welcome.test/", "newWindow": True, "background": False})])
+
+    def test_patchright_open_recreates_closed_target_without_double_navigation(self):
+        class DeadPage:
+            url = "about:blank"
+
+            def __init__(self):
+                self.closed = False
+
+            def is_closed(self):
+                return self.closed
+
+            def close(self):
+                self.closed = True
+
+            def goto(self, url, wait_until=None):
+                raise RuntimeError(patchright_bridge.CLOSED_TARGET_MESSAGE)
+
+        class CreatedPage:
+            def __init__(self, url="about:blank"):
+                self.url = url
+                self.closed = False
+                self.goto_calls = []
+
+            def is_closed(self):
+                return self.closed
+
+            def close(self):
+                self.closed = True
+
+            def goto(self, url, wait_until=None):
+                self.goto_calls.append(url)
+                raise AssertionError("CDP-created replacement page should not be navigated again")
+
+        class FakeSession:
+            def __init__(self, context):
+                self.context = context
+
+            def send(self, method, params):
+                self.context.cdp_calls.append((method, params))
+                page = CreatedPage(params["url"])
+                self.context.pages.append(page)
+                return {"targetId": "target-1"}
+
+        class FakeContext:
+            def __init__(self, pages):
+                self.pages = pages
+                self.cdp_calls = []
+
+            def new_page(self):
+                page = CreatedPage()
+                self.pages.append(page)
+                return page
+
+            def new_cdp_session(self, page):
+                return FakeSession(self)
+
+        dead = DeadPage()
+        context = FakeContext([dead])
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
+        runtime.browser_or_context = context
+        runtime.pages["thread"] = patchright_bridge.PageSlot(page=dead, page_token=1)
+
+        self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
+        self.assertEqual(runtime.pages["thread"].page.url, "https://example.test/")
+        self.assertEqual(runtime.pages["thread"].page.goto_calls, [])
+        self.assertEqual(context.cdp_calls, [("Target.createTarget", {"url": "https://example.test/", "newWindow": True, "background": False})])
+
     def test_patchright_runtime_open_snapshot_click_and_text(self):
         class FakeElement:
             def __init__(self):
@@ -676,15 +908,16 @@ class AxiBackendTests(unittest.TestCase):
                 return "Body text"
 
         class FakePage:
-            def __init__(self):
-                self.url = "about:blank"
+            def __init__(self, url="about:blank"):
+                self.url = url
+                self.closed = False
                 self.title_value = "Example"
                 self.actionable = FakeElement()
                 self.keyboard = types.SimpleNamespace(type=self._type, press=self._press)
                 self.screenshot_calls = []
 
             def is_closed(self):
-                return False
+                return self.closed
 
             def goto(self, url, wait_until=None):
                 self.url = url
@@ -725,19 +958,35 @@ class AxiBackendTests(unittest.TestCase):
             def _press(self, key):
                 self.pressed = key
 
+        class FakeSession:
+            def __init__(self, context):
+                self.context = context
+
+            def send(self, method, params):
+                self.context.cdp_calls.append((method, params))
+                page = FakePage(params["url"])
+                self.context.pages.append(page)
+                return {"targetId": "target-1"}
+
         class FakeContext:
             def __init__(self):
                 self.pages = []
+                self.cdp_calls = []
 
             def new_page(self):
                 page = FakePage()
                 self.pages.append(page)
                 return page
 
+            def new_cdp_session(self, page):
+                return FakeSession(self)
+
+        context = FakeContext()
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"), app_id="surf-agent-test", window_class="surf-agent-window")
-        runtime.browser_or_context = FakeContext()
+        runtime.browser_or_context = context
 
         self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
+        self.assertEqual(context.cdp_calls, [("Target.createTarget", {"url": "https://example.test/", "newWindow": True, "background": False})])
         snapshot = runtime.call("snapshot", {"thread": "thread"})
         self.assertIn("[ref=pr0]", snapshot)
         self.assertEqual(runtime.call("fill", {"thread": "thread", "uid": "@pr0", "text": "hello"}), "filled\n")
