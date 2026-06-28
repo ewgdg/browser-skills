@@ -46,7 +46,7 @@ open, new, snapshot, text, click, fill, type, press, scroll, wait, back, screens
 
 ## Implementation notes
 
-- Uses `patchright.sync_api.sync_playwright()`.
+- Uses `patchright.async_api.async_playwright()` on a persistent `asyncio.Runner`.
 - Launches a persistent Chrome-channel context with `launch_persistent_context(..., channel="chrome", no_viewport=True)`.
 - Uses `--name=<app_id>` flag form to avoid Chromium treating the app id as a page target.
 

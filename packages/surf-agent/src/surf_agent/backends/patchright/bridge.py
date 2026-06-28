@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import inspect
 import json
 import os
 import re
@@ -18,9 +20,9 @@ from urllib.parse import urlparse
 from ...constants import DEFAULT_PATCHRIGHT_APP_ID
 
 try:
-    from patchright.sync_api import sync_playwright
+    from patchright.async_api import async_playwright
 except ImportError:
-    sync_playwright = None
+    async_playwright = None
 
 ACTIONABLE_SELECTOR = "a,button,input,textarea,select,[role=button],[role=link],[contenteditable=true]"
 REF_PATTERN = re.compile(r"^(?:pr|e)\d+$")
@@ -73,105 +75,144 @@ class PatchrightRuntime:
         self.browser_or_context: Any | None = None
         self.pages: dict[str, PageSlot] = {}
         self._next_page_token = 1
+        self._runner: asyncio.Runner | None = None
 
     def start(self) -> None:
+        self._run(self._start_async())
+
+    def stop(self) -> str:
+        result = self._run(self._stop_async())
+        self._close_runner()
+        return result
+
+    def call(self, name: str, args: dict[str, Any]) -> str:
+        result = self._run(self._call_async(name, args))
+        if name == "stop":
+            self._close_runner()
+        return result
+
+    def _run(self, awaitable: Any) -> Any:
+        if self._runner is None:
+            self._runner = asyncio.Runner()
+        return self._runner.run(awaitable)
+
+    def _close_runner(self) -> None:
+        if self._runner is None:
+            return
+        self._runner.close()
+        self._runner = None
+
+    async def _maybe_await(self, value: Any) -> Any:
+        if inspect.isawaitable(value):
+            return await value
+        return value
+
+    async def _start_async(self) -> None:
         if self.browser_or_context is not None:
             return
-        if sync_playwright is None:
+        if async_playwright is None:
             raise RuntimeError("Patchright is not installed. Run `uv tool install \"surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent\"`, install Google Chrome yourself, and set SURF_AGENT_CHROME_BIN if Chrome is not on PATH.")
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         launch_args = [f"--class={self.window_class}", f"--name={self.app_id}"] if self.app_id or self.window_class else []
-        self.manager = sync_playwright()
-        playwright = self.manager.__enter__()
+        self.manager = async_playwright()
+        if hasattr(self.manager, "__aenter__"):
+            playwright = await self.manager.__aenter__()
+        else:
+            playwright = self.manager.__enter__()
         # Chrome channel keeps existing Chrome profile behavior; bundled browsers break that reuse.
-        self.browser_or_context = playwright.chromium.launch_persistent_context(
-            user_data_dir=str(self.profile_dir),
-            channel="chrome",
-            headless=self.headless,
-            no_viewport=True,
-            chromium_sandbox=True,
-            args=launch_args,
+        self.browser_or_context = await self._maybe_await(
+            playwright.chromium.launch_persistent_context(
+                user_data_dir=str(self.profile_dir),
+                channel="chrome",
+                headless=self.headless,
+                no_viewport=True,
+                chromium_sandbox=True,
+                args=launch_args,
+            )
         )
 
-    def stop(self) -> str:
+    async def _stop_async(self) -> str:
         if self.manager is not None:
-            self.manager.__exit__(None, None, None)
+            if hasattr(self.manager, "__aexit__"):
+                await self._maybe_await(self.manager.__aexit__(None, None, None))
+            else:
+                self.manager.__exit__(None, None, None)
         self.manager = None
         self.browser_or_context = None
         self.pages.clear()
         return "stopped\n"
 
-    def call(self, name: str, args: dict[str, Any]) -> str:
+    async def _call_async(self, name: str, args: dict[str, Any]) -> str:
         if name == "stop":
-            return self.stop()
+            return await self._stop_async()
         thread = str(args.get("thread") or "default")
         if name == "state":
             slot = self.pages.get(thread)
             if not slot:
                 return json.dumps({"backend": "patchright", "open": False, "thread": thread}) + "\n"
-            return json.dumps({"backend": "patchright", "open": True, "thread": thread, **self._metadata(slot)}) + "\n"
+            return json.dumps({"backend": "patchright", "open": True, "thread": thread, **(await self._metadata(slot))}) + "\n"
         if name == "list":
-            rows = [{"thread": key, **self._metadata(slot)} for key, slot in sorted(self.pages.items())]
+            rows = [{"thread": key, **(await self._metadata(slot))} for key, slot in sorted(self.pages.items())]
             return json.dumps({"backend": "patchright", "pages": rows}, sort_keys=True) + "\n"
         if name == "close":
             old = self.pages.pop(thread, None)
             if old:
-                old.page.close()
+                await self._maybe_await(old.page.close())
             return "closed\n"
         if name == "scroll" and str(args.get("direction") or "down") not in {"up", "down", "top", "bottom"}:
             raise RuntimeError("scroll requires direction: up, down, top, or bottom")
-        self.start()
+        await self._start_async()
         if name == "new":
             url = str(args.get("url") or "about:blank")
-            slot = self._new_page(thread, url=url)
+            slot = await self._new_page(thread, url=url)
             slot.ref_map.clear()
             return self._format_opened(slot.page)
         if name == "open":
             url = str(args["url"])
             existing = self.pages.get(thread)
             if not existing or not self._page_is_open(existing.page):
-                slot = self._new_page(thread, url=url)
+                slot = await self._new_page(thread, url=url)
                 slot.ref_map.clear()
                 return self._format_opened(slot.page)
 
-            def open_page(slot: PageSlot) -> str:
-                slot.page.goto(url, wait_until="domcontentloaded")
+            async def open_page(slot: PageSlot) -> str:
+                await self._maybe_await(slot.page.goto(url, wait_until="domcontentloaded"))
                 slot.ref_map.clear()
                 return self._format_opened(slot.page)
 
             try:
-                return open_page(existing)
+                return await open_page(existing)
             except Exception as exc:
                 if not self._is_closed_target_error(exc):
                     raise
-                slot = self._new_page(thread, url=url)
+                slot = await self._new_page(thread, url=url)
                 slot.ref_map.clear()
                 return self._format_opened(slot.page)
-        slot = self._page(thread)
+        slot = await self._page(thread)
         if name == "back":
-            slot.page.go_back(wait_until="domcontentloaded")
+            await self._maybe_await(slot.page.go_back(wait_until="domcontentloaded"))
             slot.ref_map.clear()
             return self._format_opened(slot.page)
         if name == "text":
-            return self._body_text(slot.page)
+            return await self._body_text(slot.page)
         if name == "snapshot":
-            return self._snapshot(slot)
+            return await self._snapshot(slot)
         if name == "click":
-            locator = self._target_locator(slot, str(args["uid"]))
-            locator.click()
+            locator = await self._target_locator(slot, str(args["uid"]))
+            await self._maybe_await(locator.click())
             slot.ref_map.clear()
             return "clicked\n"
         if name == "fill":
-            locator = self._target_locator(slot, str(args["uid"]))
-            locator.fill(str(args.get("text") or ""))
+            locator = await self._target_locator(slot, str(args["uid"]))
+            await self._maybe_await(locator.fill(str(args.get("text") or "")))
             slot.ref_map.clear()
             return "filled\n"
         if name == "type":
-            slot.page.keyboard.type(str(args.get("text") or ""))
+            await self._maybe_await(slot.page.keyboard.type(str(args.get("text") or "")))
             slot.ref_map.clear()
             return "typed\n"
         if name == "press":
-            slot.page.keyboard.press(str(args.get("key") or "Enter"))
+            await self._maybe_await(slot.page.keyboard.press(str(args.get("key") or "Enter")))
             slot.ref_map.clear()
             return "pressed\n"
         if name == "scroll":
@@ -180,32 +221,32 @@ class PatchrightRuntime:
                 raise RuntimeError("scroll requires direction: up, down, top, or bottom")
             delta = -700 if direction in {"up", "top"} else 700
             if direction == "top":
-                slot.page.evaluate("() => window.scrollTo(0, 0)")
+                await self._maybe_await(slot.page.evaluate("() => window.scrollTo(0, 0)"))
             elif direction == "bottom":
-                slot.page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
+                await self._maybe_await(slot.page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)"))
             else:
-                slot.page.mouse.wheel(0, delta)
+                await self._maybe_await(slot.page.mouse.wheel(0, delta))
             slot.ref_map.clear()
             return "scrolled\n"
         if name == "wait":
             target = args.get("target")
             if isinstance(target, (int, float)):
-                slot.page.wait_for_timeout(float(target))
+                await self._maybe_await(slot.page.wait_for_timeout(float(target)))
             else:
-                slot.page.get_by_text(str(target)).first.wait_for(timeout=10_000)
+                await self._maybe_await(slot.page.get_by_text(str(target)).first.wait_for(timeout=10_000))
             slot.ref_map.clear()
             return "waited\n"
         if name == "screenshot":
             path = str(args["path"])
             full_page = args.get("fullPage") is True
-            slot.page.screenshot(path=path, full_page=full_page)
+            await self._maybe_await(slot.page.screenshot(path=path, full_page=full_page))
             return f"screenshot: {path}\n"
         if name == "eval":
-            result = slot.page.evaluate(str(args.get("code") or ""))
+            result = await self._maybe_await(slot.page.evaluate(str(args.get("code") or "")))
             slot.ref_map.clear()
             return json.dumps(result, ensure_ascii=False) + "\n"
         if name == "focus":
-            slot.page.bring_to_front()
+            await self._maybe_await(slot.page.bring_to_front())
             return "focused\n"
         raise RuntimeError(f"unsupported Patchright command: {name}")
 
@@ -217,49 +258,49 @@ class PatchrightRuntime:
             return self.browser_or_context
         return self.browser_or_context.new_context()
 
-    def _page(self, thread: str) -> PageSlot:
+    async def _page(self, thread: str) -> PageSlot:
         slot = self.pages.get(thread)
         if slot and self._page_is_open(slot.page):
             return slot
-        return self._new_page(thread)
+        return await self._new_page(thread)
 
-    def _new_page(self, thread: str, url: str | None = None) -> PageSlot:
+    async def _new_page(self, thread: str, url: str | None = None) -> PageSlot:
         old = self.pages.pop(thread, None)
         if old and self._page_is_open(old.page):
-            old.page.close()
+            await self._maybe_await(old.page.close())
         target_url = str(url or "about:blank")
         try:
-            page = self._create_new_window_page(target_url)
+            page = await self._create_new_window_page(target_url)
         except Exception as exc:
             if not self._is_closed_target_error(exc):
                 raise
             # Manual window close can close the whole persistent context; recreate it.
-            self._restart_closed_context()
-            page = self._create_new_window_page(target_url)
+            await self._restart_closed_context()
+            page = await self._create_new_window_page(target_url)
         slot = PageSlot(page=page, page_token=self._next_page_token)
         self._next_page_token += 1
         self.pages[thread] = slot
         return slot
 
-    def _create_new_window_page(self, url: str) -> Any:
+    async def _create_new_window_page(self, url: str) -> Any:
         context = self._context()
-        anchor_page, close_anchor = self._cdp_anchor_page(context)
+        anchor_page, close_anchor = await self._cdp_anchor_page(context)
         excluded_page_ids = {id(page) for page in self._open_owned_pages()}
         excluded_page_ids.add(id(anchor_page))
         created_page = None
         try:
-            self._close_unowned_pages(context, keep_ids={id(anchor_page)})
-            session = context.new_cdp_session(anchor_page)
-            session.send("Target.createTarget", {"url": url, "newWindow": True, "background": False})
-            created_page = self._wait_for_created_target_page(context, url, excluded_page_ids)
+            await self._close_unowned_pages(context, keep_ids={id(anchor_page)})
+            session = await self._maybe_await(context.new_cdp_session(anchor_page))
+            await self._maybe_await(session.send("Target.createTarget", {"url": url, "newWindow": True, "background": False}))
+            created_page = await self._wait_for_created_target_page(context, url, excluded_page_ids)
             return created_page
         finally:
             if close_anchor and self._page_is_open(anchor_page):
-                anchor_page.close()
+                await self._maybe_await(anchor_page.close())
             keep_ids = {id(created_page)} if created_page is not None else set()
-            self._close_unowned_pages(context, keep_ids=keep_ids)
+            await self._close_unowned_pages(context, keep_ids=keep_ids)
 
-    def _cdp_anchor_page(self, context: Any) -> tuple[Any, bool]:
+    async def _cdp_anchor_page(self, context: Any) -> tuple[Any, bool]:
         owned_pages = self._open_owned_pages()
         if owned_pages:
             return owned_pages[0], False
@@ -268,24 +309,24 @@ class PatchrightRuntime:
                 return page, True
         # Patchright CDP sessions need a page anchor. This temporary page must never become
         # the controlled thread page; it is closed after Target.createTarget finishes.
-        return context.new_page(), True
+        return await self._maybe_await(context.new_page()), True
 
     def _open_owned_pages(self) -> list[Any]:
         return [slot.page for slot in self.pages.values() if self._page_is_open(slot.page)]
 
-    def _close_unowned_pages(self, context: Any, *, keep_ids: set[int] | None = None) -> None:
+    async def _close_unowned_pages(self, context: Any, *, keep_ids: set[int] | None = None) -> None:
         keep_ids = keep_ids or set()
         owned_ids = {id(page) for page in self._open_owned_pages()}
         for page in list(context.pages):
             if id(page) in keep_ids or id(page) in owned_ids or not self._page_is_open(page):
                 continue
             try:
-                page.close()
+                await self._maybe_await(page.close())
             except Exception as exc:
                 if not self._is_closed_target_error(exc):
                     raise
 
-    def _wait_for_created_target_page(self, context: Any, url: str, excluded_page_ids: set[int]) -> Any:
+    async def _wait_for_created_target_page(self, context: Any, url: str, excluded_page_ids: set[int]) -> Any:
         deadline = time.monotonic() + CDP_NEW_WINDOW_TIMEOUT_S
         latest_candidates: list[Any] = []
         while time.monotonic() < deadline:
@@ -298,7 +339,7 @@ class PatchrightRuntime:
             if matching:
                 return matching[-1]
             latest_candidates = candidates
-            time.sleep(CDP_NEW_WINDOW_POLL_INTERVAL_S)
+            await asyncio.sleep(CDP_NEW_WINDOW_POLL_INTERVAL_S)
         if len(latest_candidates) == 1:
             return latest_candidates[0]
         raise RuntimeError(f"Patchright CDP Target.createTarget did not expose a new page for {url!r}")
@@ -321,14 +362,14 @@ class PatchrightRuntime:
     def _page_url(self, page: Any) -> str:
         return str(getattr(page, "url", "") or "")
 
-    def _restart_closed_context(self) -> None:
+    async def _restart_closed_context(self) -> None:
         try:
-            self.stop()
+            await self._stop_async()
         except Exception:
             self.manager = None
             self.browser_or_context = None
             self.pages.clear()
-        self.start()
+        await self._start_async()
 
     def _page_is_open(self, page: Any) -> bool:
         try:
@@ -341,31 +382,31 @@ class PatchrightRuntime:
     def _is_closed_target_error(self, exc: Exception) -> bool:
         return CLOSED_TARGET_MESSAGE in str(exc)
 
-    def _body_text(self, page: Any) -> str:
+    async def _body_text(self, page: Any) -> str:
         try:
-            text = page.locator("body").inner_text(timeout=SNAPSHOT_BODY_TIMEOUT_MS)
+            text = await self._maybe_await(page.locator("body").inner_text(timeout=SNAPSHOT_BODY_TIMEOUT_MS))
         except Exception:
-            text = page.content()
+            text = await self._maybe_await(page.content())
         return text + ("" if text.endswith("\n") else "\n")
 
-    def _snapshot(self, slot: PageSlot) -> str:
+    async def _snapshot(self, slot: PageSlot) -> str:
         page = slot.page
         parts = ["snapshot:"]
         try:
-            aria = self._aria_snapshot(page)
+            aria = await self._aria_snapshot(page)
         except Exception:
             try:
-                aria = self._aria_snapshot(page.locator("body"))
+                aria = await self._aria_snapshot(page.locator("body"))
             except Exception:
-                aria = self._body_text(page).strip()
+                aria = (await self._body_text(page)).strip()
         if aria:
             parts.append(str(aria).rstrip())
-        ref_lines = self._index_actionable_refs(slot)
+        ref_lines = await self._index_actionable_refs(slot)
         if ref_lines:
             parts.extend(ref_lines)
         return "\n".join(parts).rstrip() + "\n"
 
-    def _aria_snapshot(self, target: Any) -> str:
+    async def _aria_snapshot(self, target: Any) -> str:
         # Match Playwright CLI snapshots: AI-mode ARIA tree, optional depth, optional boxes.
         options = {
             "mode": "ai",
@@ -374,20 +415,20 @@ class PatchrightRuntime:
             "boxes": SNAPSHOT_BOXES,
         }
         try:
-            return str(target.aria_snapshot(**options))
+            return str(await self._maybe_await(target.aria_snapshot(**options)))
         except TypeError:
             try:
-                return str(target.aria_snapshot(mode="ai", timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
+                return str(await self._maybe_await(target.aria_snapshot(mode="ai", timeout=SNAPSHOT_ARIA_TIMEOUT_MS)))
             except TypeError:
-                return str(target.aria_snapshot(timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
+                return str(await self._maybe_await(target.aria_snapshot(timeout=SNAPSHOT_ARIA_TIMEOUT_MS)))
 
-    def _index_actionable_refs(self, slot: PageSlot) -> list[str]:
+    async def _index_actionable_refs(self, slot: PageSlot) -> list[str]:
         locator = slot.page.locator(ACTIONABLE_SELECTOR)
         slot.ref_map.clear()
         lines: list[str] = []
         deadline = time.monotonic() + SNAPSHOT_INDEX_BUDGET_S
         try:
-            count = min(locator.count(), SNAPSHOT_REF_LIMIT)
+            count = min(await self._maybe_await(locator.count()), SNAPSHOT_REF_LIMIT)
         except Exception:
             return lines
         for index in range(count):
@@ -395,15 +436,15 @@ class PatchrightRuntime:
                 break
             item = locator.nth(index)
             try:
-                if not item.is_visible(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS):
+                if not await self._maybe_await(item.is_visible(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS)):
                     continue
                 ref = f"pr{len(slot.ref_map)}"
-                fingerprint = self._fingerprint_locator(item)
+                fingerprint = await self._fingerprint_locator(item)
                 target = RefTarget(
                     ref=ref,
                     selector=ACTIONABLE_SELECTOR,
                     index=index,
-                    css_path=self._css_path(item),
+                    css_path=await self._css_path(item),
                     fingerprint=fingerprint,
                 )
                 slot.ref_map[ref] = target
@@ -418,24 +459,24 @@ class PatchrightRuntime:
         name = " ".join(name.split())[:160]
         return f'{label} "{name}"' if name else label
 
-    def _fingerprint_locator(self, locator: Any) -> TargetFingerprint:
-        tag = self._safe(lambda: self._locator_evaluate(locator, "el => el.tagName.toLowerCase()", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
-        role = self._safe(lambda: self._locator_get_attribute(locator, "role", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
-        text = self._safe(lambda: locator.inner_text(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
-        value = self._safe(lambda: locator.input_value(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+    async def _fingerprint_locator(self, locator: Any) -> TargetFingerprint:
+        tag = await self._safe(lambda: self._locator_evaluate(locator, "el => el.tagName.toLowerCase()", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        role = await self._safe(lambda: self._locator_get_attribute(locator, "role", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        text = await self._safe(lambda: locator.inner_text(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        value = await self._safe(lambda: locator.input_value(timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
         name = ""
         for attr in ("aria-label", "placeholder", "title", "alt"):
-            name = self._safe(lambda attr=attr: self._locator_get_attribute(locator, attr, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+            name = await self._safe(lambda attr=attr: self._locator_get_attribute(locator, attr, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
             if name:
                 break
         if not name:
-            name = text or value or self._safe(lambda: self._locator_get_attribute(locator, "href", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
-        bbox = self._bbox(locator)
+            name = text or value or await self._safe(lambda: self._locator_get_attribute(locator, "href", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        bbox = await self._bbox(locator)
         return TargetFingerprint(tag=normalize_text(tag), role=normalize_text(role), name=normalize_text(name), text=normalize_text(text or value), bbox=bbox)
 
-    def _bbox(self, locator: Any) -> dict[str, float] | None:
+    async def _bbox(self, locator: Any) -> dict[str, float] | None:
         try:
-            box = self._locator_bounding_box(locator, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS)
+            box = await self._locator_bounding_box(locator, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS)
         except Exception:
             return None
         if not isinstance(box, dict):
@@ -447,7 +488,7 @@ class PatchrightRuntime:
                 result[key] = float(value)
         return result or None
 
-    def _css_path(self, locator: Any) -> str | None:
+    async def _css_path(self, locator: Any) -> str | None:
         script = """
         el => {
           if (!el || !el.tagName) return null;
@@ -469,57 +510,57 @@ class PatchrightRuntime:
           return parts.join(' > ');
         }
         """
-        value = self._safe(lambda: self._locator_evaluate(locator, script, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        value = await self._safe(lambda: self._locator_evaluate(locator, script, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
         return value or None
 
-    def _locator_evaluate(self, locator: Any, script: str, *, timeout: int) -> Any:
+    async def _locator_evaluate(self, locator: Any, script: str, *, timeout: int) -> Any:
         try:
-            return locator.evaluate(script, timeout=timeout)
+            return await self._maybe_await(locator.evaluate(script, timeout=timeout))
         except TypeError:
-            return locator.evaluate(script)
+            return await self._maybe_await(locator.evaluate(script))
 
-    def _locator_get_attribute(self, locator: Any, name: str, *, timeout: int) -> Any:
+    async def _locator_get_attribute(self, locator: Any, name: str, *, timeout: int) -> Any:
         try:
-            return locator.get_attribute(name, timeout=timeout)
+            return await self._maybe_await(locator.get_attribute(name, timeout=timeout))
         except TypeError:
-            return locator.get_attribute(name)
+            return await self._maybe_await(locator.get_attribute(name))
 
-    def _locator_bounding_box(self, locator: Any, *, timeout: int) -> Any:
+    async def _locator_bounding_box(self, locator: Any, *, timeout: int) -> Any:
         try:
-            return locator.bounding_box(timeout=timeout)
+            return await self._maybe_await(locator.bounding_box(timeout=timeout))
         except TypeError:
-            return locator.bounding_box()
+            return await self._maybe_await(locator.bounding_box())
 
-    def _target_locator(self, slot: PageSlot, target: str) -> Any:
+    async def _target_locator(self, slot: PageSlot, target: str) -> Any:
         normalized = target[1:] if target.startswith("@") else target
         if normalized in slot.ref_map or target.startswith("@") or REF_PATTERN.match(normalized):
-            return self._ref_locator(slot, normalized)
-        return self._selector_locator(slot, target)
+            return await self._ref_locator(slot, normalized)
+        return await self._selector_locator(slot, target)
 
-    def _ref_locator(self, slot: PageSlot, ref: str) -> Any:
+    async def _ref_locator(self, slot: PageSlot, ref: str) -> Any:
         stored = slot.ref_map.get(ref)
         if not stored:
             raise RuntimeError(STALE_REF_MESSAGE.format(ref=ref))
-        candidates = self._ref_candidates(slot, stored)
+        candidates = await self._ref_candidates(slot, stored)
         for candidate in candidates:
             try:
-                if candidate.is_visible(timeout=250) and self._fingerprint_matches(stored.fingerprint, self._fingerprint_locator(candidate)):
+                if await self._maybe_await(candidate.is_visible(timeout=250)) and self._fingerprint_matches(stored.fingerprint, await self._fingerprint_locator(candidate)):
                     return candidate
             except Exception:
                 continue
         raise RuntimeError(STALE_REF_MESSAGE.format(ref=ref))
 
-    def _ref_candidates(self, slot: PageSlot, stored: RefTarget) -> list[Any]:
+    async def _ref_candidates(self, slot: PageSlot, stored: RefTarget) -> list[Any]:
         candidates: list[Any] = []
         if stored.css_path:
-            candidates.extend(self._locator_candidates(slot.page.locator(stored.css_path), limit=3))
-        candidates.extend(self._locator_candidates(slot.page.locator(stored.selector), limit=200, preferred_index=stored.index))
+            candidates.extend(await self._locator_candidates(slot.page.locator(stored.css_path), limit=3))
+        candidates.extend(await self._locator_candidates(slot.page.locator(stored.selector), limit=200, preferred_index=stored.index))
         return candidates
 
-    def _locator_candidates(self, locator: Any, *, limit: int, preferred_index: int | None = None) -> list[Any]:
+    async def _locator_candidates(self, locator: Any, *, limit: int, preferred_index: int | None = None) -> list[Any]:
         candidates: list[Any] = []
         try:
-            count = min(locator.count(), limit)
+            count = min(await self._maybe_await(locator.count()), limit)
         except Exception:
             return candidates
         indexes = list(range(count))
@@ -533,16 +574,16 @@ class PatchrightRuntime:
                 continue
         return candidates
 
-    def _selector_locator(self, slot: PageSlot, selector: str) -> Any:
+    async def _selector_locator(self, slot: PageSlot, selector: str) -> Any:
         try:
             locator = slot.page.locator(selector)
-            if locator.count() < 1:
+            if await self._maybe_await(locator.count()) < 1:
                 raise RuntimeError
             candidate = locator.first
-            if hasattr(candidate, "is_visible") and not candidate.is_visible(timeout=250):
-                visible = next((item for item in self._locator_candidates(locator, limit=50) if item.is_visible(timeout=250)), None)
-                if visible is not None:
-                    return visible
+            if hasattr(candidate, "is_visible") and not await self._maybe_await(candidate.is_visible(timeout=250)):
+                for item in await self._locator_candidates(locator, limit=50):
+                    if await self._maybe_await(item.is_visible(timeout=250)):
+                        return item
             return candidate
         except Exception as exc:
             raise RuntimeError(f"target {selector!r} is neither a current snapshot ref nor a matching selector") from exc
@@ -559,20 +600,20 @@ class PatchrightRuntime:
             return expected.role == actual.role
         return True
 
-    def _safe(self, fn: Any, default: str = "") -> str:
+    async def _safe(self, fn: Any, default: str = "") -> str:
         try:
-            value = fn()
+            value = await self._maybe_await(fn())
             return "" if value is None else str(value).strip()
         except Exception:
             return default
 
-    def _metadata(self, slot: PageSlot) -> dict[str, str | int]:
+    async def _metadata(self, slot: PageSlot) -> dict[str, str | int]:
         page = slot.page
-        return {"page_id": slot.page_token, "url": str(getattr(page, "url", "") or ""), "title": self._title(page)}
+        return {"page_id": slot.page_token, "url": str(getattr(page, "url", "") or ""), "title": await self._title(page)}
 
-    def _title(self, page: Any) -> str:
+    async def _title(self, page: Any) -> str:
         try:
-            return str(page.title())
+            return str(await self._maybe_await(page.title()))
         except Exception:
             return ""
 
