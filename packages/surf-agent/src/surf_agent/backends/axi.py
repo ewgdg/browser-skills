@@ -100,20 +100,20 @@ class AxiBridgeClient:
             return None
         expected_profile = str(self.expected_profile_dir)
         if env is None:
-            return f"browser bridge is already running on port {os.environ.get('CHROME_DEVTOOLS_AXI_PORT', DEFAULT_AXI_PORT)}, but surf-agent cannot verify it uses the dedicated profile; run `surf-agent bridge-stop`, then retry"
+            return f"browser bridge is already running on port {os.environ.get('CHROME_DEVTOOLS_AXI_PORT', DEFAULT_AXI_PORT)}, but surf-agent cannot verify it uses the dedicated profile; run `surf-agent bridge stop`, then retry"
         browser_url = env.get("CHROME_DEVTOOLS_AXI_BROWSER_URL")
         if env.get("CHROME_DEVTOOLS_AXI_AUTO_CONNECT") == "1":
-            return "browser bridge is running against an explicit/user Chrome connection; run `surf-agent bridge-stop`, then retry so surf-agent can use its dedicated profile"
+            return "browser bridge is running against an explicit/user Chrome connection; run `surf-agent bridge stop`, then retry so surf-agent can use its dedicated profile"
         if self.expected_browser_url is not None:
             if browser_url != self.expected_browser_url:
-                return f"browser bridge is running against browser URL {browser_url!r}, expected {self.expected_browser_url!r}; run `surf-agent bridge-stop`, then retry"
+                return f"browser bridge is running against browser URL {browser_url!r}, expected {self.expected_browser_url!r}; run `surf-agent bridge stop`, then retry"
             return None
         if browser_url:
-            return "browser bridge is running against an explicit/user Chrome connection; run `surf-agent bridge-stop`, then retry so surf-agent can use its dedicated profile"
+            return "browser bridge is running against an explicit/user Chrome connection; run `surf-agent bridge stop`, then retry so surf-agent can use its dedicated profile"
         if env.get("CHROME_DEVTOOLS_AXI_USER_DATA_DIR") != expected_profile:
-            return f"browser bridge is running with profile {env.get('CHROME_DEVTOOLS_AXI_USER_DATA_DIR')!r}, expected {expected_profile!r}; run `surf-agent bridge-stop`, then retry"
+            return f"browser bridge is running with profile {env.get('CHROME_DEVTOOLS_AXI_USER_DATA_DIR')!r}, expected {expected_profile!r}; run `surf-agent bridge stop`, then retry"
         if self.expected_chrome_class and not any(arg == f"--class={self.expected_chrome_class}" for arg in env.get("CHROME_DEVTOOLS_AXI_CHROME_ARGS", "").split()):
-            return f"browser bridge is running without --class={self.expected_chrome_class}; run `surf-agent bridge-stop`, then retry"
+            return f"browser bridge is running without --class={self.expected_chrome_class}; run `surf-agent bridge stop`, then retry"
         return None
 
     def _read_process_env(self, pid: int) -> dict[str, str] | None:

@@ -107,6 +107,7 @@ MANAGEMENT_COMMANDS = {
     "focus",
     "close-all",
     "close-matching",
+    "bridge",
     "bridge-stop",
     "setup",
     "backend",
@@ -338,7 +339,7 @@ class SurfAgent:
         if self.backend == PATCHRIGHT_BACKEND:
             return self._patchright_profile_open(url)
         if self._chrome_debug_endpoint_ready():
-            raise SurfAgentError(f"automated Surf Agent Chrome is running at {self.browser_url}; close Surf Agent windows or run `surf-agent bridge-stop` before `profile open`")
+            raise SurfAgentError(f"automated Surf Agent Chrome is running at {self.browser_url}; close Surf Agent windows or run `surf-agent bridge stop` before `profile open`")
         if not self.chrome_bin:
             raise SurfAgentError("could not find Chrome executable for profile open; set SURF_AGENT_CHROME_BIN")
         self.chrome_profile_dir.mkdir(parents=True, exist_ok=True)
@@ -1199,7 +1200,7 @@ def print_help(stream: Any) -> None:
         "  surf-agent close-all                           close all remembered thread pages/windows\n"
         "  surf-agent close-matching <glob>               close remembered thread pages/windows whose thread names match\n"
         "  surf-agent [--thread ID] reset                 clear thread state without closing page\n"
-        "  surf-agent [--thread ID] bridge-stop           explicit destructive browser bridge stop\n"
+        "  surf-agent [--thread ID] bridge stop           explicit destructive browser bridge stop\n"
         "  surf-agent [--thread ID] do [-]                run newline-separated steps from stdin\n"
         "  surf-agent [--thread ID] <command...>          run supported browser command in thread page\n\n"
         "Supported browser commands:\n"
@@ -1285,6 +1286,10 @@ def main(argv: list[str] | None = None) -> int:
             if len(argv) < 2:
                 raise SurfAgentError("close-matching requires a thread glob pattern", exit_code=2)
             return agent.close_matching(argv[1])
+        if command == "bridge":
+            if len(argv) == 2 and argv[1] == "stop":
+                return agent.bridge_stop()
+            raise SurfAgentError("usage: surf-agent bridge stop", exit_code=2)
         if command == "bridge-stop":
             return agent.bridge_stop()
         if command == "do":

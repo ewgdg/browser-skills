@@ -44,7 +44,7 @@ class PatchrightBridgeClient:
         except TimeoutError as exc:
             raise BridgeUnavailable(
                 f"Patchright bridge tool {name} timed out after {self.timeout_s:g}s; "
-                "restart it with `surf-agent bridge-stop` if it stays wedged"
+                "restart it with `surf-agent bridge stop` if it stays wedged"
             ) from exc
         except urllib.error.URLError as exc:
             raise BridgeUnavailable(f"Patchright bridge call failed: {exc}") from exc
@@ -127,7 +127,7 @@ class PatchrightBackend:
 
     def profile_open(self, url: str, *, profile_dir: str, app_id: str, window_class: str) -> int:
         if self.client._health_ok():
-            raise SurfAgentError("automated Surf Agent Patchright bridge is running; run `surf-agent bridge-stop` before `profile open`")
+            raise SurfAgentError("automated Surf Agent Patchright bridge is running; run `surf-agent bridge stop` before `profile open`")
         if not self.agent.chrome_bin:
             raise SurfAgentError("could not find Chrome executable for profile open; set SURF_AGENT_CHROME_BIN")
         profile_path = Path(profile_dir)

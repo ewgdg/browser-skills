@@ -140,7 +140,7 @@ class CamoufoxBackend:
 
     def profile_open(self, url: str, *, profile_dir: str, app_id: str) -> int:
         if self.client._health_ok():
-            raise SurfAgentError(f"Camoufox bridge is running; run `surf-agent bridge-stop` before `profile open`")
+            raise SurfAgentError(f"Camoufox bridge is running; run `surf-agent bridge stop` before `profile open`")
         profile_path = Path(profile_dir)
         profile_path.mkdir(parents=True, exist_ok=True)
         subprocess.Popen(

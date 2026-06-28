@@ -31,7 +31,7 @@ If the bridge or dedicated Chrome debug port is unavailable, commands fail fast 
 Only use explicit bridge stop when you intend to kill the persistent browser bridge:
 
 ```bash
-surf-agent bridge-stop
+surf-agent bridge stop
 ```
 
-After `bridge-stop`, next use restarts the persistent bridge and dedicated debug-port Chrome if needed.
+After `bridge stop`, next use restarts the persistent bridge and dedicated debug-port Chrome if needed.

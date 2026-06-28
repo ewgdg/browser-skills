@@ -1508,6 +1508,20 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual([call[0] for call in agent.calls], [["axi", "stop"]])
         self.assertEqual(output.getvalue(), "stopped\n")
 
+    def test_bridge_stop_command_is_canonical(self):
+        agent = FakeAxiAgent(["stopped\n"])
+        output = io.StringIO()
+        with patch("surf_agent.cli.SurfAgent", return_value=agent), redirect_stdout(output):
+            self.assertEqual(main(["bridge", "stop"]), 0)
+        self.assertEqual([call[0] for call in agent.calls], [["axi", "stop"]])
+        self.assertEqual(output.getvalue(), "stopped\n")
+
+    def test_stop_bridge_is_not_supported(self):
+        error = io.StringIO()
+        with redirect_stderr(error):
+            self.assertEqual(main(["stop", "bridge"]), 2)
+        self.assertIn("unsupported browser command: stop", error.getvalue())
+
     def test_parse_axi_pages_accepts_json_human_lines_and_empty_message(self):
         self.assertEqual(parse_axi_pages('{"pages":[{"id":7,"url":"https://x.test/","title":"X"}]}'), [AgentPage(7, "https://x.test/", "X")])
         self.assertEqual(parse_axi_pages("* [8] Title https://y.test/\n"), [AgentPage(8, "https://y.test/", "Title")])

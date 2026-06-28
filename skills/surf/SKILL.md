@@ -99,7 +99,7 @@ surf-agent close-all                    # close all remembered thread pages/wind
 surf-agent close-matching 'run-*'       # close remembered pages/windows with matching thread names
 surf-agent --thread main reset          # clear state without closing page
 surf-agent --thread main page-id        # print/create managed browser page id
-surf-agent bridge-stop                  # explicit destructive bridge stop
+surf-agent bridge stop                  # explicit destructive bridge stop
 ```
 
 ### Navigate and inspect
@@ -187,7 +187,7 @@ Forbidden through `surf-agent`: web chat/client commands such as `chatgpt` and `
 Symptoms and fixes:
 
 - `browser command timed out... browser bridge may be unavailable.`
-  Retry once; if it persists, restart the browser bridge with `surf-agent bridge-stop`, then rerun the command.
+  Retry once; if it persists, restart the browser bridge with `surf-agent bridge stop`, then rerun the command.
 - `remembered browser page <id> is gone; state cleared`
   Page closed outside agent. Run `open <url>` again.
 - `could not parse browser pages output`
