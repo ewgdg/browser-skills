@@ -247,7 +247,7 @@ class AxiBackendTests(unittest.TestCase):
         self.assertNotIn("Traceback", error.getvalue())
 
     def test_backend_config_commands_and_priority(self):
-        with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch.dict("os.environ", {}, clear=True):
+        with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch("surf_agent.cli.cleanup_backend_runtime"), patch.dict("os.environ", {}, clear=True):
             output = io.StringIO()
             with redirect_stdout(output):
                 self.assertEqual(main(["backend", "show"]), 0)
@@ -281,6 +281,28 @@ class AxiBackendTests(unittest.TestCase):
             with redirect_stdout(output):
                 self.assertEqual(main(["backend", "set", "axi"]), 0)
             self.assertEqual(json.loads((Path(tmp) / "config.json").read_text()), {"backend": "axi"})
+
+    def test_backend_set_cleans_previous_runtime_when_backend_changes(self):
+        with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch("surf_agent.cli.cleanup_backend_runtime") as cleanup, patch.dict("os.environ", {}, clear=True):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["backend", "set", "patchright"]), 0)
+            cleanup.assert_called_once_with("axi")
+
+    def test_backend_set_skips_runtime_cleanup_when_backend_unchanged(self):
+        with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch("surf_agent.cli.cleanup_backend_runtime") as cleanup, patch.dict("os.environ", {}, clear=True):
+            (Path(tmp) / "config.json").write_text(json.dumps({"backend": "patchright"}) + "\n")
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["backend", "set", "patchright"]), 0)
+            cleanup.assert_not_called()
+
+    def test_backend_set_cleanup_ignores_temporary_env_override(self):
+        with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch("surf_agent.cli.cleanup_backend_runtime") as cleanup, patch.dict("os.environ", {"SURF_AGENT_BACKEND": "patchright"}, clear=True):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(main(["backend", "set", "camoufox"]), 0)
+            cleanup.assert_called_once_with("axi")
 
     def test_state_with_no_thread_does_not_create_or_query_page(self):
         with TemporaryDirectory() as tmp:
@@ -468,7 +490,7 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(error.getvalue(), "")
 
     def test_backend_config_accepts_patchright_and_resolves_backend(self):
-        with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch.dict("os.environ", {}, clear=True):
+        with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch("surf_agent.cli.cleanup_backend_runtime"), patch.dict("os.environ", {}, clear=True):
             output = io.StringIO()
             with redirect_stdout(output):
                 self.assertEqual(main(["backend", "set", "patchright"]), 0)
@@ -1503,15 +1525,16 @@ class AxiBackendTests(unittest.TestCase):
     def test_bridge_stop_is_explicit_only(self):
         agent = FakeAxiAgent(["stopped\n"])
         output = io.StringIO()
-        with redirect_stdout(output):
+        with patch("surf_agent.cli.stop_axi_chrome_runtime") as stop_chrome, redirect_stdout(output):
             self.assertEqual(agent.bridge_stop(), 0)
         self.assertEqual([call[0] for call in agent.calls], [["axi", "stop"]])
         self.assertEqual(output.getvalue(), "stopped\n")
+        stop_chrome.assert_called_once_with(agent.chrome_profile_dir, debug_port=agent.chrome_debug_port)
 
     def test_bridge_stop_command_is_canonical(self):
         agent = FakeAxiAgent(["stopped\n"])
         output = io.StringIO()
-        with patch("surf_agent.cli.SurfAgent", return_value=agent), redirect_stdout(output):
+        with patch("surf_agent.cli.SurfAgent", return_value=agent), patch("surf_agent.cli.stop_axi_chrome_runtime"), redirect_stdout(output):
             self.assertEqual(main(["bridge", "stop"]), 0)
         self.assertEqual([call[0] for call in agent.calls], [["axi", "stop"]])
         self.assertEqual(output.getvalue(), "stopped\n")

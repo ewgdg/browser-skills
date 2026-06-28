@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import signal
 import shlex
 import shutil
 import subprocess
@@ -575,11 +576,45 @@ def show_backend_config() -> int:
 
 def set_backend_config(backend: str) -> int:
     backend = validate_backend_name(backend)
+    previous_backend = current_backend_for_cleanup()
     config = load_backend_config()
     config["backend"] = backend
     write_backend_config(config)
+    if previous_backend is not None and previous_backend != backend:
+        cleanup_backend_runtime(previous_backend)
     print(json.dumps({"backend": backend, "config_file": str(backend_config_file())}, sort_keys=True))
     return 0
+
+
+def current_backend_for_cleanup() -> str | None:
+    try:
+        configured = load_backend_config().get("backend")
+        if isinstance(configured, str) and configured.strip():
+            return validate_backend_name(configured, source=str(backend_config_file()))
+        return DEFAULT_BACKEND
+    except SurfAgentError:
+        return None
+
+
+def cleanup_backend_runtime(backend: str) -> None:
+    try:
+        agent = SurfAgent()
+        if backend == DEFAULT_BACKEND:
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent._axi_backend().bridge_stop()
+            return
+        if backend == PATCHRIGHT_BACKEND:
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent.patchright_client.stop()
+            stop_patchright_runtime(agent.patchright_profile_dir, port=agent.patchright_port)
+            return
+        if backend == CAMOUFOX_BACKEND:
+            with contextlib.redirect_stdout(io.StringIO()):
+                agent.camoufox_client.stop()
+            stop_module_bridge_processes("surf_agent.backends.camoufox.bridge", port=agent.camoufox_port, profile_dir=agent.camoufox_profile_dir)
+    except Exception as exc:
+        # Backend selection must remain repairable even when old runtime cleanup fails.
+        print(f"surf-agent: warning: could not clean up previous {backend} runtime: {exc}", file=sys.stderr)
 
 
 def reset_backend_config() -> int:
@@ -634,6 +669,111 @@ def default_axi_env(*, profile_dir: Path | None = None, chrome_class: str = DEFA
 
 def uses_dedicated_chrome_profile(env: dict[str, str]) -> bool:
     return env.get("CHROME_DEVTOOLS_AXI_AUTO_CONNECT") != "1" and not env.get("CHROME_DEVTOOLS_AXI_BROWSER_URL")
+
+
+def stop_axi_chrome_runtime(profile_dir: Path, *, debug_port: int) -> list[int]:
+    return terminate_processes(find_chrome_root_processes(profile_dir, remote_debugging_port=debug_port))
+
+
+def stop_patchright_runtime(profile_dir: Path, *, port: int) -> list[int]:
+    stopped = stop_module_bridge_processes("surf_agent.backends.patchright.bridge", port=port, profile_dir=profile_dir)
+    stopped.extend(terminate_processes(find_chrome_root_processes(profile_dir, remote_debugging_pipe=True)))
+    return stopped
+
+
+def stop_module_bridge_processes(module: str, *, port: int, profile_dir: Path) -> list[int]:
+    return terminate_processes(find_module_bridge_processes(module, port=port, profile_dir=profile_dir))
+
+
+def find_chrome_root_processes(profile_dir: Path, *, remote_debugging_port: int | None = None, remote_debugging_pipe: bool = False) -> list[int]:
+    wanted_profile = str(profile_dir)
+    pids: list[int] = []
+    for pid, args in iter_process_args():
+        if pid == os.getpid() or not args:
+            continue
+        if any(arg.startswith("--type=") for arg in args):
+            continue
+        if not has_arg_value(args, "--user-data-dir", wanted_profile):
+            continue
+        if remote_debugging_port is not None and has_arg_value(args, "--remote-debugging-port", str(remote_debugging_port)):
+            pids.append(pid)
+            continue
+        if remote_debugging_pipe and "--remote-debugging-pipe" in args:
+            pids.append(pid)
+    return pids
+
+
+def find_module_bridge_processes(module: str, *, port: int, profile_dir: Path) -> list[int]:
+    wanted_profile = str(profile_dir)
+    wanted_port = str(port)
+    pids: list[int] = []
+    for pid, args in iter_process_args():
+        if pid == os.getpid() or module not in args:
+            continue
+        if has_arg_value(args, "--port", wanted_port) and has_arg_value(args, "--profile-dir", wanted_profile):
+            pids.append(pid)
+    return pids
+
+
+def has_arg_value(args: Sequence[str], option: str, value: str) -> bool:
+    for index, arg in enumerate(args):
+        if arg == option and index + 1 < len(args) and args[index + 1] == value:
+            return True
+        if arg == f"{option}={value}":
+            return True
+    return False
+
+
+def iter_process_args(proc_dir: Path = Path("/proc")) -> list[tuple[int, list[str]]]:
+    processes: list[tuple[int, list[str]]] = []
+    try:
+        entries = list(proc_dir.iterdir())
+    except OSError:
+        return processes
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        args = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+        if args:
+            processes.append((int(entry.name), args))
+    return processes
+
+
+def terminate_processes(pids: Sequence[int], *, timeout_s: float = 2.0) -> list[int]:
+    stopped: list[int] = []
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+            stopped.append(pid)
+        except ProcessLookupError:
+            continue
+        except OSError:
+            continue
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and any(process_exists(pid) for pid in stopped):
+        time.sleep(0.05)
+    for pid in stopped:
+        if not process_exists(pid):
+            continue
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    return stopped
+
+
+def process_exists(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True
 
 
 def chrome_args_with_class(raw_args: str, chrome_class: str) -> str:

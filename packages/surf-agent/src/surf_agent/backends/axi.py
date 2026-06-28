@@ -179,9 +179,18 @@ class AxiBackend:
         return self._close_matching_axi(pattern)
 
     def bridge_stop(self) -> int:
-        output = self._run_axi_text(["stop"])
+        output = ""
+        try:
+            output = self._run_axi_text(["stop"])
+        except SurfAgentError:
+            # AXI stop only reaches the bridge. If the bridge is already gone, the
+            # dedicated Chrome profile can still be locked by the no-startup-window
+            # browser process, so continue with process cleanup below.
+            pass
         if output:
             print(output, end="" if output.endswith("\n") else "\n")
+        if self.agent._uses_dedicated_chrome_profile():
+            _cli().stop_axi_chrome_runtime(self.agent.chrome_profile_dir, debug_port=self.agent.chrome_debug_port)
         return 0
 
     def capture_snapshot(self) -> Any:

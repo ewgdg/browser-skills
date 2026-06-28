@@ -160,6 +160,7 @@ class PatchrightBackend:
         output = self.client.stop()
         if output:
             print(output, end="" if output.endswith("\n") else "\n")
+        _cli().stop_patchright_runtime(self.agent.patchright_profile_dir, port=self.agent.patchright_port)
         return 0
 
     def capture_snapshot(self) -> Any:

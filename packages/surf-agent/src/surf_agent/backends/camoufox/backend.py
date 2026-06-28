@@ -170,6 +170,7 @@ class CamoufoxBackend:
         output = self.client.stop()
         if output:
             print(output, end="" if output.endswith("\n") else "\n")
+        _cli().stop_module_bridge_processes("surf_agent.backends.camoufox.bridge", port=self.agent.camoufox_port, profile_dir=self.agent.camoufox_profile_dir)
         return 0
 
     def capture_snapshot(self) -> Any:

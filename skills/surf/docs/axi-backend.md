@@ -28,7 +28,7 @@ export SURF_AGENT_AXI_TIMEOUT=15
 
 If the bridge or dedicated Chrome debug port is unavailable, commands fail fast with a clear browser-control error. First use of the dedicated profile may require one-time browser setup/login. For setup without automation/debugging, close Surf Agent automation windows and run `surf-agent profile open https://x.com`.
 
-Only use explicit bridge stop when you intend to kill the persistent browser bridge:
+Only use explicit bridge stop when you intend to kill the persistent browser bridge and its automation-owned dedicated Chrome process:
 
 ```bash
 surf-agent bridge stop

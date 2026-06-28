@@ -20,6 +20,8 @@ surf-agent backend set camoufox
 surf-agent backend set patchright
 ```
 
+Changing the persisted backend best-effort stops the previously selected backend runtime first, including old bridge processes and their automation-owned browser process. This prevents shared-profile lock conflicts when moving between AXI and Patchright.
+
 Use one backend for one command without changing config:
 
 ```bash
