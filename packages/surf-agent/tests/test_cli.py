@@ -1216,6 +1216,42 @@ class AxiBackendTests(unittest.TestCase):
             self.assertEqual(output.getvalue(), "Successfully navigated to https://example.test/.\n")
             self.assertFalse(any(call[0][0] == "axi" for call in agent.calls))
 
+    def test_open_discards_stale_state_when_select_cannot_confirm_page(self):
+        with TemporaryDirectory() as tmp:
+            state_file = Path(tmp) / "thread.json"
+            state_file.write_text(json.dumps(page_state(7, url="https://stale.test/")))
+            agent = FakeAxiAgent(
+                [
+                    "Error: No page found",
+                    "24 Existing https://existing.test/\n",
+                    "",
+                    "24,Existing,false\n22,Surf Agent,false\n",
+                    "selected\n",
+                    axi_identity_result(),
+                    "selected\n",
+                    "Successfully navigated to https://example.test/.\n",
+                ],
+                state_file=state_file,
+            )
+            output = io.StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(agent.run_in_window(["open", "https://example.test/"]), 0)
+
+            state = json.loads(state_file.read_text())
+            self.assertEqual(state["page_id"], 22)
+            self.assertEqual(state["url"], "https://example.test/")
+            self.assertEqual([call[0] for call in agent.calls], [
+                ["bridge", "select_page", {"pageId": 7}],
+                ["bridge", "list_pages", {}],
+                ["chrome", "--class=surf-agent", f"--user-data-dir={agent.chrome_profile_dir}", "--new-window", "data:text/html,%3Ctitle%3ESurf%20Agent%3C%2Ftitle%3ESurf%20Agent"],
+                ["bridge", "list_pages", {}],
+                ["bridge", "select_page", {"pageId": 22}],
+                ["bridge", "evaluate_script", {"function": "() => (JSON.stringify({title:document.title,href:location.href}))"}],
+                ["bridge", "select_page", {"pageId": 22}],
+                ["bridge", "navigate_page", {"type": "url", "url": "https://example.test/"}],
+            ])
+            self.assertEqual(output.getvalue(), "Successfully navigated to https://example.test/.\n")
+
     def test_new_command_opens_welcome_after_short_app_bootstrap(self):
         with TemporaryDirectory() as tmp:
             state_file = Path(tmp) / "thread.json"

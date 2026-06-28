@@ -846,7 +846,8 @@ def map_axi_cli_args_to_bridge(args: Sequence[str]) -> BridgeMapping | None:
     if command == "pages":
         return "list_pages", {}, format_bridge_identity
     if command == "selectpage" and len(values) == 1:
-        return "select_page", {"pageId": parse_page_id_arg(values[0])}, format_bridge_empty
+        page_id = parse_page_id_arg(values[0])
+        return "select_page", {"pageId": page_id}, lambda result: format_bridge_select_page(result, page_id)
     if command == "open" and len(values) == 1:
         return "navigate_page", {"type": "url", "url": values[0]}, format_bridge_navigation
     if command == "eval" and values:
@@ -894,6 +895,15 @@ def format_bridge_identity(result: str) -> str:
 
 def format_bridge_empty(_result: str) -> str:
     return ""
+
+
+def format_bridge_select_page(result: str, page_id: int) -> str:
+    text = result.strip()
+    if not text or text.lower() in {"selected", "focused"}:
+        return ""
+    if find_page(parse_axi_pages(text), page_id) is not None:
+        return ""
+    raise SurfAgentError(f"could not select browser page {page_id}")
 
 
 def format_bridge_navigation(result: str) -> str:
