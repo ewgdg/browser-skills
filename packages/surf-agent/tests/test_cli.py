@@ -317,7 +317,7 @@ class AxiBackendTests(unittest.TestCase):
     def test_axi_cli_start_embeds_dedicated_profile_env(self):
         with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_CHROME_PROFILE_DIR": str(Path(tmp) / "profile")}, clear=True):
             agent = FakeAxiAgent(["ok\n"])
-            self.assertEqual(agent._run_axi_cli_text(["start"]), "ok\n")
+            self.assertEqual(agent.browser_backend._run_axi_cli_text(["start"]), "ok\n")
 
         env = agent.calls[0][1]["env"]
         self.assertNotIn("CHROME_DEVTOOLS_AXI_AUTO_CONNECT", env)
@@ -328,7 +328,7 @@ class AxiBackendTests(unittest.TestCase):
     def test_auto_connect_env_explicitly_overrides_dedicated_profile(self):
         with patch.dict("os.environ", {"CHROME_DEVTOOLS_AXI_AUTO_CONNECT": "1"}, clear=True):
             agent = FakeAxiAgent(["ok\n"])
-            self.assertEqual(agent._run_axi_cli_text(["start"]), "ok\n")
+            self.assertEqual(agent.browser_backend._run_axi_cli_text(["start"]), "ok\n")
 
         env = agent.calls[0][1]["env"]
         self.assertEqual(env["CHROME_DEVTOOLS_AXI_AUTO_CONNECT"], "1")
@@ -337,7 +337,7 @@ class AxiBackendTests(unittest.TestCase):
     def test_axi_user_data_dir_env_overrides_default_profile_dir(self):
         with patch.dict("os.environ", {"CHROME_DEVTOOLS_AXI_USER_DATA_DIR": "/tmp/custom-surf-profile"}, clear=True):
             agent = FakeAxiAgent(["ok\n"])
-            self.assertEqual(agent._run_axi_cli_text(["start"]), "ok\n")
+            self.assertEqual(agent.browser_backend._run_axi_cli_text(["start"]), "ok\n")
 
         env = agent.calls[0][1]["env"]
         self.assertEqual(env["CHROME_DEVTOOLS_AXI_USER_DATA_DIR"], "/tmp/custom-surf-profile")
@@ -1200,7 +1200,7 @@ class AxiBackendTests(unittest.TestCase):
     def test_bridge_unavailable_starts_once_then_uses_http(self):
         agent = FakeAxiAgent([AxiBridgeUnavailable("down"), "started\n", "## Pages\n1: Example (https://example.test/)\n"])
 
-        self.assertEqual(agent._run_axi_text(["pages"]), "## Pages\n1: Example (https://example.test/)\n")
+        self.assertEqual(agent.browser_backend._run_axi_text(["pages"]), "## Pages\n1: Example (https://example.test/)\n")
         commands = [call[0] for call in agent.calls]
         self.assertEqual(commands, [["bridge", "list_pages", {}], ["axi", "start"], ["bridge", "list_pages", {}]])
 
@@ -1523,7 +1523,7 @@ class AxiBackendTests(unittest.TestCase):
     def test_timeout_raises_clear_axi_error(self):
         agent = FakeAxiAgent([subprocess.TimeoutExpired(["axi", "eval", "1"], 1)])
         with self.assertRaisesRegex(Exception, "browser command timed out after 1s: eval 1.*browser bridge"):
-            agent._run_axi_cli_text(["eval", "1"])
+            agent.browser_backend._run_axi_cli_text(["eval", "1"])
 
     def test_bridge_stop_is_explicit_only(self):
         agent = FakeAxiAgent(["stopped\n"])

@@ -266,16 +266,6 @@ class SurfAgent:
             welcome_url=surf_agent_welcome_url,
         )
 
-    def _axi_backend(self) -> Any:
-        from .backends import AxiBackend
-
-        if isinstance(self.browser_backend, AxiBackend):
-            return self.browser_backend
-        return AxiBackend(self)
-
-    def ensure_page(self, *, force_new: bool = False, url: str | None = None) -> AgentPage:
-        return self._axi_backend().ensure_page(force_new=force_new, url=url)
-
     def run_in_window(self, args: Sequence[str]) -> int:
         if not args:
             print_help(sys.stderr)
@@ -421,83 +411,6 @@ class SurfAgent:
 
     def print_help_to_stderr(self) -> None:
         print_help(sys.stderr)
-
-    def _capture_axi_snapshot(self) -> SnapshotCapture:
-        return self._axi_backend().capture_snapshot()
-
-    def _capture_camoufox_snapshot(self) -> SnapshotCapture:
-        return self.browser_backend.capture_snapshot()
-
-    # AXI backend test/support wrappers
-
-    def _print_axi_state(self, *, thread: str) -> None:
-        self._axi_backend()._print_axi_state(thread=thread)
-
-    def _print_axi_list(self) -> None:
-        self._axi_backend()._print_axi_list()
-
-    def _close_remembered_axi_page(self) -> int:
-        return self._axi_backend()._close_remembered_axi_page()
-
-    def _close_matching_axi(self, pattern: str) -> int:
-        return self._axi_backend()._close_matching_axi(pattern)
-
-    def _require_current_axi_page(self) -> AgentPage:
-        return self._axi_backend()._require_current_axi_page()
-
-    def _current_axi_page_from_state(self, page: AgentPage) -> AgentPage:
-        return self._axi_backend()._current_axi_page_from_state(page)
-
-    def _create_axi_page(self, url: str | None = None) -> AgentPage:
-        return self._axi_backend()._create_axi_page(url)
-
-    def _new_dedicated_axi_window_page(self) -> AgentPage:
-        return self._axi_backend()._new_dedicated_axi_window_page()
-
-    def _find_owned_new_axi_page(self, candidates: Sequence[AgentPage]) -> AgentPage | None:
-        return self._axi_backend()._find_owned_new_axi_page(candidates)
-
-    def _wait_for_new_axi_page(self, before_ids: set[int]) -> list[AgentPage]:
-        return self._axi_backend()._wait_for_new_axi_page(before_ids)
-
-    def _open_chrome_window(self, url: str) -> None:
-        self._axi_backend()._open_chrome_window(url)
-
-    def _refresh_and_save_axi_state(self, fallback: AgentPage) -> AgentPage:
-        return self._axi_backend()._refresh_and_save_axi_state(fallback)
-
-    def _refresh_axi_page(self, fallback: AgentPage) -> AgentPage | None:
-        return self._axi_backend()._refresh_axi_page(fallback)
-
-    def _select_axi_page(self, page_id: int, *, bring_to_front: bool = False) -> subprocess.CompletedProcess[str]:
-        return self._axi_backend()._select_axi_page(page_id, bring_to_front=bring_to_front)
-
-    def _select_axi_page_via_bridge(self, page_id: int, *, bring_to_front: bool) -> str:
-        return self._axi_backend()._select_axi_page_via_bridge(page_id, bring_to_front=bring_to_front)
-
-    def _axi_pages(self, *, allow_failure: bool) -> list[AgentPage]:
-        return self._axi_backend()._axi_pages(allow_failure=allow_failure)
-
-    def _run_axi_text(self, args: Sequence[str]) -> str:
-        return self._axi_backend()._run_axi_text(args)
-
-    def _run_axi_text_via_bridge(self, args: Sequence[str]) -> str | None:
-        return self._axi_backend()._run_axi_text_via_bridge(args)
-
-    def _run_axi_cli_text(self, args: Sequence[str]) -> str:
-        return self._axi_backend()._run_axi_cli_text(args)
-
-    def _run_axi_cli(self, args: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        return self._axi_backend()._run_axi_cli(args, **kwargs)
-
-    def _load_axi_state(self) -> AgentPage | None:
-        return self._axi_backend()._load_axi_state()
-
-    def _save_axi_state(self, page: AgentPage) -> None:
-        self._axi_backend()._save_axi_state(page)
-
-    def _ensure_dedicated_chrome_running(self) -> None:
-        self._axi_backend()._ensure_dedicated_chrome_running()
 
     def _chrome_debug_endpoint_ready(self) -> bool:
         try:
@@ -649,8 +562,10 @@ def cleanup_backend_runtime(backend: str) -> None:
     try:
         agent = SurfAgent()
         if backend == DEFAULT_BACKEND:
+            from .backends import AxiBackend
+
             with contextlib.redirect_stdout(io.StringIO()):
-                agent._axi_backend().bridge_stop()
+                AxiBackend(agent).bridge_stop()
             return
         if backend == PATCHRIGHT_BACKEND:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -1000,10 +915,6 @@ def parse_snapshot_flags(args: Sequence[str]) -> SnapshotMode:
 
 def capture_snapshot(agent: SurfAgent) -> SnapshotCapture:
     return agent.browser_backend.capture_snapshot()
-
-
-def capture_camoufox_snapshot(agent: SurfAgent) -> SnapshotCapture:
-    return agent._capture_camoufox_snapshot()
 
 
 def snapshot_capture_from_page(*, text: str, page: AgentPage) -> SnapshotCapture:

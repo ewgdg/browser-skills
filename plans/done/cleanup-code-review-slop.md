@@ -44,7 +44,7 @@ Fix review findings without changing CLI behavior:
 - Extracted shared local bridge client/backend adapter logic to `surf_agent.backends.local_bridge` while keeping backend-specific profile launch and cleanup in Camoufox/Patchright modules.
 - Extracted shared bridge runtime dataclasses, text/ref helpers, bbox normalization, and HTTP request handler to `surf_agent.backends.bridge_common`; kept sync Camoufox and async Patchright browser flows separate.
 - Extracted surf-chatgpt temporary JS file creation/deletion to `surf_chatgpt.temp_js`.
-- Left `SurfAgent` AXI forwarding wrappers in place because current tests and private helper call paths still exercise that surface; added explicit `__all__` re-export list so ruff passes without widening the refactor.
+- Removed the `SurfAgent` AXI forwarding wrapper layer, including `_axi_backend()` and the AXI-specific `ensure_page()` façade; tests that still exercise AXI internals now call the AXI backend directly.
 - Retained backend-specific stable page-id aliases because the backend packages already export those names.
 - Ran all required validation commands successfully.
 - Parent review found the unittest `ResourceWarning` still present; fixed Patchright runner cleanup for idle helper calls and closed the started runtime in the launch-argument test.
@@ -60,6 +60,5 @@ Fix review findings without changing CLI behavior:
 
 ## Residual risks
 
-- AXI wrapper layer in `SurfAgent` remains mostly intact. Removing it safely needs a focused follow-up to update tests and verify any private helper users.
 - Backend-specific `stable_*_page_id` aliases remain as public package exports; removal would be a behavior/API decision, not cleanup-only.
 - Runtime bridge extraction intentionally avoided merging sync/async page-control code; remaining duplication there is safer than forcing one abstraction across different browser APIs.
