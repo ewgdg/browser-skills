@@ -1,3 +1,13 @@
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.8.0",
+]
+
+[tool.pytest.ini_options]
+addopts = ["--import-mode=importlib"]
+testpaths = ["packages"]
+
 [tool.uv.workspace]
 members = ["packages/surf-agent", "packages/surf-chatgpt"]
 

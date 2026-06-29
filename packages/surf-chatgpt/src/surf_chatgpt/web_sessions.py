@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import uuid
 from typing import Any
 
 from . import SOURCE_LABEL
 from .errors import SkillError
 from .surf import SurfRunner
+from .temp_js import unlink_temp_file, write_temp_js
 
 CHATGPT_HOME = "https://chatgpt.com/"
 
@@ -105,25 +105,15 @@ def _normalize_sessions(raw: Any, limit: int) -> list[dict[str, str]]:
 
 
 def _run_js_file(runner: SurfRunner, target: _Target, code: str, *, timeout: int) -> Any:
-    path = _write_temp_js(_surf_agent_function_source(code))
+    path = write_temp_js(_surf_agent_function_source(code), prefix="surf-chatgpt-search-")
     try:
         return runner.eval_file(target.thread, path, timeout=timeout)
     finally:
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
+        unlink_temp_file(path)
 
 
 def _surf_agent_function_source(body: str) -> str:
     return "async () => {\n" + body + "\n}"
-
-
-def _write_temp_js(code: str) -> str:
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".js", prefix="surf-chatgpt-search-", dir="/tmp", delete=False) as handle:
-        handle.write(code)
-        handle.write("\n")
-        return handle.name
 
 
 def _search_sessions_js(query: str, limit: int) -> str:

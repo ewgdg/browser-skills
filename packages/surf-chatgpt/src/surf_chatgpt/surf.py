@@ -3,13 +3,12 @@ from __future__ import annotations
 import contextlib
 import io
 import json
-import os
 import subprocess
-import tempfile
 from dataclasses import dataclass
 from typing import Any, Callable, Sequence
 
 from .errors import SkillError, classify_surf_failure, compact_message
+from .temp_js import unlink_temp_file, write_temp_js
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -62,14 +61,11 @@ class SurfRunner:
         return unwrap_eval_text(output)
 
     def eval_code(self, thread: str, code: str, timeout: int = 30) -> Any:
-        path = _write_temp_js(code)
+        path = write_temp_js(code, prefix="surf-chatgpt-eval-")
         try:
             return self.eval_file(thread, path, timeout=timeout)
         finally:
-            try:
-                os.unlink(path)
-            except FileNotFoundError:
-                pass
+            unlink_temp_file(path)
 
     def _command_prefix(self) -> list[str]:
         if self.command_prefix is not None:
@@ -96,13 +92,6 @@ def run_surf_agent_main(args: Sequence[str], *, thread: str | None = None) -> st
     if returncode != 0:
         raise classify_surf_failure(returncode, stdout.getvalue(), stderr.getvalue())
     return stdout.getvalue()
-
-
-def _write_temp_js(code: str) -> str:
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".js", prefix="surf-chatgpt-eval-", dir="/tmp", delete=False) as handle:
-        handle.write(code)
-        handle.write("\n")
-        return handle.name
 
 
 def unwrap_eval_text(output: str) -> Any:

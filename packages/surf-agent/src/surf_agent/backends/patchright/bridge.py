@@ -8,9 +8,7 @@ import os
 import re
 import sys
 import time
-import threading
-from dataclasses import dataclass, field
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import HTTPServer
 from pathlib import Path
 
 from platformdirs import PlatformDirs
@@ -18,51 +16,37 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ...constants import DEFAULT_PATCHRIGHT_APP_ID
+from ..bridge_common import (
+    ACTIONABLE_SELECTOR,
+    CLOSED_TARGET_MESSAGE,
+    CSS_PATH_SCRIPT,
+    SNAPSHOT_BOXES,
+    SNAPSHOT_DEPTH,
+    STALE_REF_MESSAGE,
+    STARTUP_PAGE_URLS,
+    BridgeRequestHandler,
+    PageSlot,
+    RefTarget,
+    TargetFingerprint,
+    bbox_from_raw,
+    fingerprint_matches,
+    format_snapshot_node,
+    normalize_text,
+)
 
-try:
-    from patchright.async_api import async_playwright
-except ImportError:
-    async_playwright = None
-
-ACTIONABLE_SELECTOR = "a,button,input,textarea,select,[role=button],[role=link],[contenteditable=true]"
 REF_PATTERN = re.compile(r"^(?:pr|e)\d+$")
-STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
-CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
-STARTUP_PAGE_URLS = {"", "about:blank", "about:home", "about:newtab", "chrome://newtab/"}
 SNAPSHOT_ARIA_TIMEOUT_MS = 3_000
 SNAPSHOT_BODY_TIMEOUT_MS = 3_000
 SNAPSHOT_LOCATOR_TIMEOUT_MS = 250
 SNAPSHOT_REF_LIMIT = 80
 SNAPSHOT_INDEX_BUDGET_S = 7.0
-SNAPSHOT_DEPTH: int | None = None
-SNAPSHOT_BOXES = False
 CDP_NEW_WINDOW_TIMEOUT_S = 3.0
 CDP_NEW_WINDOW_POLL_INTERVAL_S = 0.05
 
-
-@dataclass(frozen=True)
-class TargetFingerprint:
-    tag: str = ""
-    role: str = ""
-    name: str = ""
-    text: str = ""
-    bbox: dict[str, float] | None = None
-
-
-@dataclass(frozen=True)
-class RefTarget:
-    ref: str
-    selector: str
-    index: int
-    css_path: str | None
-    fingerprint: TargetFingerprint
-
-
-@dataclass
-class PageSlot:
-    page: Any
-    page_token: int
-    ref_map: dict[str, RefTarget] = field(default_factory=dict)
+try:
+    from patchright.async_api import async_playwright
+except ImportError:
+    async_playwright = None
 
 
 class PatchrightRuntime:
@@ -94,7 +78,13 @@ class PatchrightRuntime:
     def _run(self, awaitable: Any) -> Any:
         if self._runner is None:
             self._runner = asyncio.Runner()
-        return self._runner.run(awaitable)
+        try:
+            return self._runner.run(awaitable)
+        finally:
+            if self.manager is None:
+                # Pure helper calls used by tests never start a browser, but creating
+                # an asyncio.Runner still opens loop resources. Release them once idle.
+                self._close_runner()
 
     def _close_runner(self) -> None:
         if self._runner is None:
@@ -448,16 +438,11 @@ class PatchrightRuntime:
                     fingerprint=fingerprint,
                 )
                 slot.ref_map[ref] = target
-                lines.append(f"- {self._format_snapshot_node(fingerprint)} [ref={ref}]")
+                lines.append(f"- {format_snapshot_node(fingerprint)} [ref={ref}]")
             except Exception:
                 continue
         return lines
 
-    def _format_snapshot_node(self, fingerprint: TargetFingerprint) -> str:
-        label = fingerprint.role or fingerprint.tag or "element"
-        name = fingerprint.name or fingerprint.text
-        name = " ".join(name.split())[:160]
-        return f'{label} "{name}"' if name else label
 
     async def _fingerprint_locator(self, locator: Any) -> TargetFingerprint:
         tag = await self._safe(lambda: self._locator_evaluate(locator, "el => el.tagName.toLowerCase()", timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
@@ -479,38 +464,10 @@ class PatchrightRuntime:
             box = await self._locator_bounding_box(locator, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS)
         except Exception:
             return None
-        if not isinstance(box, dict):
-            return None
-        result: dict[str, float] = {}
-        for key in ("x", "y", "width", "height"):
-            value = box.get(key)
-            if isinstance(value, (int, float)):
-                result[key] = float(value)
-        return result or None
+        return bbox_from_raw(box)
 
     async def _css_path(self, locator: Any) -> str | None:
-        script = """
-        el => {
-          if (!el || !el.tagName) return null;
-          const esc = globalThis.CSS && CSS.escape ? CSS.escape : value => String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
-          const parts = [];
-          for (let node = el; node && node.nodeType === Node.ELEMENT_NODE; node = node.parentElement) {
-            let part = node.tagName.toLowerCase();
-            if (node.id) {
-              parts.unshift(`${part}#${esc(node.id)}`);
-              break;
-            }
-            const parent = node.parentElement;
-            if (parent) {
-              const siblings = Array.from(parent.children).filter(child => child.tagName === node.tagName);
-              if (siblings.length > 1) part += `:nth-of-type(${siblings.indexOf(node) + 1})`;
-            }
-            parts.unshift(part);
-          }
-          return parts.join(' > ');
-        }
-        """
-        value = await self._safe(lambda: self._locator_evaluate(locator, script, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
+        value = await self._safe(lambda: self._locator_evaluate(locator, CSS_PATH_SCRIPT, timeout=SNAPSHOT_LOCATOR_TIMEOUT_MS), "")
         return value or None
 
     async def _locator_evaluate(self, locator: Any, script: str, *, timeout: int) -> Any:
@@ -544,7 +501,7 @@ class PatchrightRuntime:
         candidates = await self._ref_candidates(slot, stored)
         for candidate in candidates:
             try:
-                if await self._maybe_await(candidate.is_visible(timeout=250)) and self._fingerprint_matches(stored.fingerprint, await self._fingerprint_locator(candidate)):
+                if await self._maybe_await(candidate.is_visible(timeout=250)) and fingerprint_matches(stored.fingerprint, await self._fingerprint_locator(candidate)):
                     return candidate
             except Exception:
                 continue
@@ -588,17 +545,6 @@ class PatchrightRuntime:
         except Exception as exc:
             raise RuntimeError(f"target {selector!r} is neither a current snapshot ref nor a matching selector") from exc
 
-    def _fingerprint_matches(self, expected: TargetFingerprint, actual: TargetFingerprint) -> bool:
-        if expected.tag and actual.tag and expected.tag != actual.tag:
-            return False
-        expected_labels = {value for value in (expected.name, expected.text) if value}
-        actual_labels = {value for value in (actual.name, actual.text) if value}
-        if expected_labels:
-            # Role alone is too broad: many changed buttons share role/tag.
-            return bool(expected_labels & actual_labels)
-        if expected.role:
-            return expected.role == actual.role
-        return True
 
     async def _safe(self, fn: Any, default: str = "") -> str:
         try:
@@ -621,48 +567,8 @@ class PatchrightRuntime:
         return f"opened {getattr(page, 'url', '')}\n"
 
 
-class RequestHandler(BaseHTTPRequestHandler):
-    runtime: PatchrightRuntime
-
-    def do_GET(self) -> None:
-        if urlparse(self.path).path != "/health":
-            self._write(404, {"error": "not found"})
-            return
-        self._write(200, {"status": "ok"})
-
-    def do_POST(self) -> None:
-        if urlparse(self.path).path != "/call":
-            self._write(404, {"error": "not found"})
-            return
-        try:
-            length = int(self.headers.get("content-length") or "0")
-            payload = json.loads(self.rfile.read(length).decode() or "{}")
-            name = str(payload.get("name") or "")
-            if name == "stop":
-                result = self.runtime.stop()
-                self._write(200, {"result": result})
-                self.server._BaseServer__shutdown_request = True
-                return
-            result = self.runtime.call(name, payload.get("args") or {})
-        except Exception as exc:
-            self._write(500, {"error": str(exc)})
-            return
-        self._write(200, {"result": result})
-
-    def log_message(self, format: str, *args: Any) -> None:
-        return
-
-    def _write(self, status: int, payload: dict[str, Any]) -> None:
-        data = json.dumps(payload).encode()
-        self.send_response(status)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
-
-
-def normalize_text(value: str) -> str:
-    return " ".join(value.split())
+class RequestHandler(BridgeRequestHandler):
+    runtime: Any
 
 
 def main(argv: list[str] | None = None) -> int:

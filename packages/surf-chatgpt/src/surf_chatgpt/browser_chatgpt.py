@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import uuid
 import time
 from dataclasses import dataclass
@@ -12,6 +11,7 @@ from urllib.parse import urlparse
 from .errors import SkillError
 from .extract import clean_response
 from .surf import SurfRunner
+from .temp_js import unlink_temp_file, write_temp_js
 
 CHATGPT_HOME = "https://chatgpt.com/"
 CHATGPT_HOSTS = {"chatgpt.com", "www.chatgpt.com"}
@@ -414,25 +414,15 @@ def _current_url(runner: SurfRunner, target: BrowserTarget) -> str:
 
 
 def _run_js_file(runner: SurfRunner, target: BrowserTarget, code: str, *, timeout: int) -> Any:
-    path = _write_temp_js(_surf_agent_function_source(code))
+    path = write_temp_js(_surf_agent_function_source(code), prefix="surf-chatgpt-")
     try:
         return runner.eval_file(target.thread, path, timeout=timeout)
     finally:
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
+        unlink_temp_file(path)
 
 
 def _surf_agent_function_source(body: str) -> str:
     return "async () => {\n" + body + "\n}"
-
-
-def _write_temp_js(code: str) -> str:
-    with tempfile.NamedTemporaryFile("w", encoding="utf-8", suffix=".js", prefix="surf-chatgpt-", dir="/tmp", delete=False) as handle:
-        handle.write(code)
-        handle.write("\n")
-        return handle.name
 
 
 def _status_js() -> str:

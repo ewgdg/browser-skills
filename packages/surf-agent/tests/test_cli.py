@@ -606,7 +606,7 @@ class AxiBackendTests(unittest.TestCase):
             profile = Path(tmp) / "patchright-profile"
             agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json", patchright_profile_dir=profile)
             pops = []
-            with patch("surf_agent.backends.patchright.backend.subprocess.Popen", side_effect=lambda *a, **kw: pops.append((a, kw)) or object()):
+            with patch("surf_agent.backends.local_bridge.subprocess.Popen", side_effect=lambda *a, **kw: pops.append((a, kw)) or object()):
                 with patch.object(agent.patchright_client, "_health_ok", return_value=False):
                     self.assertEqual(agent.profile_open("https://x.test"), 0)
 
@@ -638,15 +638,18 @@ class AxiBackendTests(unittest.TestCase):
                 pass
 
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"), app_id="surf-agent-test", window_class="surf-agent-window")
-        with patch("surf_agent.backends.patchright.bridge.async_playwright", return_value=FakeManager()):
-            runtime.start()
+        try:
+            with patch("surf_agent.backends.patchright.bridge.async_playwright", return_value=FakeManager()):
+                runtime.start()
 
-        self.assertEqual(calls[0]["user_data_dir"], "/tmp/surf-patchright-test")
-        self.assertEqual(calls[0]["channel"], "chrome")
-        self.assertFalse(calls[0]["headless"])
-        self.assertTrue(calls[0]["no_viewport"])
-        self.assertTrue(calls[0]["chromium_sandbox"])
-        self.assertEqual(calls[0]["args"], ["--class=surf-agent-window", "--name=surf-agent-test"])
+            self.assertEqual(calls[0]["user_data_dir"], "/tmp/surf-patchright-test")
+            self.assertEqual(calls[0]["channel"], "chrome")
+            self.assertFalse(calls[0]["headless"])
+            self.assertTrue(calls[0]["no_viewport"])
+            self.assertTrue(calls[0]["chromium_sandbox"])
+            self.assertEqual(calls[0]["args"], ["--class=surf-agent-window", "--name=surf-agent-test"])
+        finally:
+            runtime.stop()
 
 
     def test_patchright_new_page_uses_cdp_target_create_window_with_owned_anchor(self):
@@ -1170,7 +1173,7 @@ class AxiBackendTests(unittest.TestCase):
         client = PatchrightBridgeClient(timeout_s=1.0, port=9555, profile_dir=Path("/tmp/surf-patchright-profile"))
         with (
             patch.object(client, "_ensure_running", return_value=None),
-            patch("surf_agent.backends.patchright.backend.urllib.request.urlopen", side_effect=TimeoutError("timed out")),
+            patch("surf_agent.backends.local_bridge.urllib.request.urlopen", side_effect=TimeoutError("timed out")),
         ):
             with self.assertRaisesRegex(BridgeUnavailable, "Patchright bridge tool snapshot timed out after 1s"):
                 client.call_tool("snapshot", {"thread": "default"})
@@ -1184,9 +1187,9 @@ class AxiBackendTests(unittest.TestCase):
 
         with (
             patch.object(client, "_health_ok", side_effect=[False, True]),
-            patch("surf_agent.backends.patchright.backend.subprocess.Popen", side_effect=lambda *a, **kw: pops.append((a, kw)) or object()),
-            patch("surf_agent.backends.patchright.backend.time.monotonic", side_effect=[0.0, 0.0, 0.1]),
-            patch("surf_agent.backends.patchright.backend.time.sleep", return_value=None),
+            patch("surf_agent.backends.local_bridge.subprocess.Popen", side_effect=lambda *a, **kw: pops.append((a, kw)) or object()),
+            patch("surf_agent.backends.local_bridge.time.monotonic", side_effect=[0.0, 0.0, 0.1]),
+            patch("surf_agent.backends.local_bridge.time.sleep", return_value=None),
         ):
             client._ensure_running()
 
@@ -2117,13 +2120,12 @@ class AxiBackendTests(unittest.TestCase):
             runtime._target_locator(slot, "@cf0")
 
     def test_camoufox_fingerprint_matching_requires_label_when_available(self):
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
         expected = TargetFingerprint(tag="button", role="button", name="Submit", text="Submit")
 
-        self.assertTrue(runtime._fingerprint_matches(expected, TargetFingerprint(tag="button", role="button", name="Submit", text="Submit")))
-        self.assertFalse(runtime._fingerprint_matches(expected, TargetFingerprint(tag="button", role="button", name="Delete", text="Delete")))
-        self.assertTrue(runtime._fingerprint_matches(TargetFingerprint(tag="button", role="button"), TargetFingerprint(tag="button", role="button")))
-        self.assertFalse(runtime._fingerprint_matches(TargetFingerprint(tag="button", role="button"), TargetFingerprint(tag="button", role="link")))
+        self.assertTrue(camoufox_bridge.fingerprint_matches(expected, TargetFingerprint(tag="button", role="button", name="Submit", text="Submit")))
+        self.assertFalse(camoufox_bridge.fingerprint_matches(expected, TargetFingerprint(tag="button", role="button", name="Delete", text="Delete")))
+        self.assertTrue(camoufox_bridge.fingerprint_matches(TargetFingerprint(tag="button", role="button"), TargetFingerprint(tag="button", role="button")))
+        self.assertFalse(camoufox_bridge.fingerprint_matches(TargetFingerprint(tag="button", role="button"), TargetFingerprint(tag="button", role="link")))
 
     def test_camoufox_backend_profile_open_rejects_running_bridge(self):
         from surf_agent.backends import CamoufoxBackend
@@ -2139,7 +2141,7 @@ class AxiBackendTests(unittest.TestCase):
             backend.profile_open("https://x.test", profile_dir="/tmp", app_id="test")
 
     def test_camoufox_backend_profile_open_launches_camoufox_subprocess(self):
-        from surf_agent.backends.camoufox.backend import CamoufoxBackend, _camoufox_binary_path
+        from surf_agent.backends.camoufox.backend import CamoufoxBackend
 
         class FakeClient:
             def _health_ok(self):

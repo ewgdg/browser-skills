@@ -280,7 +280,6 @@ class AxiBackend:
         return self._run_axi_text(axi_args)
 
     def _print_axi_state(self, *, thread: str) -> None:
-        cli = _cli()
         cached = self._load_axi_state()
         if cached is None:
             print(json.dumps({"backend": "axi", "thread": thread, "open": False}, sort_keys=True))
@@ -295,7 +294,6 @@ class AxiBackend:
         print(json.dumps(axi_state_payload(thread=thread, cached=page), sort_keys=True))
 
     def _print_axi_list(self) -> None:
-        cli = _cli()
         if not self.agent.state_dir.exists():
             print(json.dumps({"backend": "axi", "threads": []}, sort_keys=True))
             return
@@ -323,7 +321,6 @@ class AxiBackend:
         return 0
 
     def _close_matching_axi(self, pattern: str) -> int:
-        cli = _cli()
         pattern = pattern.strip()
         if not pattern:
             raise SurfAgentError("close-matching requires a thread glob pattern", exit_code=2)
@@ -357,7 +354,6 @@ class AxiBackend:
         return 1 if result["failed"] else 0
 
     def _require_current_axi_page(self) -> Any:
-        cli = _cli()
         page = self._load_axi_state()
         if page is None:
             raise SurfAgentError("no remembered browser page for this thread; run `surf-agent open <url>` or `surf-agent new` first")
@@ -369,7 +365,6 @@ class AxiBackend:
         return page
 
     def _current_axi_page_from_state(self, page: Any) -> Any:
-        cli = _cli()
         self._select_axi_page(page.page_id)
         output = self._run_axi_text(["eval", "JSON.stringify({title:document.title,url:location.href})"])
         parsed = parse_axi_eval_json(output)
@@ -378,7 +373,6 @@ class AxiBackend:
         return AgentPage(page.page_id, url=_string_or_none(parsed.get("url")) or page.url, title=_string_or_none(parsed.get("title")) or page.title)
 
     def _create_axi_page(self, url: str | None = None) -> Any:
-        cli = _cli()
         page = self._new_dedicated_axi_window_page()
         if url is not None:
             return page
@@ -388,7 +382,6 @@ class AxiBackend:
         return AgentPage(page.page_id, url=welcome_url, title=SURF_AGENT_WINDOW_TITLE)
 
     def _new_dedicated_axi_window_page(self) -> Any:
-        cli = _cli()
         before = self._axi_pages(allow_failure=True)
         before_ids = {page.page_id for page in before}
         self._open_chrome_window(surf_agent_app_url())
@@ -464,7 +457,6 @@ class AxiBackend:
             return self.agent.bridge_client.call_tool("select_page", args)
 
     def _axi_pages(self, *, allow_failure: bool) -> list[Any]:
-        cli = _cli()
         try:
             output = self._run_axi_text(["pages"])
         except SurfAgentError:
