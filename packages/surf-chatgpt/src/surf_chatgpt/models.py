@@ -8,7 +8,8 @@ THINKING_TO_WEB_LABEL = {
     "low": "Instant",
     "medium": "Medium",
     "high": "High",
-    # Parser aliases; user-facing CLI/docs use low|medium|high.
+    "highest": "highest",
+    # Parser aliases; user-facing CLI/docs use low|medium|high|highest.
     "instant": "Instant",
 }
 

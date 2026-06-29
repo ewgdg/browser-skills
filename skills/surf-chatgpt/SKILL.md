@@ -39,6 +39,7 @@ surf-chatgpt ask 'Question...'
 printf 'Question...' | surf-chatgpt ask
 printf 'Critique this plan: ...' | surf-chatgpt ask --format text
 surf-chatgpt ask --thinking high 'Question...'
+surf-chatgpt ask --model latest --thinking highest 'Question...'
 surf-chatgpt ask --session '<session-id>' --model gpt-5.5 --thinking medium 'Follow up...'
 surf-chatgpt ask --thread '<thread-id>' 'Follow up in kept browser thread...'
 surf-chatgpt --help
@@ -60,16 +61,17 @@ Errors are structured and nonzero:
 
 ## Model / thinking selection
 
-`--model` is a fuzzy query against models visible in ChatGPT's web model picker. No silent fallback: if no usable match is found, command fails with `model_unavailable`.
+`--model` is a fuzzy query against models visible in ChatGPT's web model picker. `--model latest` selects the first available model in the web UI list. No silent fallback: if no usable match is found, command fails with `model_unavailable`.
 
 ```bash
 surf-chatgpt ask --thinking high 'Question...'
 surf-chatgpt ask --model pro 'Question...'
 surf-chatgpt ask --model gpt-5.5 'Question...'
 surf-chatgpt ask --model gpt-5.5:high 'Question...'
+surf-chatgpt ask --model latest --thinking highest 'Question...'
 ```
 
-Thinking mapping: `low` -> `Instant`, `medium` -> `Medium`, `high` -> `High`.
+Thinking mapping: `low` -> `Instant`, `medium` -> `Medium`, `high` -> `High`, `highest` -> first available thinking level shown by the web UI after model selection.
 
 ## Session policy
 

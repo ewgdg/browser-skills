@@ -226,6 +226,18 @@ class CliValidationTests(unittest.TestCase):
         options = mocked.call_args.args[1]
         self.assertEqual(options.model_query, "pro")
 
+    def test_latest_model_and_highest_thinking_are_passed_to_client(self):
+        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "--model", "latest", "--thinking", "highest"], stdin=io.StringIO("x"), stdout=out)
+        self.assertEqual(code, 0)
+        options = mocked.call_args.args[1]
+        self.assertEqual(options.model_query, "latest")
+        self.assertEqual(options.thinking_label, "highest")
+        self.assertEqual(options.requested_model, "latest")
+        self.assertEqual(options.requested_thinking, "highest")
+
     def test_model_suffix_thinking_conflict_is_structured(self):
         out = io.StringIO()
         code = cli.main(["ask", "--model", "gpt-5.5:high", "--thinking", "medium"], stdin=io.StringIO("x"), stdout=out)

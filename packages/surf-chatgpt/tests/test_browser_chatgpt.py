@@ -56,7 +56,17 @@ class FakeSurfRunner:
             return {"hasPrompt": True, "challenge": False, "loginRequired": False, "url": self.current_url}
         if "findModelButton" in code and ("desiredModelQuery" in code or "desiredThinking" in code):
             self.js_events.append("model")
-            return {"ok": True, "selectedModel": "GPT-5.5 Pro" if 'const desiredModelQuery = "pro"' in code else None, "selectedThinking": "High" if 'const desiredThinking = "High"' in code else None}
+            selected_model = None
+            if 'const desiredModelQuery = "pro"' in code:
+                selected_model = "GPT-5.5 Pro"
+            if 'const desiredModelQuery = "latest"' in code:
+                selected_model = "GPT-5.5"
+            selected_thinking = None
+            if 'const desiredThinking = "High"' in code:
+                selected_thinking = "High"
+            if 'const desiredThinking = "highest"' in code:
+                selected_thinking = "Max"
+            return {"ok": True, "selectedModel": selected_model, "selectedThinking": selected_thinking}
         if "composer_missing" in code:
             self.js_events.append("inject")
             return {"ok": True, "textLength": 12}
@@ -262,6 +272,22 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(result["model"], "GPT-5.5 Pro")
         self.assertEqual(result["thinking"], "High")
         self.assertLess(surf.js_events.index("model"), surf.js_events.index("inject"))
+
+    def test_latest_model_and_highest_thinking_request_reaches_selector(self):
+        surf = FakeSurfRunner()
+        result = ask_reusable_session(
+            "normal user prompt",
+            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, model_query="latest", thinking_label="highest"),
+            surf=surf,
+        )
+        self.assertEqual(result["model"], "GPT-5.5")
+        self.assertEqual(result["thinking"], "Max")
+        self.assertIn("model", surf.js_events)
+
+    def test_highest_thinking_selector_does_not_rank_fixed_labels(self):
+        source = browser_chatgpt._select_model_choice_js("latest", "highest")
+        self.assertIn("firstAvailableThinkingItem", source)
+        self.assertNotIn("thinkingRank", source)
 
     def test_session_model_unavailable_is_classified(self):
         class ModelMissingFake(FakeSurfRunner):

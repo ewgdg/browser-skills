@@ -503,6 +503,17 @@ return (async () => {{
     const nodes = Array.from(document.querySelectorAll('[role="menu"] [role="menuitemradio"], [role="menu"] [role="menuitem"], [role="menu"] button, [data-radix-menu-content] [role="menuitemradio"], [data-radix-menu-content] [role="menuitem"], [data-radix-menu-content] button'));
     return nodes.filter(isVisible).map((node) => ({{ node, label: textOf(node).replace(/\s+/g, ' ').trim(), disabled: node.hasAttribute('disabled') || node.getAttribute('aria-disabled') === 'true' }})).filter((item) => item.label);
   }}
+  function isNonThinkingLabel(label) {{ return /gpt|model|temporary|settings|customize|connector|project|archive|delete|share|more/i.test(label); }}
+  function firstAvailableThinkingItem(items) {{
+    // ChatGPT presents higher thinking choices first; do not hard-code future labels.
+    return items.find((item) => !item.disabled && !isNonThinkingLabel(item.label)) || null;
+  }}
+  function findThinkingMatch(items) {{
+    if (desiredThinkingNorm === 'highest') {{
+      return firstAvailableThinkingItem(items);
+    }}
+    return items.find((item) => item.label.toLowerCase() === desiredThinkingNorm && !item.disabled) || null;
+  }}
   document.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }}));
   await sleep(60);
   const button = findModelButton();
@@ -510,11 +521,11 @@ return (async () => {{
   dispatchClickSequence(button.node);
   await sleep(180);
   const items = visibleItems();
-  const match = items.find((item) => item.label.toLowerCase() === desiredThinkingNorm && !item.disabled);
+  const match = findThinkingMatch(items);
   if (!match) return {{ ok: false, reason: 'thinking_missing', desired: desiredThinking, button: button.label, available: items.map((item) => item.label).slice(0, 30) }};
   dispatchClickSequence(match.node);
   await sleep(120);
-  return {{ ok: true, selectedThinking: desiredThinking }};
+  return {{ ok: true, selectedThinking: match.label }};
 }})();
 """.strip()
 
@@ -525,6 +536,7 @@ return (async () => {{
   const desiredModelQuery = {json.dumps(model_query)};
   const desiredThinking = {json.dumps(thinking_label)};
   const desiredThinkingNorm = desiredThinking ? desiredThinking.toLowerCase() : null;
+  const latestModelRequested = compact(desiredModelQuery) === 'latest';
   function sleep(ms) {{ return new Promise((resolve) => setTimeout(resolve, ms)); }}
   function compact(value) {{ return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ''); }}
   function textOf(node) {{ return (node?.textContent || node?.innerText || node?.getAttribute?.('aria-label') || '').trim(); }}
@@ -610,6 +622,7 @@ return (async () => {{
     return 0;
   }}
   function modelItemScore(item, query) {{
+    if (latestModelRequested) return 0;
     if (item.disabled) return -9999;
     const label = item.label;
     const l = compact(label);
@@ -631,6 +644,23 @@ return (async () => {{
     if (/temporary|settings|customize|connector|project|archive|delete|share/i.test(label)) score -= 500;
     return score;
   }}
+  function isKnownThinkingLabel(label) {{ return /^(instant|medium|high)$/i.test(label); }}
+  function isNonThinkingLabel(label) {{ return /gpt|model|temporary|settings|customize|connector|project|archive|delete|share|more/i.test(label); }}
+  function isNonModelLabel(label) {{ return /temporary|settings|customize|connector|project|archive|delete|share/i.test(label); }}
+  function firstAvailableThinkingItem(items) {{
+    // ChatGPT presents higher thinking choices first; do not hard-code future labels.
+    return items.find((item) => !item.disabled && !isNonThinkingLabel(item.label)) || null;
+  }}
+  function findThinkingMatch(items) {{
+    if (desiredThinkingNorm === 'highest') {{
+      return firstAvailableThinkingItem(items);
+    }}
+    return items.find((item) => item.label.toLowerCase() === desiredThinkingNorm && !item.disabled) || null;
+  }}
+  function firstAvailableModelItem(items, selector) {{
+    // ChatGPT keeps its newest/preferred models first; latest means first usable model row.
+    return items.find((item) => item.node !== selector.node && !item.disabled && !isKnownThinkingLabel(item.label) && !isNonModelLabel(item.label)) || null;
+  }}
   function findModelSelector(items) {{
     const thinking = new Set(['instant', 'medium', 'high']);
     const candidates = items.filter((item) => !thinking.has(item.label.toLowerCase()));
@@ -647,17 +677,6 @@ return (async () => {{
 
   let selectedThinking = null;
   let selectedModel = null;
-  if (desiredThinkingNorm) {{
-    const button = await openModelMenu();
-    if (!button) return {{ ok: false, reason: 'model_button_missing', available: [] }};
-    let items = visibleItems();
-    const match = items.find((item) => item.label.toLowerCase() === desiredThinkingNorm && !item.disabled);
-    if (!match) return {{ ok: false, reason: 'thinking_missing', desired: desiredThinking, button: button.label, available: items.map((item) => item.label).slice(0, 30) }};
-    dispatchClickSequence(match.node);
-    selectedThinking = desiredThinking;
-    await sleep(120);
-  }}
-
   if (desiredModelQuery) {{
     const button = await openModelMenu();
     if (!button) return {{ ok: false, reason: 'model_button_missing', available: [] }};
@@ -668,15 +687,34 @@ return (async () => {{
     dispatchClickSequence(selector.node);
     await sleep(250);
     items = visibleItems();
-    const scored = items
-      .filter((item) => item.node !== selector.node)
-      .map((item) => ({{ item, score: modelItemScore(item, desiredModelQuery) }}))
-      .sort((a, b) => b.score - a.score);
-    const best = scored[0];
-    if (!best || best.score < 120) return {{ ok: false, reason: 'model_missing', desired: desiredModelQuery, selector: selector.label, available: items.map((item) => item.label + (item.disabled ? ' (disabled)' : '')).slice(0, 40) }};
-    dispatchClickSequence(best.item.node);
-    selectedModel = best.item.label;
-    await sleep(150);
+    if (latestModelRequested) {{
+      const first = firstAvailableModelItem(items, selector);
+      if (!first) return {{ ok: false, reason: 'model_missing', desired: desiredModelQuery, selector: selector.label, available: items.map((item) => item.label + (item.disabled ? ' (disabled)' : '')).slice(0, 40) }};
+      dispatchClickSequence(first.node);
+      selectedModel = first.label;
+      await sleep(150);
+    }} else {{
+      const scored = items
+        .filter((item) => item.node !== selector.node)
+        .map((item) => ({{ item, score: modelItemScore(item, desiredModelQuery) }}))
+        .sort((a, b) => b.score - a.score);
+      const best = scored[0];
+      if (!best || best.score < 120) return {{ ok: false, reason: 'model_missing', desired: desiredModelQuery, selector: selector.label, available: items.map((item) => item.label + (item.disabled ? ' (disabled)' : '')).slice(0, 40) }};
+      dispatchClickSequence(best.item.node);
+      selectedModel = best.item.label;
+      await sleep(150);
+    }}
+  }}
+
+  if (desiredThinkingNorm) {{
+    const button = await openModelMenu();
+    if (!button) return {{ ok: false, reason: 'model_button_missing', available: [] }};
+    let items = visibleItems();
+    const match = findThinkingMatch(items);
+    if (!match) return {{ ok: false, reason: 'thinking_missing', desired: desiredThinking, button: button.label, available: items.map((item) => item.label).slice(0, 30) }};
+    dispatchClickSequence(match.node);
+    selectedThinking = match.label;
+    await sleep(120);
   }}
 
   return {{ ok: true, selectedModel, selectedThinking }};
