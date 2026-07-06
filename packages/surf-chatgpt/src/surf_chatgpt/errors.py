@@ -6,7 +6,7 @@ from dataclasses import dataclass
 ERROR_HINTS = {
     "empty_prompt": "Pass a prompt argument or pipe focused prompt/context into stdin.",
     "invalid_args": "Use --help and choose either ephemeral mode or one explicit session mode.",
-    "login_required": "Open the surf-agent profile and log in to chatgpt.com, then retry.",
+    "login_required": "Run `surf-chatgpt login`, log in to chatgpt.com in the opened Surf Agent browser profile, then retry.",
     "captcha_or_cloudflare": "Open the surf-agent profile and complete the ChatGPT challenge manually.",
     "ui_changed": "Update surf-agent or this skill; ChatGPT UI selectors likely changed.",
     "timeout": "Retry with --timeout SECONDS, smaller context, or a faster model.",

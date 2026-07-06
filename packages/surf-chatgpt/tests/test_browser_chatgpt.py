@@ -53,7 +53,7 @@ class FakeSurfRunner:
     def _handle_js(self, code):
         if "hasPrompt" in code and "loginRequired" in code:
             self.js_events.append("status")
-            return {"hasPrompt": True, "challenge": False, "loginRequired": False, "url": self.current_url}
+            return {"hasPrompt": True, "challenge": False, "loginRequired": False, "authenticated": True, "url": self.current_url}
         if "findModelButton" in code and ("desiredModelQuery" in code or "desiredThinking" in code):
             self.js_events.append("model")
             selected_model = None
@@ -119,7 +119,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         class LoginFake(FakeSurfRunner):
             def _handle_js(self, code):
                 if "hasPrompt" in code and "loginRequired" in code:
-                    return {"hasPrompt": False, "challenge": False, "loginRequired": True}
+                    return {"hasPrompt": False, "challenge": False, "loginRequired": True, "authenticated": False}
                 return super()._handle_js(code)
 
         surf = LoginFake()
@@ -127,6 +127,44 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
             ask_reusable_session("x", ReusableAskOptions(session_policy="ephemeral", timeout=5), surf=surf)
         self.assertEqual(ctx.exception.type, "login_required")
         self.assertEqual(surf.commands[-1][1], ["close"])
+
+    def test_logged_out_prompt_composer_still_requires_login_by_default(self):
+        class LoggedOutComposerFake(FakeSurfRunner):
+            def _handle_js(self, code):
+                if "hasPrompt" in code and "loginRequired" in code:
+                    return {"hasPrompt": True, "challenge": False, "loginRequired": False, "authenticated": False, "loggedOut": True}
+                return super()._handle_js(code)
+
+        surf = LoggedOutComposerFake()
+        with self.assertRaises(SkillError) as ctx:
+            ask_reusable_session("x", ReusableAskOptions(session_policy="ephemeral", timeout=5), surf=surf)
+        self.assertEqual(ctx.exception.type, "login_required")
+        self.assertIn("logged-in", ctx.exception.message)
+        self.assertEqual(surf.commands[-1][1], ["close"])
+
+    def test_allow_logged_out_preserves_anonymous_chatgpt_path(self):
+        class LoggedOutComposerFake(FakeSurfRunner):
+            def _handle_js(self, code):
+                if "hasPrompt" in code and "loginRequired" in code:
+                    return {"hasPrompt": True, "challenge": False, "loginRequired": False, "authenticated": False, "loggedOut": True}
+                return super()._handle_js(code)
+
+        result = ask_reusable_session(
+            "normal user prompt",
+            ReusableAskOptions(session_policy="ephemeral", timeout=5, allow_logged_out=True),
+            surf=LoggedOutComposerFake(),
+        )
+        self.assertEqual(result["response"], "assistant answer")
+
+    def test_allow_logged_out_cannot_select_account_models(self):
+        surf = FakeSurfRunner()
+        with self.assertRaises(SkillError) as ctx:
+            ask_reusable_session(
+                "x",
+                ReusableAskOptions(session_policy="ephemeral", timeout=5, allow_logged_out=True, model_query="pro"),
+                surf=surf,
+            )
+        self.assertEqual(ctx.exception.type, "invalid_args")
 
     def test_new_session_closes_by_default_and_returns_thread(self):
         surf = FakeSurfRunner()
@@ -288,6 +326,18 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         source = browser_chatgpt._select_model_choice_js("latest", "highest")
         self.assertIn("firstAvailableThinkingItem", source)
         self.assertNotIn("thinkingRank", source)
+
+    def test_status_script_checks_auth_session(self):
+        source = browser_chatgpt._status_js()
+        self.assertIn("/api/auth/session", source)
+        self.assertIn("authenticated", source)
+        self.assertIn("session.user || session.account", source)
+        self.assertNotIn("session.expires", source)
+        self.assertNotIn("hasConversationHistory", source)
+        self.assertIn("const loginRequired = onLoginPage || (!hasPrompt && hasLoggedOutCta);", source)
+        self.assertIn("loggedOut", source)
+        self.assertIn(r"/\b(log in|sign up)\b/i", source)
+        self.assertNotIn("\x08", source)
 
     def test_session_model_unavailable_is_classified(self):
         class ModelMissingFake(FakeSurfRunner):

@@ -30,7 +30,7 @@ uv tool install \
 Also required:
 
 - surf-agent browser backend configured and able to open pages.
-- Logged in to `chatgpt.com` in the surf-agent browser profile. Use the surf skill/profile command, for example: `surf-agent profile open https://chatgpt.com/`.
+- Logged in to `chatgpt.com` in the surf-agent browser profile. Use `surf-chatgpt login` or the surf skill/profile command: `surf-agent profile open https://chatgpt.com/`.
 
 ## Commands
 
@@ -42,6 +42,7 @@ surf-chatgpt ask --thinking high 'Question...'
 surf-chatgpt ask --model latest --thinking highest 'Question...'
 surf-chatgpt ask --session '<session-id>' --model gpt-5.5 --thinking medium 'Follow up...'
 surf-chatgpt ask --thread '<thread-id>' 'Follow up in kept browser thread...'
+surf-chatgpt login
 surf-chatgpt --help
 ```
 
@@ -56,12 +57,13 @@ Default output is compact JSON:
 Errors are structured and nonzero:
 
 ```json
-{"ok":false,"source":"external-chatgpt-via-surf-agent","error":{"type":"login_required","message":"ChatGPT login required","hint":"Open the surf-agent profile and log in to chatgpt.com, then retry."}}
+{"ok":false,"source":"external-chatgpt-via-surf-agent","error":{"type":"login_required","message":"ChatGPT login required","hint":"Run `surf-chatgpt login`, log in to chatgpt.com in the opened Surf Agent browser profile, then retry."}}
 ```
 
 ## Model / thinking selection
 
 `--model` is a fuzzy query against models visible in ChatGPT's web model picker. `--model latest` selects the first available model in the web UI list. No silent fallback: if no usable match is found, command fails with `model_unavailable`.
+`surf-chatgpt ask` requires a logged-in ChatGPT session by default, even if the logged-out page exposes a prompt composer. This prevents accidental use of anonymous/free ChatGPT when the user expects account models. Use `--allow-logged-out` only when the user explicitly wants anonymous ChatGPT; it cannot be combined with `--model` or `--thinking`.
 
 ```bash
 surf-chatgpt ask --thinking high 'Question...'
@@ -116,12 +118,23 @@ Search output shape:
 
 Failure classes include `login_required`, `captcha_or_cloudflare`, `ui_changed`, `timeout`, `surf_unavailable`, `browser_unavailable`, `model_unavailable`, `parse_error`, and `invalid_args`.
 
+## Login workflow
+
+If `surf-chatgpt` returns `login_required`:
+
+```bash
+surf-chatgpt login
+```
+
+Ask the user to log in to ChatGPT in the opened Surf Agent browser profile, then retry. Do not proceed with logged-out ChatGPT unless the user explicitly asks for anonymous ChatGPT and accepts `--allow-logged-out`.
+
 ## Validation checklist
 
 ```bash
 surf-chatgpt --help
 surf-chatgpt ask --format json < /dev/null; test $? -ne 0
 surf-chatgpt ask --help | grep -q -- 'prompt'
+surf-chatgpt login --help | grep -q -- 'manual login'
 surf-chatgpt ask --help | grep -q -- '--session' && surf-chatgpt ask --help | grep -q -- '--thread' && ! surf-chatgpt ask --help | grep -q -- '--window-id'
 surf-chatgpt session search --help | grep -q -- '--limit'
 ```

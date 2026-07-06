@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--keep-open", action="store_true", help="Keep the opened surf-agent thread open and return its thread for follow-up. Without a session option, implies --new.")
     ask.add_argument("--model", help="ChatGPT model query, e.g. latest, pro, gpt-5.5, gpt-5.5-pro, or gpt-5.4. Use latest to select the first available model in the web UI list.")
     ask.add_argument("--thinking", choices=("low", "medium", "high", "highest"), help="ChatGPT thinking level. Maps low/medium/high to the web UI levels; highest selects the first available thinking level shown by the web UI.")
+    ask.add_argument("--allow-logged-out", action="store_true", help="Allow anonymous ChatGPT. Default requires a logged-in ChatGPT session so account models are available.")
     ask.add_argument("--timeout", type=int, default=2700, help="ChatGPT wait timeout in seconds. Default: 2700.")
     ask.add_argument("--format", choices=("json", "text"), default="json")
     ask.add_argument("prompt", nargs="?", help="Prompt text. If omitted, read stdin. Use -- before prompts that start with -.")
@@ -53,6 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
     session_search.add_argument("query")
     session_search.add_argument("--limit", type=int, default=10, help="Maximum sessions to return. Default: 10.")
     session_search.add_argument("--format", choices=("json", "text"), default="json")
+
+    login = subparsers.add_parser(
+        "login",
+        help="Open the surf-agent browser profile on ChatGPT for manual login.",
+        description="Open the surf-agent browser profile on ChatGPT for manual login.",
+    )
+    login.add_argument("--format", choices=("json", "text"), default="json")
 
     return parser
 
@@ -86,6 +94,10 @@ def main(argv: list[str] | None = None, *, stdin: IO[str] | None = None, stdout:
             result = _handle_session(args)
             _emit(result, args.format, stdout)
             return 0
+        if args.command == "login":
+            result = _handle_login()
+            _emit(result, args.format, stdout)
+            return 0
     except KeyboardInterrupt:
         fmt = getattr(args, "format", "json")
         _emit_error(SkillError("interrupted", "interrupted", hint="", exit_code=130), fmt, stdout)
@@ -116,6 +128,7 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
         requested_thinking=args.thinking,
         timeout=args.timeout,
         start_new=args.new or _keep_open_implies_new(args),
+        allow_logged_out=args.allow_logged_out,
     )
     return ask_chatgpt(user_prompt, options)
 
@@ -149,6 +162,8 @@ def _validate_ask_args(args: argparse.Namespace) -> None:
         raise SkillError("invalid_args", "--thread cannot be empty")
     if args.timeout <= 0:
         raise SkillError("invalid_args", "--timeout must be positive")
+    if args.allow_logged_out and (args.model or args.thinking):
+        raise SkillError("invalid_args", "--allow-logged-out cannot be combined with --model or --thinking")
 
 
 def _normalize_session_url(value: str) -> str:
@@ -169,6 +184,17 @@ def _handle_session(args: argparse.Namespace) -> dict[str, Any]:
     if args.session_command == "search":
         return search_web_sessions(args.query, limit=args.limit)
     raise SkillError("invalid_args", "unknown session command")
+
+
+def _handle_login() -> dict[str, Any]:
+    SurfRunner().run_text(["profile", "open", "https://chatgpt.com/"], timeout=30)
+    return {
+        "ok": True,
+        "source": SOURCE_LABEL,
+        "action": "login_opened",
+        "url": "https://chatgpt.com/",
+        "message": "Log in to ChatGPT in the opened Surf Agent browser profile, then retry surf-chatgpt.",
+    }
 
 
 def _current_session_result(thread: str) -> dict[str, Any]:
@@ -264,6 +290,9 @@ def _emit(result: dict[str, Any], fmt: str, stdout: IO[str]) -> None:
             print(f"{session.get('id')}\t{session.get('title') or '-'}\t{session.get('url')}", file=stdout)
         else:
             print(result.get("warning", "no active ChatGPT conversation"), file=stdout)
+        return
+    if result.get("action") == "login_opened":
+        print(result.get("message", "Log in to ChatGPT in the opened browser, then retry."), file=stdout)
         return
     print(json.dumps(result, ensure_ascii=False), file=stdout)
 

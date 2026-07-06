@@ -20,6 +20,7 @@ class AskOptions:
     requested_thinking: str | None = None
     timeout: int = 2700
     start_new: bool = False
+    allow_logged_out: bool = False
 
 
 def ask_chatgpt(user_prompt: str, options: AskOptions, *, surf: SurfRunner | None = None) -> dict:
@@ -35,6 +36,7 @@ def ask_chatgpt(user_prompt: str, options: AskOptions, *, surf: SurfRunner | Non
             start_new=options.start_new,
             timeout=options.timeout,
             thinking_label=options.thinking_label,
+            allow_logged_out=options.allow_logged_out,
         ),
         surf=runner,
     )

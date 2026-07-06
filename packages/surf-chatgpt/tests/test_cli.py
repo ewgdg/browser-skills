@@ -56,6 +56,14 @@ class CliValidationTests(unittest.TestCase):
                 self.assertEqual(payload["error"]["type"], "invalid_args")
                 self.assertIn("unrecognized arguments", payload["error"]["message"])
 
+    def test_allow_logged_out_cannot_be_combined_with_model_selection(self):
+        out = io.StringIO()
+        code = cli.main(["ask", "--allow-logged-out", "--model", "pro"], stdin=io.StringIO("x"), stdout=out)
+        self.assertNotEqual(code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["error"]["type"], "invalid_args")
+        self.assertIn("--allow-logged-out", payload["error"]["message"])
+
     def test_keep_open_without_session_mode_implies_new_session(self):
         fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "new", "thread": "t"}}
         with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
@@ -226,6 +234,34 @@ class CliValidationTests(unittest.TestCase):
         options = mocked.call_args.args[1]
         self.assertEqual(options.model_query, "pro")
 
+    def test_allow_logged_out_is_passed_to_client(self):
+        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "--allow-logged-out"], stdin=io.StringIO("x"), stdout=out)
+        self.assertEqual(code, 0)
+        options = mocked.call_args.args[1]
+        self.assertTrue(options.allow_logged_out)
+
+    def test_login_opens_surf_agent_profile(self):
+        class FakeSurfRunner:
+            def __init__(self):
+                self.calls = []
+
+            def run_text(self, args, timeout=30, thread=None):
+                self.calls.append((list(args), timeout, thread))
+                return "opened\n"
+
+        fake_runner = FakeSurfRunner()
+        with patch("surf_chatgpt.cli.SurfRunner", return_value=fake_runner):
+            out = io.StringIO()
+            code = cli.main(["login"], stdout=out)
+        self.assertEqual(code, 0)
+        self.assertEqual(fake_runner.calls, [(["profile", "open", "https://chatgpt.com/"], 30, None)])
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["action"], "login_opened")
+
     def test_latest_model_and_highest_thinking_are_passed_to_client(self):
         fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
         with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
@@ -261,6 +297,24 @@ class CliValidationTests(unittest.TestCase):
         code = cli.main(["ask", "--format", "text"], stdin=io.StringIO(""), stdout=out)
         self.assertNotEqual(code, 0)
         self.assertIn("external ChatGPT via surf-agent error: empty_prompt", out.getvalue())
+
+    def test_login_text_mode_tells_user_next_action(self):
+        class FakeSurfRunner:
+            def run_text(self, args, timeout=30, thread=None):
+                return "opened\n"
+
+        with patch("surf_chatgpt.cli.SurfRunner", return_value=FakeSurfRunner()):
+            out = io.StringIO()
+            code = cli.main(["login", "--format", "text"], stdout=out)
+        self.assertEqual(code, 0)
+        self.assertIn("Log in to ChatGPT", out.getvalue())
+
+    def test_login_help_mentions_manual_login(self):
+        out = io.StringIO()
+        with patch("sys.stdout", out), self.assertRaises(SystemExit) as ctx:
+            cli.main(["login", "--help"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn("manual login", out.getvalue())
 
 
 if __name__ == "__main__":

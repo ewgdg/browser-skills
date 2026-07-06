@@ -53,6 +53,7 @@ class ReusableAskOptions:
     start_new: bool = False
     timeout: int = 2700
     thinking_label: str | None = None
+    allow_logged_out: bool = False
 
 
 def ask_reusable_session(
@@ -73,7 +74,9 @@ def ask_reusable_session(
     try:
         target = _resolve_target(runner, options)
         _wait_load_best_effort(runner, target)
-        _assert_chatgpt_ready(runner, target)
+        if options.allow_logged_out and (options.model_query or options.thinking_label):
+            raise SkillError("invalid_args", "--allow-logged-out cannot be combined with model or thinking selection")
+        _assert_chatgpt_ready(runner, target, allow_logged_out=options.allow_logged_out)
         selection = _select_model_choice(runner, target, options.model_query, options.thinking_label) if (options.model_query or options.thinking_label) else {"model": "current", "thinking": None}
 
         baseline = _read_snapshot(runner, target)
@@ -181,7 +184,7 @@ def _wait_load_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
             raise
 
 
-def _assert_chatgpt_ready(runner: SurfRunner, target: BrowserTarget) -> None:
+def _assert_chatgpt_ready(runner: SurfRunner, target: BrowserTarget, *, allow_logged_out: bool = False) -> None:
     status = _run_js_file(runner, target, _status_js(), timeout=15)
     if not isinstance(status, dict):
         raise SkillError("parse_error", "ChatGPT status script returned unexpected data")
@@ -189,6 +192,8 @@ def _assert_chatgpt_ready(runner: SurfRunner, target: BrowserTarget) -> None:
         raise SkillError("captcha_or_cloudflare", "ChatGPT challenge detected")
     if status.get("loginRequired"):
         raise SkillError("login_required", "ChatGPT login required")
+    if not allow_logged_out and not status.get("authenticated"):
+        raise SkillError("login_required", "ChatGPT logged-in session required")
     if not status.get("hasPrompt"):
         raise SkillError("ui_changed", "ChatGPT prompt composer not found")
 
@@ -427,14 +432,29 @@ def _surf_agent_function_source(body: str) -> str:
 
 def _status_js() -> str:
     return f"""
-return (() => {{
+return (async () => {{
   const promptSelectors = {json.dumps(PROMPT_SELECTORS)};
   const text = document.body?.innerText || '';
   const lowered = text.toLowerCase();
   const hasPrompt = promptSelectors.some((selector) => document.querySelector(selector));
   const challenge = Boolean(document.querySelector('script[src*="/challenge-platform/"]')) || lowered.includes('cloudflare') || lowered.includes('verify you are human') || lowered.includes('captcha');
-  const loginRequired = location.href.includes('/auth/login') || (!hasPrompt && (lowered.includes('log in') || lowered.includes('sign up')));
-  return {{ url: location.href, title: document.title, hasPrompt, challenge, loginRequired }};
+  const hasLoggedOutCta = /\\b(log in|sign up)\\b/i.test(text);
+  const onLoginPage = location.href.includes('/auth/login');
+  const session = await fetch('/api/auth/session', {{ credentials: 'include' }})
+    .then((response) => response.ok ? response.json() : null)
+    .catch(() => null);
+  const authenticatedBySession = Boolean(session && (session.user || session.account));
+  const visibleText = (node) => (node?.textContent || node?.innerText || node?.getAttribute?.('aria-label') || '').trim();
+  const accountControls = Array.from(document.querySelectorAll('button, [role="button"], a'))
+    .filter((node) => {{
+      const haystack = [visibleText(node), node.getAttribute?.('aria-label'), node.getAttribute?.('data-testid')].join(' ').toLowerCase();
+      return /profile|account|settings|customize chatgpt|my plan|upgrade plan/.test(haystack);
+    }});
+  const authenticatedByChrome = accountControls.length > 0;
+  const loginRequired = onLoginPage || (!hasPrompt && hasLoggedOutCta);
+  const authenticated = !loginRequired && (authenticatedBySession || authenticatedByChrome);
+  const loggedOut = !authenticated && hasLoggedOutCta;
+  return {{ url: location.href, title: document.title, hasPrompt, challenge, loginRequired, authenticated, loggedOut }};
 }})();
 """.strip()
 
