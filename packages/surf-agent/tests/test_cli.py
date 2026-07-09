@@ -1122,7 +1122,7 @@ class AxiBackendTests(unittest.TestCase):
 
         class FakePage:
             def aria_snapshot(self, *args, **kwargs):
-                return '- button "Submit" [ref=e187]'
+                return '[ref=e187]\n- button "[ref=e999]" [ref=e188]'
 
             def locator(self, selector):
                 if selector == ACTIONABLE_SELECTOR:
@@ -1135,6 +1135,8 @@ class AxiBackendTests(unittest.TestCase):
         snapshot = runtime._run(runtime._snapshot(slot))
 
         self.assertNotIn("[ref=e187]", snapshot)
+        self.assertNotIn("[ref=e188]", snapshot)
+        self.assertIn('"[ref=e999]"', snapshot)
 
 
     def test_patchright_snapshot_passes_playwright_cli_aria_options(self):
