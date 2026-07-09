@@ -35,6 +35,7 @@ from ..bridge_common import (
 )
 
 REF_PATTERN = re.compile(r"^(?:pr|e)\d+$")
+RAW_ARIA_REF_PATTERN = re.compile(r"\s+\[ref=e\d+\]")
 SNAPSHOT_ARIA_TIMEOUT_MS = 3_000
 SNAPSHOT_BODY_TIMEOUT_MS = 3_000
 SNAPSHOT_LOCATOR_TIMEOUT_MS = 250
@@ -390,7 +391,8 @@ class PatchrightRuntime:
             except Exception:
                 aria = (await self._body_text(page)).strip()
         if aria:
-            parts.append(str(aria).rstrip())
+            # Patchright's e#### refs are not backed by slot.ref_map; expose only our actionable refs.
+            parts.append(RAW_ARIA_REF_PATTERN.sub("", str(aria)).rstrip())
         ref_lines = await self._index_actionable_refs(slot)
         if ref_lines:
             parts.extend(ref_lines)

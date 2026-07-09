@@ -1115,6 +1115,28 @@ class AxiBackendTests(unittest.TestCase):
         self.assertNotIn(f"[ref=pr{SNAPSHOT_REF_LIMIT}]", snapshot)
 
 
+    def test_patchright_snapshot_hides_raw_aria_refs(self):
+        class FakeLocatorGroup:
+            def count(self):
+                return 0
+
+        class FakePage:
+            def aria_snapshot(self, *args, **kwargs):
+                return '- button "Submit" [ref=e187]'
+
+            def locator(self, selector):
+                if selector == ACTIONABLE_SELECTOR:
+                    return FakeLocatorGroup()
+                raise AssertionError(f"unexpected selector: {selector}")
+
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
+        slot = patchright_bridge.PageSlot(page=FakePage(), page_token=1)
+
+        snapshot = runtime._run(runtime._snapshot(slot))
+
+        self.assertNotIn("[ref=e187]", snapshot)
+
+
     def test_patchright_snapshot_passes_playwright_cli_aria_options(self):
         class FakeLocatorGroup:
             def count(self):
