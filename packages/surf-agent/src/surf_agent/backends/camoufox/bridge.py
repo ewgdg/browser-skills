@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 from http.server import HTTPServer
 from pathlib import Path
@@ -13,27 +12,18 @@ from typing import Any
 
 from ...constants import DEFAULT_CAMOUFOX_APP_ID
 from ..bridge_common import (
-    ACTIONABLE_SELECTOR,
     CLOSED_TARGET_MESSAGE,
-    CSS_PATH_SCRIPT,
+    NATIVE_ARIA_REF_PATTERN,
     SNAPSHOT_BOXES,
     SNAPSHOT_DEPTH,
     STALE_REF_MESSAGE,
     STARTUP_PAGE_URLS,
     BridgeRequestHandler,
     PageSlot,
-    RefTarget,
-    TargetFingerprint,
-    bbox_from_raw,
-    fingerprint_matches,
-    format_snapshot_node,
-    normalize_text,
 )
 
-REF_PATTERN = re.compile(r"^(?:cf|e)\d+$")
 SNAPSHOT_ARIA_TIMEOUT_MS = 5_000
 SNAPSHOT_BODY_TIMEOUT_MS = 5_000
-SNAPSHOT_LOCATOR_TIMEOUT_MS = 250
 
 
 class CamoufoxRuntime:
@@ -91,21 +81,18 @@ class CamoufoxRuntime:
             url = str(args.get("url") or "about:blank")
             if url != "about:blank":
                 slot.page.goto(url, wait_until="domcontentloaded")
-            slot.ref_map.clear()
             return self._format_opened(slot.page)
         if name == "open":
             url = str(args["url"])
 
             def open_page(slot: PageSlot) -> str:
                 slot.page.goto(url, wait_until="domcontentloaded")
-                slot.ref_map.clear()
                 return self._format_opened(slot.page)
 
             return self._with_live_page(thread, open_page)
         slot = self._page(thread)
         if name == "back":
             slot.page.go_back(wait_until="domcontentloaded")
-            slot.ref_map.clear()
             return self._format_opened(slot.page)
         if name == "text":
             return self._body_text(slot.page)
@@ -114,20 +101,16 @@ class CamoufoxRuntime:
         if name == "click":
             locator = self._target_locator(slot, str(args["uid"]))
             locator.click()
-            slot.ref_map.clear()
             return "clicked\n"
         if name == "fill":
             locator = self._target_locator(slot, str(args["uid"]))
             locator.fill(str(args.get("text") or ""))
-            slot.ref_map.clear()
             return "filled\n"
         if name == "type":
             slot.page.keyboard.type(str(args.get("text") or ""))
-            slot.ref_map.clear()
             return "typed\n"
         if name == "press":
             slot.page.keyboard.press(str(args.get("key") or "Enter"))
-            slot.ref_map.clear()
             return "pressed\n"
         if name == "scroll":
             direction = str(args.get("direction") or "down")
@@ -140,7 +123,6 @@ class CamoufoxRuntime:
                 slot.page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
             else:
                 slot.page.mouse.wheel(0, delta)
-            slot.ref_map.clear()
             return "scrolled\n"
         if name == "wait":
             target = args.get("target")
@@ -148,7 +130,6 @@ class CamoufoxRuntime:
                 slot.page.wait_for_timeout(float(target))
             else:
                 slot.page.get_by_text(str(target)).first.wait_for(timeout=10_000)
-            slot.ref_map.clear()
             return "waited\n"
         if name == "screenshot":
             path = str(args["path"])
@@ -157,7 +138,6 @@ class CamoufoxRuntime:
             return f"screenshot: {path}\n"
         if name == "eval":
             result = slot.page.evaluate(str(args.get("code") or ""))
-            slot.ref_map.clear()
             return json.dumps(result, ensure_ascii=False) + "\n"
         if name == "focus":
             slot.page.bring_to_front()
@@ -265,9 +245,6 @@ class CamoufoxRuntime:
                 aria = self._body_text(page).strip()
         if aria:
             parts.append(str(aria).rstrip())
-        ref_lines = self._index_actionable_refs(slot)
-        if ref_lines:
-            parts.extend(ref_lines)
         return "\n".join(parts).rstrip() + "\n"
 
     def _aria_snapshot(self, target: Any) -> str:
@@ -286,98 +263,31 @@ class CamoufoxRuntime:
             except TypeError:
                 return str(target.aria_snapshot(timeout=SNAPSHOT_ARIA_TIMEOUT_MS))
 
-    def _index_actionable_refs(self, slot: PageSlot) -> list[str]:
-        locator = slot.page.locator(ACTIONABLE_SELECTOR)
-        slot.ref_map.clear()
-        lines: list[str] = []
-        try:
-            count = min(locator.count(), 200)
-        except Exception:
-            return lines
-        for index in range(count):
-            item = locator.nth(index)
-            try:
-                if not item.is_visible(timeout=250):
-                    continue
-                ref = f"cf{len(slot.ref_map)}"
-                fingerprint = self._fingerprint_locator(item)
-                target = RefTarget(
-                    ref=ref,
-                    selector=ACTIONABLE_SELECTOR,
-                    index=index,
-                    css_path=self._css_path(item),
-                    fingerprint=fingerprint,
-                )
-                slot.ref_map[ref] = target
-                lines.append(f"- {format_snapshot_node(fingerprint)} [ref={ref}]")
-            except Exception:
-                continue
-        return lines
-
-
-    def _fingerprint_locator(self, locator: Any) -> TargetFingerprint:
-        tag = self._safe(lambda: locator.evaluate("el => el.tagName.toLowerCase()"), "")
-        role = self._safe(lambda: locator.get_attribute("role"), "")
-        text = self._safe(lambda: locator.inner_text(timeout=250), "")
-        value = self._safe(lambda: locator.input_value(timeout=250), "")
-        name = ""
-        for attr in ("aria-label", "placeholder", "title", "alt"):
-            name = self._safe(lambda attr=attr: locator.get_attribute(attr), "")
-            if name:
-                break
-        if not name:
-            name = text or value or self._safe(lambda: locator.get_attribute("href"), "")
-        bbox = self._bbox(locator)
-        return TargetFingerprint(tag=normalize_text(tag), role=normalize_text(role), name=normalize_text(name), text=normalize_text(text or value), bbox=bbox)
-
-    def _bbox(self, locator: Any) -> dict[str, float] | None:
-        try:
-            box = locator.bounding_box()
-        except Exception:
-            return None
-        return bbox_from_raw(box)
-
-    def _css_path(self, locator: Any) -> str | None:
-        value = self._safe(lambda: locator.evaluate(CSS_PATH_SCRIPT), "")
-        return value or None
-
     def _target_locator(self, slot: PageSlot, target: str) -> Any:
         normalized = target[1:] if target.startswith("@") else target
-        if normalized in slot.ref_map or target.startswith("@") or REF_PATTERN.match(normalized):
+        is_native_ref = NATIVE_ARIA_REF_PATTERN.fullmatch(normalized) is not None
+        if target.startswith("@") and not is_native_ref:
+            raise RuntimeError(STALE_REF_MESSAGE.format(ref=normalized))
+        if is_native_ref:
             return self._ref_locator(slot, normalized)
         return self._selector_locator(slot, target)
 
     def _ref_locator(self, slot: PageSlot, ref: str) -> Any:
-        stored = slot.ref_map.get(ref)
-        if not stored:
-            raise RuntimeError(STALE_REF_MESSAGE.format(ref=ref))
-        candidates = self._ref_candidates(slot, stored)
-        for candidate in candidates:
-            try:
-                if candidate.is_visible(timeout=250) and fingerprint_matches(stored.fingerprint, self._fingerprint_locator(candidate)):
-                    return candidate
-            except Exception:
-                continue
-        raise RuntimeError(STALE_REF_MESSAGE.format(ref=ref))
+        try:
+            locator = slot.page.locator(f"aria-ref={ref}")
+            if locator.count() != 1:
+                raise RuntimeError
+            return locator
+        except Exception as exc:
+            raise RuntimeError(STALE_REF_MESSAGE.format(ref=ref)) from exc
 
-    def _ref_candidates(self, slot: PageSlot, stored: RefTarget) -> list[Any]:
-        candidates: list[Any] = []
-        if stored.css_path:
-            candidates.extend(self._locator_candidates(slot.page.locator(stored.css_path), limit=3))
-        candidates.extend(self._locator_candidates(slot.page.locator(stored.selector), limit=200, preferred_index=stored.index))
-        return candidates
-
-    def _locator_candidates(self, locator: Any, *, limit: int, preferred_index: int | None = None) -> list[Any]:
+    def _locator_candidates(self, locator: Any, *, limit: int) -> list[Any]:
         candidates: list[Any] = []
         try:
             count = min(locator.count(), limit)
         except Exception:
             return candidates
-        indexes = list(range(count))
-        if preferred_index is not None and 0 <= preferred_index < count:
-            indexes.remove(preferred_index)
-            indexes.insert(0, preferred_index)
-        for index in indexes:
+        for index in range(count):
             try:
                 candidates.append(locator.nth(index))
             except Exception:
@@ -397,14 +307,6 @@ class CamoufoxRuntime:
             return candidate
         except Exception as exc:
             raise RuntimeError(f"target {selector!r} is neither a current snapshot ref nor a matching selector") from exc
-
-
-    def _safe(self, fn: Any, default: str = "") -> str:
-        try:
-            value = fn()
-            return "" if value is None else str(value).strip()
-        except Exception:
-            return default
 
     def _metadata(self, slot: PageSlot) -> dict[str, str | int]:
         page = slot.page

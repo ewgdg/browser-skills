@@ -17,8 +17,8 @@ from unittest.mock import patch
 
 import surf_agent.backends.camoufox.bridge as camoufox_bridge
 import surf_agent.backends.patchright.bridge as patchright_bridge
-from surf_agent.backends.camoufox.bridge import ACTIONABLE_SELECTOR, CamoufoxRuntime, PageSlot, RequestHandler, TargetFingerprint
-from surf_agent.backends.patchright.bridge import SNAPSHOT_REF_LIMIT, PatchrightRuntime
+from surf_agent.backends.camoufox.bridge import CamoufoxRuntime, PageSlot, RequestHandler
+from surf_agent.backends.patchright.bridge import PatchrightRuntime
 from surf_agent.backends.axi import AxiBackend
 from surf_agent.errors import BridgeUnavailable
 from surf_agent.cli import (
@@ -554,7 +554,7 @@ class AxiBackendTests(unittest.TestCase):
             client = FakePatchrightClient()
             agent.patchright_client = client
             self.assertEqual(agent.execute_in_window(["open", "https://example.test/"]), "open ok\n")
-            self.assertEqual(agent.execute_in_window(["fill", "@pr0", "hello", "world"]), "fill ok\n")
+            self.assertEqual(agent.execute_in_window(["fill", "@e2", "hello", "world"]), "fill ok\n")
             self.assertEqual(agent.execute_in_window(["screenshot", "/tmp/viewport.png"]), "screenshot ok\n")
             self.assertEqual(agent.execute_in_window(["screenshot", "--full-page", "--output", "/tmp/full.png"]), "screenshot ok\n")
             with self.assertRaisesRegex(SurfAgentError, "scroll requires direction"):
@@ -564,7 +564,7 @@ class AxiBackendTests(unittest.TestCase):
             client.calls,
             [
                 ("open", {"thread": "thread", "url": "https://example.test/"}),
-                ("fill", {"thread": "thread", "uid": "@pr0", "text": "hello world"}),
+                ("fill", {"thread": "thread", "uid": "@e2", "text": "hello world"}),
                 ("screenshot", {"thread": "thread", "path": "/tmp/viewport.png", "fullPage": False}),
                 ("screenshot", {"thread": "thread", "path": "/tmp/full.png", "fullPage": True}),
             ],
@@ -928,6 +928,12 @@ class AxiBackendTests(unittest.TestCase):
             def first(self):
                 return self.items[0]
 
+            def click(self):
+                return self.first.click()
+
+            def fill(self, text):
+                return self.first.fill(text)
+
         class FakeBodyLocator:
             def inner_text(self, timeout=None):
                 return "Body text"
@@ -948,7 +954,7 @@ class AxiBackendTests(unittest.TestCase):
                 self.url = url
 
             def locator(self, selector):
-                if selector == ACTIONABLE_SELECTOR:
+                if selector == "aria-ref=e2":
                     return FakeLocatorGroup([self.actionable])
                 if selector == "button":
                     return FakeLocatorGroup([self.actionable])
@@ -957,7 +963,7 @@ class AxiBackendTests(unittest.TestCase):
                 raise AssertionError(f"unexpected selector: {selector}")
 
             def aria_snapshot(self, *args, **kwargs):
-                return '- button "Submit"'
+                return '- button "Submit" [ref=e2]'
 
             def title(self):
                 return self.title_value
@@ -1013,12 +1019,12 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
         self.assertEqual(context.cdp_calls, [("Target.createTarget", {"url": "https://example.test/", "newWindow": True, "background": False})])
         snapshot = runtime.call("snapshot", {"thread": "thread"})
-        self.assertIn("[ref=pr0]", snapshot)
-        self.assertEqual(runtime.call("fill", {"thread": "thread", "uid": "@pr0", "text": "hello"}), "filled\n")
+        self.assertIn("[ref=e2]", snapshot)
+        self.assertEqual(runtime.call("fill", {"thread": "thread", "uid": "@e2", "text": "hello"}), "filled\n")
         self.assertEqual(runtime.pages["thread"].page.actionable.filled, "hello")
         snapshot = runtime.call("snapshot", {"thread": "thread"})
-        self.assertIn("[ref=pr0]", snapshot)
-        self.assertEqual(runtime.call("click", {"thread": "thread", "uid": "@pr0"}), "clicked\n")
+        self.assertIn("[ref=e2]", snapshot)
+        self.assertEqual(runtime.call("click", {"thread": "thread", "uid": "e2"}), "clicked\n")
         self.assertTrue(runtime.pages["thread"].page.actionable.clicked)
         self.assertEqual(runtime.call("type", {"thread": "thread", "text": "typed text"}), "typed\n")
         self.assertEqual(runtime.pages["thread"].page.typed, "typed text")
@@ -1032,6 +1038,49 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(state, {"backend": "patchright", "open": True, "thread": "thread", "page_id": 1, "url": "https://example.test/", "title": "Example"})
         listing = json.loads(runtime.call("list", {}))
         self.assertEqual(listing, {"backend": "patchright", "pages": [{"thread": "thread", "page_id": 1, "url": "https://example.test/", "title": "Example"}]})
+
+    def test_patchright_actions_delegate_iframe_refs_and_reject_stale_refs(self):
+        class FakeNativeRefLocator:
+            def __init__(self, count):
+                self.match_count = count
+                self.clicked = False
+
+            def count(self):
+                return self.match_count
+
+            def click(self):
+                self.clicked = True
+
+        class FakePage:
+            def __init__(self):
+                self.iframe_button = FakeNativeRefLocator(1)
+                self.stale = FakeNativeRefLocator(0)
+                self.selector_injection = FakeNativeRefLocator(1)
+
+            def is_closed(self):
+                return False
+
+            def locator(self, selector):
+                if selector == "aria-ref=f1e2":
+                    return self.iframe_button
+                if selector == "aria-ref=e404":
+                    return self.stale
+                if selector == "aria-ref=e2 >> css=body":
+                    return self.selector_injection
+                raise AssertionError(f"unexpected selector: {selector}")
+
+        page = FakePage()
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
+        runtime.browser_or_context = object()
+        runtime.pages["thread"] = PageSlot(page=page, page_token=1)
+
+        self.assertEqual(runtime.call("click", {"thread": "thread", "uid": "f1e2"}), "clicked\n")
+        self.assertTrue(page.iframe_button.clicked)
+        with self.assertRaisesRegex(RuntimeError, "Capture a new snapshot"):
+            runtime.call("click", {"thread": "thread", "uid": "@e404"})
+        with self.assertRaisesRegex(RuntimeError, "Capture a new snapshot"):
+            runtime.call("click", {"thread": "thread", "uid": "@e2 >> css=body"})
+        self.assertFalse(page.selector_injection.clicked)
 
     def test_patchright_bridge_screenshot_uses_viewport_by_default_and_full_page_when_requested(self):
         class FakePage:
@@ -1058,92 +1107,23 @@ class AxiBackendTests(unittest.TestCase):
             {"path": "/tmp/full.png", "full_page": True},
         ])
 
-    def test_patchright_snapshot_limits_indexed_refs(self):
-        class FakeElement:
-            def __init__(self, index):
-                self.index = index
-
-            def is_visible(self, timeout=None):
-                return True
-
-            def evaluate(self, script, timeout=None):
-                if "tagName" in script:
-                    return "button"
-                return f"button:nth-of-type({self.index + 1})"
-
-            def get_attribute(self, name, timeout=None):
-                return "button" if name == "role" else ""
-
-            def inner_text(self, timeout=None):
-                return f"Button {self.index}"
-
-            def input_value(self, timeout=None):
-                return ""
-
-            def bounding_box(self, timeout=None):
-                return {"x": 1, "y": 2, "width": 3, "height": 4}
-
-        class FakeLocatorGroup:
-            def __init__(self, items):
-                self.items = items
-
-            def count(self):
-                return len(self.items)
-
-            def nth(self, index):
-                return self.items[index]
-
-        class FakePage:
-            def __init__(self):
-                self.actionables = [FakeElement(index) for index in range(SNAPSHOT_REF_LIMIT + 10)]
-
-            def locator(self, selector):
-                if selector == ACTIONABLE_SELECTOR:
-                    return FakeLocatorGroup(self.actionables)
-                raise AssertionError(f"unexpected selector: {selector}")
-
-            def aria_snapshot(self, *args, **kwargs):
-                return "snapshot body"
-
-        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
-        slot = PageSlot(page=FakePage(), page_token=1)
-
-        snapshot = runtime._run(runtime._snapshot(slot))
-
-        self.assertEqual(len(slot.ref_map), SNAPSHOT_REF_LIMIT)
-        self.assertIn(f"[ref=pr{SNAPSHOT_REF_LIMIT - 1}]", snapshot)
-        self.assertNotIn(f"[ref=pr{SNAPSHOT_REF_LIMIT}]", snapshot)
-
-
-    def test_patchright_snapshot_hides_raw_aria_refs(self):
-        class FakeLocatorGroup:
-            def count(self):
-                return 0
-
+    def test_patchright_snapshot_preserves_native_and_literal_refs(self):
         class FakePage:
             def aria_snapshot(self, *args, **kwargs):
-                return '[ref=e187]\n- button "[ref=e999]" [ref=e188]'
-
-            def locator(self, selector):
-                if selector == ACTIONABLE_SELECTOR:
-                    return FakeLocatorGroup()
-                raise AssertionError(f"unexpected selector: {selector}")
+                return '- button "[ref=e999]" [ref=e188]\n- paragraph [ref=e189]: Hello [ref=e777]'
 
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
         slot = patchright_bridge.PageSlot(page=FakePage(), page_token=1)
 
         snapshot = runtime._run(runtime._snapshot(slot))
 
-        self.assertNotIn("[ref=e187]", snapshot)
-        self.assertNotIn("[ref=e188]", snapshot)
+        self.assertIn("[ref=e188]", snapshot)
+        self.assertIn("[ref=e189]", snapshot)
         self.assertIn('"[ref=e999]"', snapshot)
+        self.assertIn("Hello [ref=e777]", snapshot)
 
 
     def test_patchright_snapshot_passes_playwright_cli_aria_options(self):
-        class FakeLocatorGroup:
-            def count(self):
-                return 0
-
         class FakePage:
             def __init__(self):
                 self.calls = []
@@ -1151,11 +1131,6 @@ class AxiBackendTests(unittest.TestCase):
             def aria_snapshot(self, **kwargs):
                 self.calls.append(kwargs)
                 return '- page "Example"'
-
-            def locator(self, selector):
-                if selector == ACTIONABLE_SELECTOR:
-                    return FakeLocatorGroup()
-                raise AssertionError(f"unexpected selector: {selector}")
 
         page = FakePage()
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
@@ -1168,10 +1143,6 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(page.calls, [{"mode": "ai", "timeout": patchright_bridge.SNAPSHOT_ARIA_TIMEOUT_MS, "depth": 4, "boxes": True}])
 
     def test_patchright_snapshot_default_depth_and_boxes_are_explicit(self):
-        class FakeLocatorGroup:
-            def count(self):
-                return 0
-
         class FakePage:
             def __init__(self):
                 self.calls = []
@@ -1179,11 +1150,6 @@ class AxiBackendTests(unittest.TestCase):
             def aria_snapshot(self, **kwargs):
                 self.calls.append(kwargs)
                 return "snapshot body"
-
-            def locator(self, selector):
-                if selector == ACTIONABLE_SELECTOR:
-                    return FakeLocatorGroup()
-                raise AssertionError(f"unexpected selector: {selector}")
 
         page = FakePage()
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
@@ -1962,7 +1928,7 @@ class AxiBackendTests(unittest.TestCase):
             client = FakeCamoufoxClient()
             agent.camoufox_client = client
             self.assertEqual(agent.execute_in_window(["open", "https://example.test/"]), "open ok\n")
-            self.assertEqual(agent.execute_in_window(["fill", "@cf0", "hello", "world"]), "fill ok\n")
+            self.assertEqual(agent.execute_in_window(["fill", "@e2", "hello", "world"]), "fill ok\n")
             self.assertEqual(agent.execute_in_window(["screenshot", "--output", "/tmp/viewport.png"]), "screenshot ok\n")
             self.assertEqual(agent.execute_in_window(["screenshot", "--output", "/tmp/full.png", "--full-page"]), "screenshot ok\n")
             with self.assertRaisesRegex(SurfAgentError, "scroll requires direction"):
@@ -1970,7 +1936,7 @@ class AxiBackendTests(unittest.TestCase):
 
         self.assertEqual(client.calls, [
             ("open", {"thread": "thread", "url": "https://example.test/"}),
-            ("fill", {"thread": "thread", "uid": "@cf0", "text": "hello world"}),
+            ("fill", {"thread": "thread", "uid": "@e2", "text": "hello world"}),
             ("screenshot", {"thread": "thread", "path": "/tmp/viewport.png", "fullPage": False}),
             ("screenshot", {"thread": "thread", "path": "/tmp/full.png", "fullPage": True}),
         ])
@@ -2033,10 +1999,6 @@ class AxiBackendTests(unittest.TestCase):
         ])
 
     def test_camoufox_snapshot_passes_playwright_cli_aria_options(self):
-        class FakeLocatorGroup:
-            def count(self):
-                return 0
-
         class FakePage:
             def __init__(self):
                 self.calls = []
@@ -2044,11 +2006,6 @@ class AxiBackendTests(unittest.TestCase):
             def aria_snapshot(self, **kwargs):
                 self.calls.append(kwargs)
                 return '- page "Example"'
-
-            def locator(self, selector):
-                if selector == ACTIONABLE_SELECTOR:
-                    return FakeLocatorGroup()
-                raise AssertionError(f"unexpected selector: {selector}")
 
         page = FakePage()
         runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
@@ -2060,32 +2017,10 @@ class AxiBackendTests(unittest.TestCase):
         self.assertIn('- page "Example"', snapshot)
         self.assertEqual(page.calls, [{"mode": "ai", "timeout": camoufox_bridge.SNAPSHOT_ARIA_TIMEOUT_MS, "depth": 3, "boxes": True}])
 
-    def test_camoufox_refs_verify_fingerprint_and_allow_selector_fallback(self):
+    def test_camoufox_actions_delegate_native_refs_and_allow_selector_fallback(self):
         class FakeElement:
-            def __init__(self, tag="button", text="Submit", role="", css_path="button:nth-of-type(1)"):
-                self.tag = tag
-                self.text = text
-                self.role = role
-                self.css_path = css_path
+            def __init__(self):
                 self.clicked = False
-
-            def is_visible(self, timeout=None):
-                return True
-
-            def evaluate(self, script):
-                return self.tag if "tagName.toLowerCase" in script else self.css_path
-
-            def get_attribute(self, name):
-                return self.role if name == "role" else ""
-
-            def inner_text(self, timeout=None):
-                return self.text
-
-            def input_value(self, timeout=None):
-                return ""
-
-            def bounding_box(self):
-                return {"x": 1, "y": 2, "width": 3, "height": 4}
 
             def click(self):
                 self.clicked = True
@@ -2107,49 +2042,53 @@ class AxiBackendTests(unittest.TestCase):
             def first(self):
                 return self.items[0]
 
+            def click(self):
+                return self.first.click()
+
+            def fill(self, text):
+                return self.first.fill(text)
+
         class FakePage:
             url = "https://example.test/"
 
-            def __init__(self, actionables, selectors):
-                self.actionables = actionables
-                self.selectors = selectors
+            def __init__(self):
+                self.button = FakeElement()
+                self.iframe_button = FakeElement()
+
+            def is_closed(self):
+                return False
 
             def locator(self, selector):
-                if selector == ACTIONABLE_SELECTOR:
-                    return FakeLocatorGroup(self.actionables)
-                return FakeLocatorGroup(self.selectors.get(selector, []))
+                matches = {
+                    "aria-ref=e2": [self.button],
+                    "aria-ref=f1e2": [self.iframe_button],
+                    "aria-ref=e404": [],
+                    "button.submit": [self.button],
+                }
+                return FakeLocatorGroup(matches.get(selector, []))
 
-            def aria_snapshot(self, timeout=None):
-                return '- button "Submit"'
+            def aria_snapshot(self, **kwargs):
+                return '- button "Submit" [ref=e2]\n- iframe [ref=e3]:\n  - button "Inner" [ref=f1e2]'
 
             def title(self):
                 return "Example"
 
-        button = FakeElement(text="Submit", role="button")
-        page = FakePage([button], {button.css_path: [button], "button.submit": [button]})
+        page = FakePage()
         runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
-        slot = PageSlot(page=page, page_token=1)
+        runtime.browser_or_context = object()
+        runtime.pages["thread"] = PageSlot(page=page, page_token=1)
 
-        snapshot = runtime._snapshot(slot)
-        self.assertIn('[ref=cf0]', snapshot)
-        runtime._target_locator(slot, "@cf0").fill("hello")
-        self.assertEqual(button.filled, "hello")
-        runtime._target_locator(slot, "button.submit").click()
-        self.assertTrue(button.clicked)
-
-        replacement = FakeElement(text="Delete", role="button", css_path=button.css_path)
-        page.actionables = [replacement]
-        page.selectors = {button.css_path: [replacement], "button.submit": [replacement]}
+        snapshot = runtime.call("snapshot", {"thread": "thread"})
+        self.assertIn("[ref=e2]", snapshot)
+        self.assertIn("[ref=f1e2]", snapshot)
+        self.assertEqual(runtime.call("fill", {"thread": "thread", "uid": "@e2", "text": "hello"}), "filled\n")
+        self.assertEqual(page.button.filled, "hello")
+        self.assertEqual(runtime.call("click", {"thread": "thread", "uid": "f1e2"}), "clicked\n")
+        self.assertTrue(page.iframe_button.clicked)
+        runtime._target_locator(runtime.pages["thread"], "button.submit").click()
+        self.assertTrue(page.button.clicked)
         with self.assertRaisesRegex(RuntimeError, "Capture a new snapshot"):
-            runtime._target_locator(slot, "@cf0")
-
-    def test_camoufox_fingerprint_matching_requires_label_when_available(self):
-        expected = TargetFingerprint(tag="button", role="button", name="Submit", text="Submit")
-
-        self.assertTrue(camoufox_bridge.fingerprint_matches(expected, TargetFingerprint(tag="button", role="button", name="Submit", text="Submit")))
-        self.assertFalse(camoufox_bridge.fingerprint_matches(expected, TargetFingerprint(tag="button", role="button", name="Delete", text="Delete")))
-        self.assertTrue(camoufox_bridge.fingerprint_matches(TargetFingerprint(tag="button", role="button"), TargetFingerprint(tag="button", role="button")))
-        self.assertFalse(camoufox_bridge.fingerprint_matches(TargetFingerprint(tag="button", role="button"), TargetFingerprint(tag="button", role="link")))
+            runtime.call("click", {"thread": "thread", "uid": "@e404"})
 
     def test_camoufox_backend_profile_open_rejects_running_bridge(self):
         from surf_agent.backends import CamoufoxBackend
