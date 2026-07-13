@@ -654,8 +654,9 @@ class AxiBackendTests(unittest.TestCase):
 
     def test_patchright_new_page_uses_cdp_target_create_window_with_owned_anchor(self):
         class FakePage:
-            def __init__(self, url="about:blank"):
+            def __init__(self, url="about:blank", *, target_id="page-target"):
                 self.url = url
+                self.target_id = target_id
                 self.closed = False
 
             def is_closed(self):
@@ -665,14 +666,21 @@ class AxiBackendTests(unittest.TestCase):
                 self.closed = True
 
         class FakeSession:
-            def __init__(self, context):
+            def __init__(self, context, page):
                 self.context = context
+                self.page = page
+                self.detached = False
 
-            def send(self, method, params):
+            def send(self, method, params=None):
+                if method == "Target.getTargetInfo":
+                    return {"targetInfo": {"targetId": self.page.target_id}}
                 self.context.cdp_calls.append((method, params))
-                page = FakePage(params["url"])
+                page = FakePage(params["url"], target_id="target-1")
                 self.context.pages.append(page)
                 return {"targetId": "target-1"}
+
+            def detach(self):
+                self.detached = True
 
         class FakeContext:
             def __init__(self, pages):
@@ -688,7 +696,7 @@ class AxiBackendTests(unittest.TestCase):
 
             def new_cdp_session(self, page):
                 self.anchor = page
-                return FakeSession(self)
+                return FakeSession(self, page)
 
         anchor = FakePage("https://owned.test/")
         context = FakeContext([anchor])
@@ -706,8 +714,9 @@ class AxiBackendTests(unittest.TestCase):
 
     def test_patchright_new_page_closes_restored_pages_instead_of_adopting_them(self):
         class FakePage:
-            def __init__(self, url):
+            def __init__(self, url, *, target_id="page-target"):
                 self.url = url
+                self.target_id = target_id
                 self.closed = False
 
             def is_closed(self):
@@ -717,14 +726,21 @@ class AxiBackendTests(unittest.TestCase):
                 self.closed = True
 
         class FakeSession:
-            def __init__(self, context):
+            def __init__(self, context, page):
                 self.context = context
+                self.page = page
+                self.detached = False
 
-            def send(self, method, params):
+            def send(self, method, params=None):
+                if method == "Target.getTargetInfo":
+                    return {"targetInfo": {"targetId": self.page.target_id}}
                 self.context.cdp_calls.append((method, params))
-                page = FakePage(params["url"])
+                page = FakePage(params["url"], target_id="target-1")
                 self.context.pages.append(page)
                 return {"targetId": "target-1"}
+
+            def detach(self):
+                self.detached = True
 
         class FakeContext:
             def __init__(self, pages):
@@ -740,7 +756,7 @@ class AxiBackendTests(unittest.TestCase):
 
             def new_cdp_session(self, page):
                 self.anchor = page
-                return FakeSession(self)
+                return FakeSession(self, page)
 
         restored = FakePage("https://restored.test/")
         newtab = FakePage("about:blank")
@@ -761,8 +777,9 @@ class AxiBackendTests(unittest.TestCase):
 
     def test_patchright_new_page_restarts_closed_context_then_retries_cdp(self):
         class FakePage:
-            def __init__(self, url="about:blank"):
+            def __init__(self, url="about:blank", *, target_id="page-target"):
                 self.url = url
+                self.target_id = target_id
                 self.closed = False
 
             def is_closed(self):
@@ -772,16 +789,23 @@ class AxiBackendTests(unittest.TestCase):
                 self.closed = True
 
         class FakeSession:
-            def __init__(self, context):
+            def __init__(self, context, page):
                 self.context = context
+                self.page = page
+                self.detached = False
 
-            def send(self, method, params):
+            def send(self, method, params=None):
+                if method == "Target.getTargetInfo":
+                    return {"targetInfo": {"targetId": self.page.target_id}}
                 self.context.cdp_calls.append((method, params))
                 if self.context.fail_closed:
                     raise RuntimeError(patchright_bridge.CLOSED_TARGET_MESSAGE)
-                page = FakePage(params["url"])
+                page = FakePage(params["url"], target_id="target-1")
                 self.context.pages.append(page)
                 return {"targetId": "target-1"}
+
+            def detach(self):
+                self.detached = True
 
         class FakeContext:
             def __init__(self, *, fail_closed=False):
@@ -797,7 +821,7 @@ class AxiBackendTests(unittest.TestCase):
                 return page
 
             def new_cdp_session(self, page):
-                return FakeSession(self)
+                return FakeSession(self, page)
 
         first_context = FakeContext(fail_closed=True)
         second_context = FakeContext()
@@ -834,8 +858,9 @@ class AxiBackendTests(unittest.TestCase):
                 raise RuntimeError(patchright_bridge.CLOSED_TARGET_MESSAGE)
 
         class CreatedPage:
-            def __init__(self, url="about:blank"):
+            def __init__(self, url="about:blank", *, target_id="page-target"):
                 self.url = url
+                self.target_id = target_id
                 self.closed = False
                 self.goto_calls = []
 
@@ -850,14 +875,21 @@ class AxiBackendTests(unittest.TestCase):
                 raise AssertionError("CDP-created replacement page should not be navigated again")
 
         class FakeSession:
-            def __init__(self, context):
+            def __init__(self, context, page):
                 self.context = context
+                self.page = page
+                self.detached = False
 
-            def send(self, method, params):
+            def send(self, method, params=None):
+                if method == "Target.getTargetInfo":
+                    return {"targetInfo": {"targetId": self.page.target_id}}
                 self.context.cdp_calls.append((method, params))
-                page = CreatedPage(params["url"])
+                page = CreatedPage(params["url"], target_id="target-1")
                 self.context.pages.append(page)
                 return {"targetId": "target-1"}
+
+            def detach(self):
+                self.detached = True
 
         class FakeContext:
             def __init__(self, pages):
@@ -870,7 +902,7 @@ class AxiBackendTests(unittest.TestCase):
                 return page
 
             def new_cdp_session(self, page):
-                return FakeSession(self)
+                return FakeSession(self, page)
 
         dead = DeadPage()
         context = FakeContext([dead])
@@ -939,8 +971,9 @@ class AxiBackendTests(unittest.TestCase):
                 return "Body text"
 
         class FakePage:
-            def __init__(self, url="about:blank"):
+            def __init__(self, url="about:blank", *, target_id="page-target"):
                 self.url = url
+                self.target_id = target_id
                 self.closed = False
                 self.title_value = "Example"
                 self.actionable = FakeElement()
@@ -990,14 +1023,21 @@ class AxiBackendTests(unittest.TestCase):
                 self.pressed = key
 
         class FakeSession:
-            def __init__(self, context):
+            def __init__(self, context, page):
                 self.context = context
+                self.page = page
+                self.detached = False
 
-            def send(self, method, params):
+            def send(self, method, params=None):
+                if method == "Target.getTargetInfo":
+                    return {"targetInfo": {"targetId": self.page.target_id}}
                 self.context.cdp_calls.append((method, params))
-                page = FakePage(params["url"])
+                page = FakePage(params["url"], target_id="target-1")
                 self.context.pages.append(page)
                 return {"targetId": "target-1"}
+
+            def detach(self):
+                self.detached = True
 
         class FakeContext:
             def __init__(self):
@@ -1010,7 +1050,7 @@ class AxiBackendTests(unittest.TestCase):
                 return page
 
             def new_cdp_session(self, page):
-                return FakeSession(self)
+                return FakeSession(self, page)
 
         context = FakeContext()
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"), app_id="surf-agent-test", window_class="surf-agent-window")

@@ -12,8 +12,6 @@ from pathlib import Path
 
 from platformdirs import PlatformDirs
 from typing import Any
-from urllib.parse import urlparse
-
 from ...constants import DEFAULT_PATCHRIGHT_APP_ID
 from ..bridge_common import (
     CLOSED_TARGET_MESSAGE,
@@ -283,36 +281,65 @@ class PatchrightRuntime:
         if old and self._page_is_open(old.page):
             await self._maybe_await(old.page.close())
         target_url = str(url or "about:blank")
+
+        async def create_page() -> Any:
+            startup_page = await self._reuse_startup_page(target_url)
+            if startup_page is not None:
+                return startup_page
+            return await self._create_new_window_page(target_url)
+
         try:
-            page = await self._create_new_window_page(target_url)
+            page = await create_page()
         except Exception as exc:
             if not self._is_closed_target_error(exc):
                 raise
             # Manual window close can close the whole persistent context; recreate it.
             await self._restart_closed_context()
-            page = await self._create_new_window_page(target_url)
+            page = await create_page()
         slot = PageSlot(page=page, page_token=self._next_page_token)
         self._next_page_token += 1
         self.pages[thread] = slot
         return slot
+
+    async def _reuse_startup_page(self, url: str) -> Any | None:
+        if self._open_owned_pages():
+            return None
+        context = self._context()
+        open_pages = [page for page in list(context.pages) if self._page_is_open(page)]
+        if len(open_pages) != 1 or self._page_url(open_pages[0]) not in STARTUP_PAGE_URLS:
+            return None
+        # Only the singular fresh startup page is already ours; restored or concurrent
+        # pages must go through pre-create cleanup and exact CDP target correlation.
+        page = open_pages[0]
+        if url not in STARTUP_PAGE_URLS:
+            await self._maybe_await(page.goto(url, wait_until="domcontentloaded"))
+        return page
 
     async def _create_new_window_page(self, url: str) -> Any:
         context = self._context()
         anchor_page, close_anchor = await self._cdp_anchor_page(context)
         excluded_page_ids = {id(page) for page in self._open_owned_pages()}
         excluded_page_ids.add(id(anchor_page))
-        created_page = None
+        session = None
+        target_id: str | None = None
         try:
             await self._close_unowned_pages(context, keep_ids={id(anchor_page)})
             session = await self._maybe_await(context.new_cdp_session(anchor_page))
-            await self._maybe_await(session.send("Target.createTarget", {"url": url, "newWindow": True, "background": False}))
-            created_page = await self._wait_for_created_target_page(context, url, excluded_page_ids)
-            return created_page
+            response = await self._maybe_await(
+                session.send("Target.createTarget", {"url": url, "newWindow": True, "background": False})
+            )
+            target_id = response.get("targetId") if isinstance(response, dict) else None
+            if not isinstance(target_id, str) or not target_id:
+                raise RuntimeError(f"Patchright CDP Target.createTarget returned no valid target for {url!r}")
+            try:
+                return await self._wait_for_created_target_page(context, url, excluded_page_ids, target_id)
+            except Exception:
+                await self._best_effort_close_target(session, target_id)
+                raise
         finally:
-            if close_anchor and self._page_is_open(anchor_page):
-                await self._maybe_await(anchor_page.close())
-            keep_ids = {id(created_page)} if created_page is not None else set()
-            await self._close_unowned_pages(context, keep_ids=keep_ids)
+            await self._best_effort_detach(session)
+            if close_anchor:
+                await self._best_effort_close_page(anchor_page)
 
     async def _cdp_anchor_page(self, context: Any) -> tuple[Any, bool]:
         owned_pages = self._open_owned_pages()
@@ -340,38 +367,65 @@ class PatchrightRuntime:
                 if not self._is_closed_target_error(exc):
                     raise
 
-    async def _wait_for_created_target_page(self, context: Any, url: str, excluded_page_ids: set[int]) -> Any:
+    async def _wait_for_created_target_page(
+        self, context: Any, url: str, excluded_page_ids: set[int], target_id: str
+    ) -> Any:
         deadline = time.monotonic() + CDP_NEW_WINDOW_TIMEOUT_S
-        latest_candidates: list[Any] = []
         while time.monotonic() < deadline:
             candidates = [
                 page
                 for page in list(context.pages)
                 if id(page) not in excluded_page_ids and self._page_is_open(page)
             ]
-            matching = [page for page in candidates if self._page_matches_requested_url(page, url)]
-            if matching:
-                return matching[-1]
-            latest_candidates = candidates
+            for page in candidates:
+                if await self._page_target_id(context, page) == target_id:
+                    return page
             await asyncio.sleep(CDP_NEW_WINDOW_POLL_INTERVAL_S)
-        if len(latest_candidates) == 1:
-            return latest_candidates[0]
-        raise RuntimeError(f"Patchright CDP Target.createTarget did not expose a new page for {url!r}")
+        raise RuntimeError(
+            f"Patchright CDP Target.createTarget did not expose target {target_id!r} for {url!r}"
+        )
 
-    def _page_matches_requested_url(self, page: Any, requested_url: str) -> bool:
-        page_url = self._page_url(page)
-        if requested_url in STARTUP_PAGE_URLS:
-            return page_url in STARTUP_PAGE_URLS
-        if page_url == requested_url:
-            return True
-        return self._normalized_url(page_url) == self._normalized_url(requested_url)
+    async def _page_target_id(self, context: Any, page: Any) -> str | None:
+        session = None
+        try:
+            session = await self._maybe_await(context.new_cdp_session(page))
+            response = await self._maybe_await(session.send("Target.getTargetInfo"))
+            target_id = response["targetInfo"]["targetId"]
+            if not isinstance(target_id, str) or not target_id:
+                raise RuntimeError("Patchright CDP Target.getTargetInfo returned no valid targetId")
+            if not self._page_is_open(page):
+                return None
+            return target_id
+        except Exception as exc:
+            if self._is_closed_target_error(exc) or not self._page_is_open(page):
+                return None
+            raise
+        finally:
+            await self._best_effort_detach(session)
 
-    def _normalized_url(self, value: str) -> str:
-        parsed = urlparse(value)
-        if parsed.scheme in {"http", "https"} and parsed.netloc:
-            path = parsed.path or "/"
-            return parsed._replace(path=path).geturl()
-        return value
+    async def _best_effort_close_target(self, session: Any, target_id: str) -> None:
+        try:
+            await self._maybe_await(session.send("Target.closeTarget", {"targetId": target_id}))
+        except Exception:
+            return
+
+    async def _best_effort_detach(self, session: Any | None) -> None:
+        if session is None:
+            return
+        detach = getattr(session, "detach", None)
+        if detach is None:
+            return
+        try:
+            await self._maybe_await(detach())
+        except Exception:
+            return
+
+    async def _best_effort_close_page(self, page: Any) -> None:
+        try:
+            if self._page_is_open(page):
+                await self._maybe_await(page.close())
+        except Exception:
+            return
 
     def _page_url(self, page: Any) -> str:
         return str(getattr(page, "url", "") or "")
