@@ -25,7 +25,7 @@ class Context:
         self.closed = True
 
 
-def test_patchright_launch_uses_system_keychain_for_imported_v11_cookies(monkeypatch, tmp_path: Path) -> None:
+def test_patchright_launch_uses_host_theme_and_keychain(monkeypatch, tmp_path: Path) -> None:
     from surf_agent.backends.patchright import bridge
 
     launch_options: dict[str, object] = {}
@@ -61,6 +61,7 @@ def test_patchright_launch_uses_system_keychain_for_imported_v11_cookies(monkeyp
         "channel": "chrome",
         "headless": False,
         "no_viewport": True,
+        "color_scheme": "null",
         "chromium_sandbox": True,
         "args": ["--class=Surf Agent", "--name=surf-agent"],
         "ignore_default_args": ("--password-store=basic", "--use-mock-keychain"),

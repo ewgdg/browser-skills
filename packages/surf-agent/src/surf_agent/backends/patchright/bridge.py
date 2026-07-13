@@ -112,6 +112,8 @@ class PatchrightRuntime:
                 channel="chrome",
                 headless=self.headless,
                 no_viewport=True,
+                # Patchright otherwise emulates light mode instead of honoring the desktop theme.
+                color_scheme="null",
                 chromium_sandbox=True,
                 args=launch_args,
                 ignore_default_args=PATCHRIGHT_INCOMPATIBLE_DEFAULT_ARGS,

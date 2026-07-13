@@ -48,6 +48,7 @@ open, new, snapshot, text, click, fill, type, press, scroll, wait, back, screens
 
 - Uses `patchright.async_api.async_playwright()` on a persistent `asyncio.Runner`.
 - Launches a persistent Chrome-channel context with `launch_persistent_context(..., channel="chrome", no_viewport=True)`.
+- Resets Patchright's color-scheme emulation so pages follow the desktop theme.
 - Uses `--name=<app_id>` flag form to avoid Chromium treating the app id as a page target.
 
 ## Limitations
