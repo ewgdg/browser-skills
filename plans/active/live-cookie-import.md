@@ -90,7 +90,7 @@ Own Chrome-family lifecycle coordination:
 - Interprocess lifecycle lock around import/start and zero-page stop/recheck decisions.
 - Destination profile activity detection, including manual `profile open` Chrome processes.
 - Pre-start cookie import ordering.
-- Two-second zero-user-visible-page grace policy.
+- Backend-specific zero-user-visible-page shutdown: AXI rechecks after two seconds; Patchright stops immediately after the close response.
 - Test injection seams for clock, sleeper, process inspection, and importer.
 
 ### Existing backend integration
@@ -98,8 +98,8 @@ Own Chrome-family lifecycle coordination:
 - `backends/axi.py`: centralize startup preflight; actual page inventory drives idle shutdown.
 - `backends/local_bridge.py`: accept a narrow pre-start callback/coordinator rather than importing cookie policy.
 - `backends/patchright/backend.py`: supply the active Patchright profile and pre-start coordinator.
-- `backends/patchright/bridge.py`: track a shutdown deadline on the bridge/runtime thread; never call Playwright objects from a `threading.Timer`.
-- `backends/bridge_common.py`: if needed, add a server `service_actions()` seam that checks Patchright’s deadline after responses.
+- `backends/patchright/bridge.py`: request shutdown on the bridge/runtime thread after the final close response; never call Playwright objects from a `threading.Timer`.
+- `backends/bridge_common.py`: if needed, add a server `service_actions()` seam that handles Patchright shutdown after responses.
 - `cli.py`: command parsing/dispatch and construction only.
 
 ## Work plan
@@ -238,16 +238,16 @@ AXI tests:
 
 Patchright tests:
 
-- Closing the final visible `context.pages` entry arms a deadline only after the close response can complete.
-- A new/open page cancels the deadline.
+- Closing the final visible `context.pages` entry requests shutdown only after the close response can complete.
 - Unmanaged normal pages count; service workers/background targets do not.
-- Deadline expiry closes the persistent context and requests HTTP bridge shutdown on its existing runtime/server thread.
+- The runtime closes the persistent context and requests HTTP bridge shutdown on its existing runtime/server thread.
 - Context recovery or transient empty state is not mistaken for user-requested idle shutdown.
+- A request interrupted by an independently closed persistent context starts a fresh bridge and retries once.
 
 Implementation guidance:
 
 - Do not use `threading.Timer` with Patchright’s Playwright objects or persistent `asyncio.Runner`; they are thread-affine.
-- Prefer a deadline checked by the single-threaded HTTP server’s `service_actions()` or equivalent loop hook.
+- Use the single-threaded HTTP server’s `service_actions()` or equivalent loop hook to stop only after the close response is written.
 - Auto-stop failure should warn and leave the runtime alive; it must not turn a successful page close into a cookie-import failure.
 
 This checkpoint intentionally replaces existing documentation/tests asserting that `close` always leaves the bridge alive.
@@ -335,4 +335,4 @@ The importer accepts a `cookies` table only when source and destination have ide
 
 No ADR deviation was made. New-destination publication is no-replace: Local State is created with exclusive creation and the staged Cookies database is published by same-filesystem hard link, so a concurrently appearing artifact is preserved; only the importer-created Local State is rolled back after a failed second publication. Runtime import revalidates configured source roots, profile leaves, cookie databases, and sidecars as regular non-symlink paths before and around backup.
 
-AXI idle stop is evaluated only after Surf-observed `close` or `close-matching` operations using two successful user-visible-page inventories and one two-second recheck. It does not install a resident observer for independent manual closes; that remains outside V1. If AXI cannot provide a parseable page inventory, Surf leaves the bridge alive. Patchright closed-context recovery intentionally terminates the bridge instead of relaunching its persistent context in-process; the triggering request fails and the next request starts a fresh bridge through `LocalBridgeClient.before_start`, which reruns lifecycle preflight. Patchright also excludes its `--password-store=basic` and `--use-mock-keychain` defaults at persistent-context launch, because imported Linux v11 cookies require Chrome’s real OS password store/keychain. Future work, if approved, can add real-browser smoke coverage for supported Chrome-family releases.
+AXI idle stop is evaluated only after Surf-observed `close` or `close-matching` operations using two successful user-visible-page inventories and one two-second recheck. It does not install a resident observer for independent manual closes; that remains outside V1. If AXI cannot provide a parseable page inventory, Surf leaves the bridge alive. Patchright stops immediately after returning the final close response because Chrome may already have closed the persistent context. Closed-context recovery terminates the stale bridge, reruns lifecycle preflight through `LocalBridgeClient.before_start`, and retries the interrupted request once. Patchright also excludes its `--password-store=basic` and `--use-mock-keychain` defaults at persistent-context launch, because imported Linux v11 cookies require Chrome’s real OS password store/keychain. Future work, if approved, can add real-browser smoke coverage for supported Chrome-family releases.

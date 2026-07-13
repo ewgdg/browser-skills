@@ -1390,7 +1390,7 @@ def print_help(stream: Any) -> None:
         "  surf-agent [--thread ID] state                 print current page state; does not open a page\n"
         "  surf-agent list                                list remembered browser threads and clean stale entries\n"
         "  surf-agent [--thread ID] new                   replace/create dedicated thread window, print page id\n"
-        "  surf-agent [--thread ID] close                 close remembered thread page/window; idle bridge may stop after grace\n"
+        "  surf-agent [--thread ID] close                 close remembered thread page/window; idle bridge may stop\n"
         "  surf-agent [--thread ID] focus                 select remembered thread page\n"
         "  surf-agent profile show                         print dedicated profile configuration JSON\n"
         "  surf-agent profile open [url]                   open dedicated profile without automation/debug port\n"

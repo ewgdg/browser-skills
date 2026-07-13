@@ -11,8 +11,10 @@ from pathlib import Path
 from typing import Any, Callable, ContextManager
 
 from ..constants import CHROME_NEW_WINDOW_TIMEOUT_S
-from ..errors import BridgeUnavailable, SurfAgentError
+from ..errors import BridgeToolError, BridgeUnavailable, SurfAgentError
 from .base import AgentPage, ScreenshotOptions
+
+BRIDGE_HEALTH_POLL_INTERVAL_S = 0.05
 
 
 class LocalBridgeClient:
@@ -63,7 +65,7 @@ class LocalBridgeClient:
                 detail = parsed.get("error") or detail
             except json.JSONDecodeError:
                 pass
-            raise SurfAgentError(f"{self.backend_label} bridge tool {name} failed: {detail}") from exc
+            raise BridgeToolError(backend_label=self.backend_label, tool_name=name, detail=str(detail)) from exc
         except TimeoutError as exc:
             raise self._tool_timeout(name, exc) from exc
         except urllib.error.URLError as exc:
@@ -137,6 +139,13 @@ class LocalBridgeClient:
                 return response.status == 200 and data.get("status") == "ok"
         except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
             return False
+
+    def _wait_until_stopped(self) -> None:
+        deadline = time.monotonic() + CHROME_NEW_WINDOW_TIMEOUT_S
+        while self._health_ok():
+            if time.monotonic() >= deadline:
+                raise BridgeUnavailable(f"{self.backend_label} bridge did not stop after requesting restart")
+            time.sleep(BRIDGE_HEALTH_POLL_INTERVAL_S)
 
 
 def _is_timeout_url_error(error: urllib.error.URLError) -> bool:

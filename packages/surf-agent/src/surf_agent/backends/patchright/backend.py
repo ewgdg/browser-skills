@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ...constants import PATCHRIGHT_BACKEND
-from ...errors import SurfAgentError
+from ...errors import BridgeToolError, SurfAgentError
 from ...chrome_lifecycle import browser_executable_family
 from ..local_bridge import LocalBridgeBackend, LocalBridgeClient, stable_local_page_id
+from .constants import CONTEXT_RESTART_REQUIRED
 
 PATCHRIGHT_INSTALL_HINT = (
     'run `uv tool install "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"`, '
@@ -28,6 +29,18 @@ class PatchrightBridgeClient(LocalBridgeClient):
             startup_error=PATCHRIGHT_INSTALL_HINT,
             timeout_hint="; restart it with `surf-agent bridge stop` if it stays wedged",
         )
+
+    def call_tool(self, name: str, args: dict[str, Any] | None = None) -> str:
+        try:
+            return super().call_tool(name, args)
+        except BridgeToolError as exc:
+            if exc.detail != CONTEXT_RESTART_REQUIRED:
+                raise
+        # The stale server still answers health briefly; wait so lifecycle preflight
+        # starts a fresh bridge instead of replaying against the dead context.
+        self._wait_until_stopped()
+        # This sentinel is raised before the interrupted operation can complete.
+        return super().call_tool(name, args)
 
 
 class PatchrightBackend(LocalBridgeBackend):

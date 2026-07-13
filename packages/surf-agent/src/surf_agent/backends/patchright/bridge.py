@@ -14,6 +14,7 @@ from pathlib import Path
 from platformdirs import PlatformDirs
 from typing import Any
 from ...constants import DEFAULT_PATCHRIGHT_APP_ID
+from .constants import CONTEXT_RESTART_REQUIRED
 from ..bridge_common import (
     CLOSED_TARGET_MESSAGE,
     NATIVE_ARIA_REF_PATTERN,
@@ -29,7 +30,6 @@ SNAPSHOT_ARIA_TIMEOUT_MS = 3_000
 SNAPSHOT_BODY_TIMEOUT_MS = 3_000
 CDP_NEW_WINDOW_TIMEOUT_S = 3.0
 CDP_NEW_WINDOW_POLL_INTERVAL_S = 0.05
-CONTEXT_RESTART_REQUIRED = "Patchright persistent context closed; bridge restart required"
 # Linux v11 cookies require Chrome’s real OS password store/keychain, not Patchright automation defaults.
 PATCHRIGHT_INCOMPATIBLE_DEFAULT_ARGS = ("--password-store=basic", "--use-mock-keychain")
 
@@ -40,7 +40,7 @@ except ImportError:
 
 
 class PatchrightRuntime:
-    def __init__(self, *, profile_dir: Path, headless: bool = False, app_id: str = DEFAULT_PATCHRIGHT_APP_ID, window_class: str | None = None, clock: Any = time.monotonic) -> None:
+    def __init__(self, *, profile_dir: Path, headless: bool = False, app_id: str = DEFAULT_PATCHRIGHT_APP_ID, window_class: str | None = None) -> None:
         self.profile_dir = profile_dir
         self.headless = headless
         self.app_id = app_id
@@ -50,9 +50,8 @@ class PatchrightRuntime:
         self.pages: dict[str, PageSlot] = {}
         self._next_page_token = 1
         self._runner: asyncio.Runner | None = None
-        self.clock = clock
-        self.idle_shutdown_deadline: float | None = None
-        self._idle_close_pending = False
+        self.shutdown_requested = False
+        self._close_shutdown_pending = False
         self.restart_requested = False
 
     def start(self) -> None:
@@ -104,7 +103,7 @@ class PatchrightRuntime:
         else:
             playwright = self.manager.__enter__()
         # Chrome channel keeps existing Chrome profile behavior; bundled browsers break that reuse.
-        self._cancel_idle_shutdown()
+        self._cancel_shutdown_request()
         self.browser_or_context = await self._maybe_await(
             playwright.chromium.launch_persistent_context(
                 user_data_dir=str(self.profile_dir),
@@ -128,7 +127,7 @@ class PatchrightRuntime:
         self.manager = None
         self.browser_or_context = None
         self.pages.clear()
-        self._cancel_idle_shutdown()
+        self._cancel_shutdown_request()
         return "stopped\n"
 
     async def _call_async(self, name: str, args: dict[str, Any]) -> str:
@@ -148,7 +147,7 @@ class PatchrightRuntime:
             if old:
                 await self._maybe_await(old.page.close())
             # The HTTP handler arms this only after its success response is written.
-            self._idle_close_pending = True
+            self._close_shutdown_pending = True
             return "closed\n"
         if name == "close-matching":
             pattern = str(args.get("pattern") or "").strip()
@@ -168,7 +167,7 @@ class PatchrightRuntime:
                     result["closed"].append(item)
             # The HTTP handler arms this only after its success response is written.
             if not result["failed"]:
-                self._idle_close_pending = True
+                self._close_shutdown_pending = True
             return json.dumps(result, sort_keys=True) + "\n"
         if name == "scroll" and str(args.get("direction") or "down") not in {"up", "down", "top", "bottom"}:
             raise RuntimeError("scroll requires direction: up, down, top, or bottom")
@@ -250,21 +249,19 @@ class PatchrightRuntime:
         raise RuntimeError(f"unsupported Patchright command: {name}")
 
     def after_response(self, name: str) -> None:
-        if name not in {"close", "close-matching"} or not self._idle_close_pending:
+        if name not in {"close", "close-matching"} or not self._close_shutdown_pending:
             return
-        self._idle_close_pending = False
+        self._close_shutdown_pending = False
         if self._visible_pages():
             return
-        self.idle_shutdown_deadline = self.clock() + 2.0
+        self.shutdown_requested = True
 
     def service_actions(self) -> bool:
-        deadline = self.idle_shutdown_deadline
-        if deadline is None or self.clock() < deadline:
+        if not self.shutdown_requested:
             return False
         if self._visible_pages():
-            self._cancel_idle_shutdown()
+            self._cancel_shutdown_request()
             return False
-        self.idle_shutdown_deadline = None
         try:
             self.stop()
         except Exception as exc:
@@ -278,9 +275,9 @@ class PatchrightRuntime:
             return []
         return [page for page in list(self.browser_or_context.pages) if self._page_is_open(page)]
 
-    def _cancel_idle_shutdown(self) -> None:
-        self.idle_shutdown_deadline = None
-        self._idle_close_pending = False
+    def _cancel_shutdown_request(self) -> None:
+        self.shutdown_requested = False
+        self._close_shutdown_pending = False
 
     def _context(self) -> Any:
         if self.browser_or_context is None:
@@ -297,7 +294,7 @@ class PatchrightRuntime:
         return await self._new_page(thread)
 
     async def _new_page(self, thread: str, url: str | None = None) -> PageSlot:
-        self._cancel_idle_shutdown()
+        self._cancel_shutdown_request()
         old = self.pages.pop(thread, None)
         if old and self._page_is_open(old.page):
             await self._maybe_await(old.page.close())
@@ -465,7 +462,7 @@ class PatchrightRuntime:
         # Patchright objects are thread-affine and this is the bridge server thread.
         # Stop and request a fresh bridge process so LocalBridgeClient.before_start
         # performs the cookie preflight before the next persistent-context launch.
-        self._cancel_idle_shutdown()
+        self._cancel_shutdown_request()
         try:
             await self._stop_async()
         except Exception:

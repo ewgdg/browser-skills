@@ -37,7 +37,7 @@ First close Surf pages:
 surf-agent close-all
 ```
 
-Wait for the bridge's two-second idle shutdown, then run:
+Wait for the bridge to stop (Patchright stops immediately; AXI rechecks after two seconds), then run:
 
 ```bash
 surf-agent profile import-cookies

@@ -68,37 +68,35 @@ def test_patchright_launch_uses_host_theme_and_keychain(monkeypatch, tmp_path: P
     }
 
 
-def test_patchright_arms_idle_only_after_close_response_and_cancels_for_visible_page() -> None:
-    now = [10.0]
+def test_patchright_requests_shutdown_only_after_final_close_response() -> None:
     page = Page()
     context = Context([page])
-    runtime = PatchrightRuntime(profile_dir=Path("/tmp/patchright-idle"), clock=lambda: now[0])
+    runtime = PatchrightRuntime(profile_dir=Path("/tmp/patchright-idle"))
     runtime.browser_or_context = context
     runtime.pages["thread"] = __import__("surf_agent.backends.bridge_common", fromlist=["PageSlot"]).PageSlot(page=page, page_token=1)
 
     assert runtime.call("close", {"thread": "thread"}) == "closed\n"
-    assert runtime.idle_shutdown_deadline is None
+    assert runtime.shutdown_requested is False
     runtime.after_response("close")
-    assert runtime.idle_shutdown_deadline == 12.0
-
-    context.pages.append(Page())
-    now[0] = 13.0
-    assert runtime.service_actions() is False
-    assert context.closed is False
-
-
-def test_patchright_service_action_stops_empty_context_at_deadline() -> None:
-    now = [0.0]
-    page = Page()
-    context = Context([page])
-    runtime = PatchrightRuntime(profile_dir=Path("/tmp/patchright-idle"), clock=lambda: now[0])
-    runtime.browser_or_context = context
-    runtime.pages["thread"] = __import__("surf_agent.backends.bridge_common", fromlist=["PageSlot"]).PageSlot(page=page, page_token=1)
-    runtime.call("close", {"thread": "thread"})
-    runtime.after_response("close")
-    now[0] = 3.0
+    assert runtime.shutdown_requested is True
     assert runtime.service_actions() is True
     assert runtime.browser_or_context is None
+
+
+def test_patchright_final_close_keeps_bridge_when_visible_page_remains() -> None:
+    page = Page()
+    context = Context([page])
+    runtime = PatchrightRuntime(profile_dir=Path("/tmp/patchright-idle"))
+    runtime.browser_or_context = context
+    runtime.pages["thread"] = __import__("surf_agent.backends.bridge_common", fromlist=["PageSlot"]).PageSlot(page=page, page_token=1)
+
+    runtime.call("close", {"thread": "thread"})
+    context.pages.append(Page())
+    runtime.after_response("close")
+
+    assert runtime.shutdown_requested is False
+    assert runtime.service_actions() is False
+    assert context.closed is False
 
 
 def test_closed_context_recovery_requests_fresh_bridge_restart_without_direct_relaunch() -> None:

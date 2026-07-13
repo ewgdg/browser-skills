@@ -196,46 +196,39 @@ def test_close_matching_keeps_failed_slot_and_continues_with_later_threads(tmp_p
     assert set(runtime.pages) == {"agent-a", "other"}
 
 
-def test_close_all_arms_idle_after_response_and_stops_after_grace(tmp_path: Path) -> None:
-    now = [10.0]
+def test_close_all_requests_shutdown_after_response(tmp_path: Path) -> None:
     events: list[str] = []
     page = Page(events, "agent-a")
     context = Context([page])
     runtime = runtime_with_pages(tmp_path, {"agent-a": (page, 10)})
     runtime.browser_or_context = context
-    runtime.clock = lambda: now[0]
 
     assert json.loads(runtime.call("close-matching", {"pattern": "*"})) == {
         "closed": [{"page_id": 10, "thread": "agent-a"}],
         "failed": [],
         "pattern": "*",
     }
-    assert runtime.idle_shutdown_deadline is None
+    assert runtime.shutdown_requested is False
 
     runtime.after_response("close-matching")
-    assert runtime.idle_shutdown_deadline == 12.0
-
-    now[0] = 12.1
+    assert runtime.shutdown_requested is True
     assert runtime.service_actions() is True
     assert runtime.browser_or_context is None
 
 
-def test_close_all_idle_shutdown_is_cancelled_by_new_visible_page(tmp_path: Path) -> None:
-    now = [10.0]
+def test_close_all_keeps_bridge_running_when_visible_page_remains(tmp_path: Path) -> None:
     events: list[str] = []
     page = Page(events, "agent-a")
     context = Context([page])
     runtime = runtime_with_pages(tmp_path, {"agent-a": (page, 10)})
     runtime.browser_or_context = context
-    runtime.clock = lambda: now[0]
 
     runtime.call("close-matching", {"pattern": "*"})
-    runtime.after_response("close-matching")
     context.pages.append(Page(events, "new-visible"))
+    runtime.after_response("close-matching")
 
-    now[0] = 12.1
     assert runtime.service_actions() is False
-    assert runtime.idle_shutdown_deadline is None
+    assert runtime.shutdown_requested is False
     assert runtime.browser_or_context is context
 
 

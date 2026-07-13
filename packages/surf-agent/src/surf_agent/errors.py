@@ -9,3 +9,9 @@ class SurfAgentError(RuntimeError):
 
 class BridgeUnavailable(SurfAgentError):
     pass
+
+
+class BridgeToolError(SurfAgentError):
+    def __init__(self, *, backend_label: str, tool_name: str, detail: str) -> None:
+        self.detail = detail
+        super().__init__(f"{backend_label} bridge tool {tool_name} failed: {detail}")
