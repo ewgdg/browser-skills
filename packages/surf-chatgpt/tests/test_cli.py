@@ -243,7 +243,7 @@ class CliValidationTests(unittest.TestCase):
         options = mocked.call_args.args[1]
         self.assertTrue(options.allow_logged_out)
 
-    def test_login_opens_surf_agent_profile(self):
+    def test_login_opens_and_focuses_chatgpt_through_bridge(self):
         class FakeSurfRunner:
             def __init__(self):
                 self.calls = []
@@ -257,7 +257,13 @@ class CliValidationTests(unittest.TestCase):
             out = io.StringIO()
             code = cli.main(["login"], stdout=out)
         self.assertEqual(code, 0)
-        self.assertEqual(fake_runner.calls, [(["profile", "open", "https://chatgpt.com/"], 30, None)])
+        self.assertEqual(
+            fake_runner.calls,
+            [
+                (["open", "https://chatgpt.com/"], 30, "surf-chatgpt-login"),
+                (["focus"], 10, "surf-chatgpt-login"),
+            ],
+        )
         payload = json.loads(out.getvalue())
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["action"], "login_opened")

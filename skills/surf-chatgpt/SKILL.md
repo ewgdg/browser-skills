@@ -30,7 +30,7 @@ uv tool install \
 Also required:
 
 - surf-agent browser backend configured and able to open pages.
-- Logged in to `chatgpt.com` in the surf-agent browser profile. Use `surf-chatgpt login` or the surf skill/profile command: `surf-agent profile open https://chatgpt.com/`.
+- Logged in to `chatgpt.com` in the surf-agent browser profile. Run `surf-chatgpt login`; it opens and focuses a dedicated login window through the normal Surf bridge, including when the bridge is already running.
 
 ## Commands
 

@@ -13,6 +13,9 @@ from .models import normalize_model_choice
 from .surf import SurfRunner
 from .web_sessions import search_web_sessions
 
+LOGIN_THREAD = "surf-chatgpt-login"
+CHATGPT_URL = "https://chatgpt.com/"
+
 
 class JsonArgumentParser(argparse.ArgumentParser):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -187,13 +190,15 @@ def _handle_session(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _handle_login() -> dict[str, Any]:
-    SurfRunner().run_text(["profile", "open", "https://chatgpt.com/"], timeout=30)
+    runner = SurfRunner()
+    runner.run_text(["open", CHATGPT_URL], timeout=30, thread=LOGIN_THREAD)
+    runner.run_text(["focus"], timeout=10, thread=LOGIN_THREAD)
     return {
         "ok": True,
         "source": SOURCE_LABEL,
         "action": "login_opened",
-        "url": "https://chatgpt.com/",
-        "message": "Log in to ChatGPT in the opened Surf Agent browser profile, then retry surf-chatgpt.",
+        "url": CHATGPT_URL,
+        "message": "Log in to ChatGPT in the opened Surf Agent browser window, then retry surf-chatgpt.",
     }
 
 
