@@ -1443,17 +1443,16 @@ class AxiBackendTests(unittest.TestCase):
 
             self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "select_page", {"pageId": 22, "bringToFront": True}]])
 
-    def test_close_closes_page_and_never_stops_bridge(self):
+    def test_close_starts_idle_shutdown_recheck(self):
         with TemporaryDirectory() as tmp:
             state_file = Path(tmp) / "thread.json"
             state_file.write_text(json.dumps(page_state(22)))
             agent = FakeAxiAgent(["closed\n"], state_file=state_file)
+            with patch.object(agent.browser_backend, "_stop_idle_bridge_if_needed") as idle:
+                self.assertEqual(agent.close(), 0)
 
-            self.assertEqual(agent.close(), 0)
-
-        commands = [call[0] for call in agent.calls]
-        self.assertEqual(commands, [["bridge", "close_page", {"pageId": 22}]])
-        self.assertNotIn(["axi", "stop"], commands)
+        self.assertEqual([call[0] for call in agent.calls], [["bridge", "close_page", {"pageId": 22}]])
+        idle.assert_called_once_with()
         self.assertFalse(state_file.exists())
 
     def test_stale_page_state_is_cleared_without_creating_page(self):
@@ -1495,14 +1494,14 @@ class AxiBackendTests(unittest.TestCase):
             )
 
             output = io.StringIO()
-            with redirect_stdout(output):
+            with patch.object(agent.browser_backend, "_stop_idle_bridge_if_needed") as idle, redirect_stdout(output):
                 exit_code = agent.close_matching("agent-a-*")
 
             payload = json.loads(output.getvalue())
             commands = [call[0] for call in agent.calls]
             self.assertEqual(exit_code, 0)
             self.assertEqual(commands, [["bridge", "close_page", {"pageId": 101}], ["bridge", "close_page", {"pageId": 102}], ["bridge", "close_page", {"pageId": 999}]])
-            self.assertNotIn(["axi", "stop"], commands)
+            idle.assert_called_once_with()
             self.assertEqual(payload["stale"], [])
             self.assertEqual(payload["closed"], [{"thread": "agent-a-1", "page_id": 101}, {"thread": "agent-a-2", "page_id": 102}, {"thread": "agent-a-stale", "page_id": 999}])
             self.assertFalse((state_dir / "agent-a-1.json").exists())
@@ -2342,3 +2341,100 @@ class AxiBackendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AxiIdleSafetyTests(unittest.TestCase):
+    def test_idle_inventory_failure_is_unknown_and_background_targets_do_not_count(self):
+        from surf_agent.backends.axi import parse_axi_user_visible_pages
+
+        self.assertEqual(parse_axi_user_visible_pages('{"pages":[{"pageId":1,"type":"service_worker"}]}'), [])
+        self.assertEqual([page.page_id for page in parse_axi_user_visible_pages('{"pages":[{"pageId":2,"type":"page"}]}')], [2])
+        with self.assertRaises(SurfAgentError):
+            parse_axi_user_visible_pages("unparseable bridge output")
+
+
+class LaunchPreflightTests(unittest.TestCase):
+    def test_axi_profile_open_runs_under_lifecycle_launch_guard(self):
+        class Guard:
+            def __init__(self):
+                self.events = []
+
+            def launch_guard(self, *, health_check):
+                from contextlib import contextmanager
+
+                @contextmanager
+                def guard():
+                    self.events.append("entered")
+                    self.assert_false(health_check())
+                    yield
+                    self.events.append("exited")
+
+                return guard()
+
+            @staticmethod
+            def assert_false(value):
+                assert value is False
+
+        with TemporaryDirectory() as tmp:
+            agent = FakeAxiAgent([""], chrome_profile_dir=Path(tmp) / "profile")
+            guard = Guard()
+            agent.lifecycle = guard
+            with patch.object(agent, "_chrome_debug_endpoint_ready", return_value=False):
+                self.assertEqual(agent.profile_open(), 0)
+        self.assertEqual(guard.events, ["entered", "exited"])
+
+    def test_patchright_profile_open_runs_under_lifecycle_launch_guard(self):
+        class Guard:
+            def __init__(self):
+                self.events = []
+
+            def launch_guard(self, *, health_check):
+                from contextlib import contextmanager
+
+                @contextmanager
+                def guard():
+                    self.events.append("entered")
+                    assert health_check() is False
+                    yield
+                    self.events.append("exited")
+
+                return guard()
+
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_BACKEND": "patchright"}, clear=True):
+            agent = FakeAxiAgent([], patchright_profile_dir=Path(tmp) / "profile")
+            guard = Guard()
+            agent.lifecycle = guard
+            with patch.object(agent.patchright_client, "_health_ok", return_value=False), patch("surf_agent.backends.patchright.backend.subprocess.Popen", return_value=object()):
+                self.assertEqual(agent.profile_open(), 0)
+        self.assertEqual(guard.events, ["entered", "exited"])
+
+
+class LaunchFailureTests(unittest.TestCase):
+    def test_axi_profile_open_import_failure_prevents_browser_launch(self):
+        class FailingImporter:
+            def run(self, force):
+                raise SurfAgentError("import failed")
+
+        with TemporaryDirectory() as tmp:
+            agent = FakeAxiAgent([], chrome_profile_dir=Path(tmp) / "profile")
+            from surf_agent.chrome_lifecycle import ChromeLifecycleCoordinator
+
+            agent.lifecycle = ChromeLifecycleCoordinator(
+                destination_root=agent.chrome_profile_dir,
+                state_root=Path(tmp) / "state",
+                importer=FailingImporter(),
+                process_inspector=lambda _path: False,
+            )
+            with patch.object(agent, "_chrome_debug_endpoint_ready", return_value=False), self.assertRaisesRegex(SurfAgentError, "import failed"):
+                agent.profile_open()
+        self.assertEqual(agent.calls, [])
+
+
+class PatchrightExecutableTests(unittest.TestCase):
+    def test_patchright_profile_open_rejects_non_chrome_executable(self):
+        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_BACKEND": "patchright"}, clear=True):
+            agent = FakeAxiAgent([], patchright_profile_dir=Path(tmp) / "profile")
+            agent.chrome_bin = "chromium"
+            with patch.object(agent.patchright_client, "_health_ok", return_value=False), self.assertRaisesRegex(SurfAgentError, "Google Chrome"):
+                agent.profile_open()
+        self.assertEqual(agent.calls, [])

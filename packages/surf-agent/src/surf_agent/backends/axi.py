@@ -318,6 +318,7 @@ class AxiBackend:
         except SurfAgentError:
             return 1
         self.agent.reset_state()
+        self._stop_idle_bridge_if_needed()
         return 0
 
     def _close_matching_axi(self, pattern: str) -> int:
@@ -351,6 +352,8 @@ class AxiBackend:
                 result["closed"].append(item)
 
         print(json.dumps(result, sort_keys=True))
+        if result["closed"]:
+            self._stop_idle_bridge_if_needed()
         return 1 if result["failed"] else 0
 
     def _require_current_axi_page(self) -> Any:
@@ -413,21 +416,22 @@ class AxiBackend:
         return pages
 
     def _open_chrome_window(self, url: str) -> None:
-        if not self.agent.chrome_bin:
-            raise SurfAgentError("could not find Chrome executable for dedicated Surf Agent window; set SURF_AGENT_CHROME_BIN")
-        if self.agent._uses_dedicated_chrome_profile():
-            self._ensure_dedicated_chrome_running()
-        command = [*shlex.split(self.agent.chrome_bin), f"--class={self.agent.chrome_class}"]
-        if self.agent._uses_dedicated_chrome_profile():
-            command.append(f"--user-data-dir={self.agent.chrome_profile_dir}")
-        # Use a normal window for human-in-the-loop login/unblock UX: toolbar,
-        # back/forward controls, and extension UI. Raw --app remains a possible
-        # future mode if a bare app shell becomes more important than usability.
-        command.extend(["--new-window", url])
-        proc = self.agent._subprocess_run(command, check=False, text=True, capture_output=True, timeout=CHROME_NEW_WINDOW_TIMEOUT_S)
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "Chrome --new-window failed").strip()
-            raise SurfAgentError(detail)
+        with self.agent._axi_startup_guard():
+            if not self.agent.chrome_bin:
+                raise SurfAgentError("could not find Chrome executable for dedicated Surf Agent window; set SURF_AGENT_CHROME_BIN")
+            if self.agent._uses_dedicated_chrome_profile():
+                self._ensure_dedicated_chrome_running()
+            command = [*shlex.split(self.agent.chrome_bin), f"--class={self.agent.chrome_class}"]
+            if self.agent._uses_dedicated_chrome_profile():
+                command.append(f"--user-data-dir={self.agent.chrome_profile_dir}")
+            # Use a normal window for human-in-the-loop login/unblock UX: toolbar,
+            # back/forward controls, and extension UI. Raw --app remains a possible
+            # future mode if a bare app shell becomes more important than usability.
+            command.extend(["--new-window", url])
+            proc = self.agent._subprocess_run(command, check=False, text=True, capture_output=True, timeout=CHROME_NEW_WINDOW_TIMEOUT_S)
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "Chrome --new-window failed").strip()
+                raise SurfAgentError(detail)
 
     def _refresh_and_save_axi_state(self, fallback: Any) -> Any:
         page = self._refresh_axi_page(fallback) or fallback
@@ -451,9 +455,7 @@ class AxiBackend:
         try:
             return self.agent.bridge_client.call_tool("select_page", args)
         except AxiBridgeUnavailable:
-            if self.agent._uses_dedicated_chrome_profile():
-                self._ensure_dedicated_chrome_running()
-            self._run_axi_cli_text(["start"])
+            self._start_axi_bridge()
             return self.agent.bridge_client.call_tool("select_page", args)
 
     def _axi_pages(self, *, allow_failure: bool) -> list[Any]:
@@ -486,9 +488,7 @@ class AxiBackend:
         try:
             result = self.agent.bridge_client.call_tool(tool_name, tool_args)
         except AxiBridgeUnavailable:
-            if self.agent._uses_dedicated_chrome_profile():
-                self._ensure_dedicated_chrome_running()
-            self._run_axi_cli_text(["start"])
+            self._start_axi_bridge()
             result = self.agent.bridge_client.call_tool(tool_name, tool_args)
         return formatter(result)
 
@@ -526,6 +526,26 @@ class AxiBackend:
 
     def _save_axi_state(self, page: Any) -> None:
         save_state_file(self.agent.state_file, page)
+
+    def _start_axi_bridge(self) -> None:
+        with self.agent._axi_startup_guard():
+            if self.agent._chrome_debug_endpoint_ready():
+                pass
+            else:
+                self._ensure_dedicated_chrome_running()
+            self._run_axi_cli_text(["start"])
+
+    def _stop_idle_bridge_if_needed(self) -> None:
+        self.agent.lifecycle.stop_if_idle(
+            page_inventory=self._axi_user_visible_page_inventory,
+            stop=self.bridge_stop,
+        )
+
+    def _axi_user_visible_page_inventory(self) -> list[AgentPage] | None:
+        try:
+            return parse_axi_user_visible_pages(self._run_axi_text(["pages"]))
+        except SurfAgentError:
+            return None
 
     def _ensure_dedicated_chrome_running(self) -> None:
         if self.agent._chrome_debug_endpoint_ready():
@@ -681,6 +701,47 @@ def parse_axi_eval_string(output: str) -> Any:
                 break
             value = decoded
         return value
+    return None
+
+
+def parse_axi_user_visible_pages(output: str) -> list[AgentPage]:
+    """Return visible page targets, or fail rather than treating unknown output as zero."""
+    if is_no_pages_output(output):
+        return []
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        pages = parse_axi_pages(output)
+        if pages:
+            # Text output has no target type. Count every parsed page conservatively.
+            return pages
+        raise SurfAgentError(f"could not parse browser page inventory: {raw_prefix(output)}")
+    items = axi_page_objects(payload)
+    if items is None:
+        raise SurfAgentError("could not parse browser page inventory")
+    visible: list[AgentPage] = []
+    background_types = {"background_page", "service_worker", "shared_worker", "worker", "extension_worker", "background"}
+    for item in items:
+        page = page_from_json_object(item)
+        if page is None:
+            raise SurfAgentError("could not parse browser page inventory")
+        target_type = item.get("type") or item.get("targetType") or item.get("target_type") or item.get("kind")
+        if isinstance(target_type, str) and target_type.lower() in background_types:
+            continue
+        visible.append(page)
+    return visible
+
+
+def axi_page_objects(data: Any) -> list[dict[str, Any]] | None:
+    if isinstance(data, list):
+        return data if all(isinstance(item, dict) for item in data) else None
+    if not isinstance(data, dict):
+        return None
+    if any(key in data for key in ("page_id", "pageId", "id")):
+        return [data]
+    for key in ("pages", "items", "targets", "result"):
+        if key in data:
+            return axi_page_objects(data[key])
     return None
 
 

@@ -3,7 +3,7 @@ name = "surf-agent"
 version = "0.1.0"
 description = "Agent-scoped wrapper for generic surf browser control"
 requires-python = ">=3.11"
-dependencies = ["platformdirs"]
+dependencies = ["platformdirs", "tldextract>=5.3"]
 
 [project.optional-dependencies]
 camoufox = ["cloverlabs-camoufox>=0.6.0"]

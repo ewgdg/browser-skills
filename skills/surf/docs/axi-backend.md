@@ -35,3 +35,10 @@ surf-agent bridge stop
 ```
 
 After `bridge stop`, next use restarts the persistent bridge and dedicated debug-port Chrome if needed.
+
+
+## Live cookie refresh
+
+After explicit `profile cookie-source set` consent, AXI refreshes selected cookies before it starts Surf's inactive dedicated Chrome profile when the source fingerprint changed. The source Chrome may remain running; Surf uses SQLite online backup. The source must be the same Chrome family and OS user with equal `Local State.os_crypt` metadata. Imports are upsert-only, so source-absent cookies are not deleted from Surf.
+
+`CHROME_DEVTOOLS_AXI_AUTO_CONNECT=1` and an explicit `CHROME_DEVTOOLS_AXI_BROWSER_URL` make Surf's destination identity unprovable. When cookie import is configured, startup fails closed under either override; remove the override or disable/reset cookie import. When the final user-visible page closes, AXI re-lists pages after two seconds and stops the idle bridge only if none remain.

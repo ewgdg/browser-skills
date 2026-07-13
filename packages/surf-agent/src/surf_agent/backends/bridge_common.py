@@ -49,6 +49,9 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             self._write(500, {"error": str(exc)})
             return
         self._write(200, {"result": result})
+        after_response = getattr(self.runtime, "after_response", None)
+        if after_response is not None:
+            after_response(name)
 
     def log_message(self, format: str, *args: Any) -> None:
         return

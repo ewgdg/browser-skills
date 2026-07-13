@@ -16,6 +16,19 @@ Optional backends exist, but stay opt-in:
 
 Backend selection priority: `SURF_AGENT_BACKEND`, then persisted platform user config (`surf-agent backend show` prints path), then `axi` default. Backend docs: [overview](docs/backends.md), [AXI](docs/axi-backend.md), [Camoufox](docs/camoufox-backend.md), [Patchright](docs/patchright-backend.md).
 
+## Live cookie import
+
+Cookie import is opt-in. It exposes only explicitly allowed domains unless the user deliberately selects `--all-domains`:
+
+```bash
+surf-agent profile cookie-source set --source ~/.config/google-chrome --source-profile Default --domain github.com
+surf-agent profile cookie-source show
+surf-agent profile import-cookies
+surf-agent profile cookie-source reset
+```
+
+The live source can remain locked because Surf uses a SQLite online backup. Source and destination must be the same Chrome family and OS user and have equal `Local State.os_crypt` metadata. For imported Linux v11 cookies, Patchright disables its `--password-store=basic` and `--use-mock-keychain` automation defaults so Chrome uses the real OS password store/keychain. Import upserts cookies without deleting destination-only rows; source logout is therefore not propagated. Automatic refresh happens only before an inactive AXI/Patchright profile starts and only after the source fingerprint changes, never on a timer. If validation fails, startup stops; fix configuration or run the explicit import command after stopping Surf. Camoufox does not support cookie import.
+
 ## Prerequisites
 
 ```bash
@@ -30,7 +43,7 @@ Persistent data lives in platform user dirs by default: config, thread state, an
 - New threads first open a short `Surf Agent` bootstrap in a normal `--new-window` Chrome window so human login/unblock has toolbar, back/forward, and extension controls. `new` then opens the welcome page; `open <url>` navigates directly to the requested URL.
 - Default browser backend uses a dedicated surf-agent Chrome profile, so backend page listing only sees Surf Agent profile pages, not the user's main Chrome tabs.
 - `surf-agent` talks to the browser bridge over local HTTP for normal operations and embeds browser profile defaults.
-- Keep the browser bridge alive. Normal cleanup closes pages/windows only; it must not stop the bridge.
+- Closing the last user-visible page stops the bridge after a two-second recheck. When live cookie import is configured, the next startup can refresh cookies safely.
 - Use `--thread` to select a page/window.
 - Reuse a thread for one browsing task.
 - Use unique thread ids for parallel agents unless intentionally sharing one page.
@@ -91,7 +104,7 @@ surf-agent --thread main snapshot
 surf-agent --thread main state          # current thread/page state; does not open a page
 surf-agent list                         # remembered threads from local state; does not probe all Chrome pages
 surf-agent --thread main new            # replace/create dedicated thread window showing Surf Agent welcome page; prints page id
-surf-agent --thread main close          # close remembered thread page/window; bridge stays alive
+surf-agent --thread main close          # close remembered thread page/window; idle configured profiles stop after recheck
 surf-agent --thread main focus          # select remembered thread page
 surf-agent profile show                 # print dedicated profile configuration
 surf-agent profile open [url]           # open dedicated profile without automation/debug port for manual login/setup
@@ -203,4 +216,4 @@ surf-agent close-matching 'run-42-*'
 surf-agent close-all
 ```
 
-Cleanup closes remembered browser pages only. It never stops the browser bridge. Use `reset` only when intentionally clearing state while leaving page open.
+Cleanup closes remembered browser pages. The last visible page triggers a two-second idle recheck and then stops the bridge; a new page during grace cancels it. With live cookie import configured, this makes the next startup eligible to refresh cookies. Use `reset` only when intentionally clearing state while leaving page open.

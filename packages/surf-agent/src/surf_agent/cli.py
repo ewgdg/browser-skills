@@ -50,6 +50,9 @@ from .backends import (
     create_backend,
     map_axi_cli_args_to_bridge,
 )
+from . import config as persisted_config
+from .chrome_lifecycle import ChromeLifecycleCoordinator, axi_destination_identity_unprovable, destination_browser_family, find_active_chrome_roots
+from .cookie_import import CookieImporter
 from .constants import (
     CAMOUFOX_BACKEND,
     DEFAULT_PATCHRIGHT_APP_ID,
@@ -252,6 +255,35 @@ class SurfAgent:
         self.browser_url = f"http://127.0.0.1:{self.chrome_debug_port}"
         self.camoufox_client = CamoufoxBridgeClient(timeout_s=self.command_timeout_s, port=self.camoufox_port, profile_dir=self.camoufox_profile_dir)
         self.patchright_client = PatchrightBridgeClient(timeout_s=self.command_timeout_s, port=self.patchright_port, profile_dir=self.patchright_profile_dir)
+        cookie_source = persisted_config.get_cookie_source(path=backend_config_file())
+        self.cookie_import_enabled = cookie_source is not None and self.backend != CAMOUFOX_BACKEND
+        destination_profile = self.chrome_profile_dir if self.backend == DEFAULT_BACKEND else self.patchright_profile_dir
+        self.destination_family = destination_browser_family(backend=self.backend, executable=self.chrome_bin)
+        self.cookie_import_startup_error: str | None = None
+        if self.cookie_import_enabled and self.backend == DEFAULT_BACKEND and axi_destination_identity_unprovable(os.environ):
+            self.cookie_import_startup_error = "cannot prove the AXI destination profile while an auto-connect or browser URL override is active"
+        elif self.cookie_import_enabled and self.destination_family is None:
+            self.cookie_import_startup_error = "cannot prove the browser family of the AXI destination executable"
+        elif self.cookie_import_enabled and cookie_source is not None and cookie_source.family != self.destination_family:
+            self.cookie_import_startup_error = "cookie source browser family does not match the selected Surf destination browser"
+        importer = (
+            CookieImporter(
+                config=cookie_source,
+                destination_root=destination_profile,
+                state_root=surf_agent_state_dir(),
+                destination_family=self.destination_family,
+                process_inspector=lambda profile: bool(find_active_chrome_roots(profile)),
+            )
+            if self.cookie_import_enabled and self.cookie_import_startup_error is None
+            else None
+        )
+        self.lifecycle = ChromeLifecycleCoordinator(
+            destination_root=destination_profile,
+            state_root=surf_agent_state_dir(),
+            importer=importer,
+            process_inspector=lambda profile: bool(find_active_chrome_roots(profile)),
+        )
+        self.patchright_client.before_start = self._patchright_startup_guard
         self.bridge_client = bridge_client or AxiBridgeClient(
             timeout_s=self.command_timeout_s,
             expected_profile_dir=self.chrome_profile_dir if self._uses_dedicated_chrome_profile() else None,
@@ -378,17 +410,18 @@ class SurfAgent:
             return self._camoufox_profile_open(url)
         if self.backend == PATCHRIGHT_BACKEND:
             return self._patchright_profile_open(url)
-        if self._chrome_debug_endpoint_ready():
-            raise SurfAgentError(f"automated Surf Agent Chrome is running at {self.browser_url}; close Surf Agent windows or run `surf-agent bridge stop` before `profile open`")
-        if not self.chrome_bin:
-            raise SurfAgentError("could not find Chrome executable for profile open; set SURF_AGENT_CHROME_BIN")
-        self.chrome_profile_dir.mkdir(parents=True, exist_ok=True)
-        command = [*shlex.split(self.chrome_bin), f"--class={self.chrome_class}", f"--user-data-dir={self.chrome_profile_dir}", "--new-window", url]
-        proc = self._subprocess_run(command, check=False, text=True, capture_output=True, timeout=CHROME_NEW_WINDOW_TIMEOUT_S)
-        if proc.returncode != 0:
-            detail = (proc.stderr or proc.stdout or "Chrome profile open failed").strip()
-            raise SurfAgentError(detail)
-        return 0
+        with self._axi_startup_guard():
+            if self._chrome_debug_endpoint_ready():
+                raise SurfAgentError(f"automated Surf Agent Chrome is running at {self.browser_url}; close Surf Agent windows or run `surf-agent bridge stop` before `profile open`")
+            if not self.chrome_bin:
+                raise SurfAgentError("could not find Chrome executable for profile open; set SURF_AGENT_CHROME_BIN")
+            self.chrome_profile_dir.mkdir(parents=True, exist_ok=True)
+            command = [*shlex.split(self.chrome_bin), f"--class={self.chrome_class}", f"--user-data-dir={self.chrome_profile_dir}", "--new-window", url]
+            proc = self._subprocess_run(command, check=False, text=True, capture_output=True, timeout=CHROME_NEW_WINDOW_TIMEOUT_S)
+            if proc.returncode != 0:
+                detail = (proc.stderr or proc.stdout or "Chrome profile open failed").strip()
+                raise SurfAgentError(detail)
+            return 0
 
     def _camoufox_profile_open(self, url: str = "about:blank") -> int:
         return self.browser_backend.profile_open(
@@ -411,6 +444,21 @@ class SurfAgent:
 
     def print_help_to_stderr(self) -> None:
         print_help(sys.stderr)
+
+    def _axi_startup_guard(self):
+        if self.cookie_import_startup_error:
+            raise SurfAgentError(self.cookie_import_startup_error)
+        return self.lifecycle.launch_guard(health_check=self._chrome_debug_endpoint_ready)
+
+    def _patchright_startup_guard(self):
+        if self.cookie_import_startup_error:
+            raise SurfAgentError(self.cookie_import_startup_error)
+        return self.lifecycle.launch_guard(health_check=self.patchright_client._health_ok)
+
+    def force_cookie_import(self):
+        if self.cookie_import_startup_error:
+            raise SurfAgentError(self.cookie_import_startup_error)
+        return self.lifecycle.import_now()
 
     def _chrome_debug_endpoint_ready(self) -> bool:
         try:
@@ -495,39 +543,19 @@ def parse_backend_env() -> str:
 
 
 def resolve_backend_preference() -> tuple[str, str]:
-    env_backend = os.environ.get("SURF_AGENT_BACKEND")
-    if env_backend:
-        return validate_backend_name(env_backend, source="SURF_AGENT_BACKEND"), "env"
-    config = load_backend_config()
-    configured = config.get("backend")
-    if isinstance(configured, str) and configured.strip():
-        return validate_backend_name(configured, source=str(backend_config_file())), "config"
-    return DEFAULT_BACKEND, "default"
+    return persisted_config.resolve_backend_preference(path=backend_config_file())
 
 
 def validate_backend_name(value: str, *, source: str = "backend") -> str:
-    backend = value.strip().lower()
-    if backend not in {DEFAULT_BACKEND, CAMOUFOX_BACKEND, PATCHRIGHT_BACKEND}:
-        raise SurfAgentError(f"{source} must be 'axi', 'camoufox', or 'patchright'", exit_code=2)
-    return backend
+    return persisted_config.validate_backend_name(value, source=source)
 
 
 def load_backend_config() -> dict[str, Any]:
-    try:
-        data = json.loads(backend_config_file().read_text())
-    except FileNotFoundError:
-        return {}
-    except (OSError, json.JSONDecodeError) as exc:
-        raise SurfAgentError(f"could not read surf-agent backend config {backend_config_file()}: {exc}", exit_code=2) from exc
-    if not isinstance(data, dict):
-        raise SurfAgentError(f"surf-agent backend config {backend_config_file()} must contain a JSON object", exit_code=2)
-    return data
+    return persisted_config.load_config(backend_config_file())
 
 
 def write_backend_config(config: dict[str, Any]) -> None:
-    path = backend_config_file()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(config, sort_keys=True) + "\n")
+    persisted_config.write_config(backend_config_file(), config)
 
 
 def show_backend_config() -> int:
@@ -539,9 +567,7 @@ def show_backend_config() -> int:
 def set_backend_config(backend: str) -> int:
     backend = validate_backend_name(backend)
     previous_backend = current_backend_for_cleanup()
-    config = load_backend_config()
-    config["backend"] = backend
-    write_backend_config(config)
+    persisted_config.set_backend(backend, path=backend_config_file())
     if previous_backend is not None and previous_backend != backend:
         cleanup_backend_runtime(previous_backend)
     print(json.dumps({"backend": backend, "config_file": str(backend_config_file())}, sort_keys=True))
@@ -577,22 +603,97 @@ def cleanup_backend_runtime(backend: str) -> None:
                 agent.camoufox_client.stop()
             stop_module_bridge_processes("surf_agent.backends.camoufox.bridge", port=agent.camoufox_port, profile_dir=agent.camoufox_profile_dir)
     except Exception as exc:
-        # Backend selection must remain repairable even when old runtime cleanup fails.
         print(f"surf-agent: warning: could not clean up previous {backend} runtime: {exc}", file=sys.stderr)
 
 
 def reset_backend_config() -> int:
-    config = load_backend_config()
-    config.pop("backend", None)
-    path = backend_config_file()
-    if config:
-        write_backend_config(config)
-    else:
-        unlink_missing_ok(path)
+    persisted_config.reset_backend(path=backend_config_file())
     backend, source = resolve_backend_preference()
-    print(json.dumps({"backend": backend, "source": source, "config_file": str(path)}, sort_keys=True))
+    print(json.dumps({"backend": backend, "source": source, "config_file": str(backend_config_file())}, sort_keys=True))
     return 0
 
+
+def cookie_source_commands(argv: Sequence[str]) -> int:
+    if parse_backend_env() == CAMOUFOX_BACKEND:
+        raise SurfAgentError("Camoufox does not support live cookie import", exit_code=1)
+    if not argv:
+        raise SurfAgentError("usage: surf-agent profile cookie-source show|set|reset", exit_code=2)
+    action = argv[0]
+    path = backend_config_file()
+    if action == "show" and len(argv) == 1:
+        source = persisted_config.get_cookie_source(path=path)
+        print(json.dumps({"configured": source is not None, "cookie_source": source.to_json() if source else None}, sort_keys=True))
+        return 0
+    if action == "reset" and len(argv) == 1:
+        persisted_config.reset_cookie_source(path=path)
+        print(json.dumps({"configured": False, "config_file": str(path)}, sort_keys=True))
+        return 0
+    if action != "set":
+        raise SurfAgentError("usage: surf-agent profile cookie-source show | cookie-source set --source DIR --source-profile NAME (--domain DOMAIN ... | --all-domains) | cookie-source reset", exit_code=2)
+    source_path: str | None = None
+    profile: str | None = None
+    domains: list[str] = []
+    all_domains = False
+    index = 1
+    while index < len(argv):
+        option = argv[index]
+        if option in {"--source", "--source-profile", "--domain"}:
+            if index + 1 >= len(argv):
+                raise SurfAgentError(f"{option} requires a value", exit_code=2)
+            value = argv[index + 1]
+            if option == "--source":
+                if source_path is not None:
+                    raise SurfAgentError("--source may be provided once", exit_code=2)
+                source_path = value
+            elif option == "--source-profile":
+                if profile is not None:
+                    raise SurfAgentError("--source-profile may be provided once", exit_code=2)
+                profile = value
+            else:
+                domains.append(value)
+            index += 2
+            continue
+        if option == "--all-domains":
+            if all_domains:
+                raise SurfAgentError("--all-domains may be provided once", exit_code=2)
+            all_domains = True
+            index += 1
+            continue
+        raise SurfAgentError(f"unsupported cookie-source option: {option}", exit_code=2)
+    if source_path is None or profile is None or (all_domains == bool(domains)):
+        raise SurfAgentError("cookie-source set requires --source, --source-profile, and exactly one of --domain or --all-domains", exit_code=2)
+    if not sys.platform.startswith("linux"):
+        raise SurfAgentError("live cookie import is supported only on Linux")
+    scope = persisted_config.CookieScope.all() if all_domains else persisted_config.CookieScope.from_domains(domains)
+    source = persisted_config.resolve_cookie_source(source=source_path, profile=profile, scope=scope)
+    backend = parse_backend_env()
+    if backend == DEFAULT_BACKEND and axi_destination_identity_unprovable(os.environ):
+        raise SurfAgentError("cannot prove the AXI destination profile while an auto-connect or browser URL override is active")
+    destination_family = destination_browser_family(
+        backend=backend,
+        executable=os.environ.get("SURF_AGENT_CHROME_BIN") or find_chrome_bin(),
+    )
+    if destination_family is None:
+        raise SurfAgentError("could not prove the browser family of the selected Surf destination")
+    if source.family != destination_family:
+        raise SurfAgentError("cookie source browser family does not match the selected Surf destination browser")
+    persisted_config.set_cookie_source(source, path=path)
+    print(json.dumps({"configured": True, "cookie_source": source.to_json(), "config_file": str(path)}, sort_keys=True))
+    return 0
+
+
+def import_cookies_command() -> int:
+    source = persisted_config.get_cookie_source(path=backend_config_file())
+    if source is None:
+        raise SurfAgentError("no cookie source is configured; run `surf-agent profile cookie-source set ...` first")
+    agent = SurfAgent()
+    if agent.backend == CAMOUFOX_BACKEND:
+        raise SurfAgentError("Camoufox does not support live cookie import")
+    if agent.backend == DEFAULT_BACKEND and (os.environ.get("CHROME_DEVTOOLS_AXI_AUTO_CONNECT") == "1" or os.environ.get("CHROME_DEVTOOLS_AXI_BROWSER_URL")):
+        raise SurfAgentError("cannot prove the AXI destination profile while an auto-connect or browser URL override is active")
+    result = agent.force_cookie_import()
+    print(json.dumps({"imported_rows": result.imported_rows, "destination": str(result.destination) if result.destination else None}, sort_keys=True))
+    return 0
 
 def safe_thread_name(thread: str) -> str:
     value = thread.strip() or DEFAULT_THREAD
@@ -1289,10 +1390,12 @@ def print_help(stream: Any) -> None:
         "  surf-agent [--thread ID] state                 print current page state; does not open a page\n"
         "  surf-agent list                                list remembered browser threads and clean stale entries\n"
         "  surf-agent [--thread ID] new                   replace/create dedicated thread window, print page id\n"
-        "  surf-agent [--thread ID] close                 close remembered thread page/window; browser bridge stays alive\n"
+        "  surf-agent [--thread ID] close                 close remembered thread page/window; idle bridge may stop after grace\n"
         "  surf-agent [--thread ID] focus                 select remembered thread page\n"
         "  surf-agent profile show                         print dedicated profile configuration JSON\n"
         "  surf-agent profile open [url]                   open dedicated profile without automation/debug port\n"
+        "  surf-agent profile cookie-source show|set|reset  manage explicit live Chrome cookie source\n"
+        "  surf-agent profile import-cookies                force a live cookie refresh into an inactive profile\n"
         "  surf-agent backend show                         print selected backend and source\n"
         "  surf-agent backend set axi|camoufox|patchright   persist default backend\n"
         "  surf-agent backend reset                        clear persisted backend\n"
@@ -1314,6 +1417,8 @@ def print_help(stream: Any) -> None:
         "  surf-agent --thread main eval --file /tmp/script.js\n"
         "  printf 'open https://example.com\\nsnapshot\\n' | surf-agent --thread main do\n"
         "  surf-agent profile open https://x.com\n"
+        "  surf-agent profile cookie-source set --source ~/.config/google-chrome --source-profile Default --domain github.com\n"
+        "  surf-agent profile import-cookies\n"
         "  surf-agent backend set camoufox\n"
         "  surf-agent backend set patchright\n"
         "  surf-agent setup camoufox\n"
@@ -1351,6 +1456,10 @@ def main(argv: list[str] | None = None) -> int:
             return setup_camoufox_backend()
         if command == PATCHRIGHT_BACKEND and len(argv) == 2 and argv[1] == "setup":
             return setup_patchright_backend()
+        if command == "profile" and len(argv) >= 2 and argv[1] == "cookie-source":
+            return cookie_source_commands(argv[2:])
+        if command == "profile" and len(argv) == 2 and argv[1] == "import-cookies":
+            return import_cookies_command()
         agent = SurfAgent(thread=config.thread)
         if command == "state":
             agent.print_state(thread=config.thread)
@@ -1373,13 +1482,13 @@ def main(argv: list[str] | None = None) -> int:
             return agent.focus()
         if command == "profile":
             if len(argv) < 2:
-                raise SurfAgentError("profile requires subcommand: show or open", exit_code=2)
+                raise SurfAgentError("profile requires subcommand: show, open, cookie-source, or import-cookies", exit_code=2)
             if argv[1] == "show" and len(argv) == 2:
                 agent.print_profile_show()
                 return 0
             if argv[1] == "open" and len(argv) <= 3:
                 return agent.profile_open(argv[2] if len(argv) == 3 else "about:blank")
-            raise SurfAgentError("usage: surf-agent profile show | profile open [url]", exit_code=2)
+            raise SurfAgentError("usage: surf-agent profile show | profile open [url] | profile cookie-source ... | profile import-cookies", exit_code=2)
         if command == "close-all":
             return agent.close_matching("*")
         if command == "close-matching":

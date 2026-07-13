@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import subprocess
 import sys
@@ -7,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, ContextManager
 
 from ..constants import CHROME_NEW_WINDOW_TIMEOUT_S
 from ..errors import BridgeUnavailable, SurfAgentError
@@ -25,6 +26,7 @@ class LocalBridgeClient:
         profile_dir: Path,
         startup_error: str,
         timeout_hint: str = "",
+        before_start: Callable[[], ContextManager[None]] | None = None,
     ) -> None:
         self.backend_label = backend_label
         self.module_name = module_name
@@ -33,6 +35,7 @@ class LocalBridgeClient:
         self.profile_dir = profile_dir
         self.startup_error = startup_error
         self.timeout_hint = timeout_hint
+        self.before_start = before_start
 
     def call_tool(self, name: str, args: dict[str, Any] | None = None) -> str:
         self._ensure_running()
@@ -83,22 +86,26 @@ class LocalBridgeClient:
     def _ensure_running(self) -> None:
         if self._health_ok():
             return
-        self.profile_dir.mkdir(parents=True, exist_ok=True)
-        command = [
-            sys.executable,
-            "-m",
-            self.module_name,
-            "--port",
-            str(self.port),
-            "--profile-dir",
-            str(self.profile_dir),
-        ]
-        subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        deadline = time.monotonic() + CHROME_NEW_WINDOW_TIMEOUT_S
-        while time.monotonic() < deadline:
-            if self._health_ok():
+        guard = self.before_start() if self.before_start is not None else contextlib.nullcontext()
+        with guard:
+            if self.before_start is not None and self._health_ok():
                 return
-            time.sleep(0.25)
+            self.profile_dir.mkdir(parents=True, exist_ok=True)
+            command = [
+                sys.executable,
+                "-m",
+                self.module_name,
+                "--port",
+                str(self.port),
+                "--profile-dir",
+                str(self.profile_dir),
+            ]
+            subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            deadline = time.monotonic() + CHROME_NEW_WINDOW_TIMEOUT_S
+            while time.monotonic() < deadline:
+                if self._health_ok():
+                    return
+                time.sleep(0.25)
         raise SurfAgentError(f"{self.backend_label} bridge did not become healthy; {self.startup_error}")
 
     def _health_ok(self) -> bool:

@@ -30,6 +30,9 @@ SNAPSHOT_ARIA_TIMEOUT_MS = 3_000
 SNAPSHOT_BODY_TIMEOUT_MS = 3_000
 CDP_NEW_WINDOW_TIMEOUT_S = 3.0
 CDP_NEW_WINDOW_POLL_INTERVAL_S = 0.05
+CONTEXT_RESTART_REQUIRED = "Patchright persistent context closed; bridge restart required"
+# Linux v11 cookies require Chrome’s real OS password store/keychain, not Patchright automation defaults.
+PATCHRIGHT_INCOMPATIBLE_DEFAULT_ARGS = ("--password-store=basic", "--use-mock-keychain")
 
 try:
     from patchright.async_api import async_playwright
@@ -38,7 +41,7 @@ except ImportError:
 
 
 class PatchrightRuntime:
-    def __init__(self, *, profile_dir: Path, headless: bool = False, app_id: str = DEFAULT_PATCHRIGHT_APP_ID, window_class: str | None = None) -> None:
+    def __init__(self, *, profile_dir: Path, headless: bool = False, app_id: str = DEFAULT_PATCHRIGHT_APP_ID, window_class: str | None = None, clock: Any = time.monotonic) -> None:
         self.profile_dir = profile_dir
         self.headless = headless
         self.app_id = app_id
@@ -48,6 +51,10 @@ class PatchrightRuntime:
         self.pages: dict[str, PageSlot] = {}
         self._next_page_token = 1
         self._runner: asyncio.Runner | None = None
+        self.clock = clock
+        self.idle_shutdown_deadline: float | None = None
+        self._idle_close_pending = False
+        self.restart_requested = False
 
     def start(self) -> None:
         self._run(self._start_async())
@@ -98,6 +105,7 @@ class PatchrightRuntime:
         else:
             playwright = self.manager.__enter__()
         # Chrome channel keeps existing Chrome profile behavior; bundled browsers break that reuse.
+        self._cancel_idle_shutdown()
         self.browser_or_context = await self._maybe_await(
             playwright.chromium.launch_persistent_context(
                 user_data_dir=str(self.profile_dir),
@@ -106,6 +114,7 @@ class PatchrightRuntime:
                 no_viewport=True,
                 chromium_sandbox=True,
                 args=launch_args,
+                ignore_default_args=PATCHRIGHT_INCOMPATIBLE_DEFAULT_ARGS,
             )
         )
 
@@ -118,6 +127,7 @@ class PatchrightRuntime:
         self.manager = None
         self.browser_or_context = None
         self.pages.clear()
+        self._cancel_idle_shutdown()
         return "stopped\n"
 
     async def _call_async(self, name: str, args: dict[str, Any]) -> str:
@@ -136,6 +146,8 @@ class PatchrightRuntime:
             old = self.pages.pop(thread, None)
             if old:
                 await self._maybe_await(old.page.close())
+            # The HTTP handler arms this only after its success response is written.
+            self._idle_close_pending = True
             return "closed\n"
         if name == "scroll" and str(args.get("direction") or "down") not in {"up", "down", "top", "bottom"}:
             raise RuntimeError("scroll requires direction: up, down, top, or bottom")
@@ -216,6 +228,39 @@ class PatchrightRuntime:
             return "focused\n"
         raise RuntimeError(f"unsupported Patchright command: {name}")
 
+    def after_response(self, name: str) -> None:
+        if name != "close" or not self._idle_close_pending:
+            return
+        self._idle_close_pending = False
+        if self._visible_pages():
+            return
+        self.idle_shutdown_deadline = self.clock() + 2.0
+
+    def service_actions(self) -> bool:
+        deadline = self.idle_shutdown_deadline
+        if deadline is None or self.clock() < deadline:
+            return False
+        if self._visible_pages():
+            self._cancel_idle_shutdown()
+            return False
+        self.idle_shutdown_deadline = None
+        try:
+            self.stop()
+        except Exception as exc:
+            # The close request already succeeded; preserve the runtime on stop failure.
+            print(f"surf-agent: warning: could not stop idle Patchright bridge: {exc}", file=sys.stderr)
+            return False
+        return True
+
+    def _visible_pages(self) -> list[Any]:
+        if self.browser_or_context is None or not hasattr(self.browser_or_context, "pages"):
+            return []
+        return [page for page in list(self.browser_or_context.pages) if self._page_is_open(page)]
+
+    def _cancel_idle_shutdown(self) -> None:
+        self.idle_shutdown_deadline = None
+        self._idle_close_pending = False
+
     def _context(self) -> Any:
         if self.browser_or_context is None:
             raise RuntimeError("Patchright runtime is not started")
@@ -231,6 +276,7 @@ class PatchrightRuntime:
         return await self._new_page(thread)
 
     async def _new_page(self, thread: str, url: str | None = None) -> PageSlot:
+        self._cancel_idle_shutdown()
         old = self.pages.pop(thread, None)
         if old and self._page_is_open(old.page):
             await self._maybe_await(old.page.close())
@@ -329,13 +375,19 @@ class PatchrightRuntime:
         return str(getattr(page, "url", "") or "")
 
     async def _restart_closed_context(self) -> None:
+        # This runtime cannot safely invoke the CLI process's lifecycle coordinator:
+        # Patchright objects are thread-affine and this is the bridge server thread.
+        # Stop and request a fresh bridge process so LocalBridgeClient.before_start
+        # performs the cookie preflight before the next persistent-context launch.
+        self._cancel_idle_shutdown()
         try:
             await self._stop_async()
         except Exception:
             self.manager = None
             self.browser_or_context = None
             self.pages.clear()
-        await self._start_async()
+        self.restart_requested = True
+        raise RuntimeError(CONTEXT_RESTART_REQUIRED)
 
     def _page_is_open(self, page: Any) -> bool:
         try:
@@ -448,6 +500,13 @@ class RequestHandler(BridgeRequestHandler):
     runtime: Any
 
 
+class PatchrightHTTPServer(HTTPServer):
+    def service_actions(self) -> None:
+        runtime = RequestHandler.runtime
+        if runtime.restart_requested or runtime.service_actions():
+            self._BaseServer__shutdown_request = True
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, default=int(os.environ.get("SURF_AGENT_PATCHRIGHT_PORT", "9346")))
@@ -465,7 +524,7 @@ def main(argv: list[str] | None = None) -> int:
     RequestHandler.runtime = PatchrightRuntime(profile_dir=profile_dir, headless=args.headless, app_id=args.app_id, window_class=args.window_class)
     # Playwright/Patchright sync objects are bound to the thread that created them.
     # Use a single-threaded HTTP server so every browser call runs on one thread.
-    server = HTTPServer(("127.0.0.1", args.port), RequestHandler)
+    server = PatchrightHTTPServer(("127.0.0.1", args.port), RequestHandler)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
