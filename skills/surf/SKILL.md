@@ -34,7 +34,6 @@ Persistent data lives in platform user dirs by default: config, thread state, an
 - New threads first open a short `Surf Agent` bootstrap in a normal `--new-window` Chrome window so human login/unblock has toolbar, back/forward, and extension controls. `new` then opens the welcome page; `open <url>` navigates directly to the requested URL.
 - Default browser backend uses a dedicated surf-agent Chrome profile, so backend page listing only sees Surf Agent profile pages, not the user's main Chrome tabs.
 - `surf-agent` talks to the browser bridge over local HTTP for normal operations and embeds browser profile defaults.
-- Closing the last user-visible page stops AXI after a two-second recheck and stops Patchright immediately after the close response.
 - Use `--thread` to select a page/window.
 - Reuse a thread for one browsing task.
 - Use unique thread ids for parallel agents unless intentionally sharing one page.
@@ -67,7 +66,7 @@ surf-agent list
 surf-agent --thread run-42-a open https://example.com/a
 surf-agent --thread run-42-b open https://example.com/b
 
-# Closes only remembered browser pages matching thread glob. Does not call bridge stop.
+# Closes only remembered browser pages matching thread glob.
 surf-agent close-matching 'run-42-*'
 ```
 
@@ -95,7 +94,7 @@ surf-agent --thread main snapshot
 surf-agent --thread main state          # current thread/page state; does not open a page
 surf-agent list                         # remembered threads from local state; does not probe all Chrome pages
 surf-agent --thread main new            # replace/create dedicated thread window showing Surf Agent welcome page; prints page id
-surf-agent --thread main close          # close remembered thread page/window; idle configured profiles stop after recheck
+surf-agent --thread main close          # close remembered thread page/window
 surf-agent --thread main focus          # select remembered thread page
 surf-agent profile show                 # print dedicated profile configuration
 surf-agent profile open [url]           # open dedicated profile without automation/debug port for manual login/setup
@@ -103,7 +102,6 @@ surf-agent close-all                    # close all remembered thread pages/wind
 surf-agent close-matching 'run-*'       # close remembered pages/windows with matching thread names
 surf-agent --thread main reset          # clear state without closing page
 surf-agent --thread main page-id        # print/create managed browser page id
-surf-agent bridge stop                  # explicit destructive bridge stop
 ```
 
 ### Navigate and inspect
@@ -207,4 +205,4 @@ surf-agent close-matching 'run-42-*'
 surf-agent close-all
 ```
 
-Cleanup closes remembered browser pages. AXI rechecks after two seconds before stopping; Patchright stops immediately after returning the final close response. If Chrome has already closed Patchright's persistent context, the interrupted command restarts the bridge and retries once. Use `reset` only when intentionally clearing state while leaving page open.
+Cleanup closes remembered browser pages. Use `reset` only when intentionally clearing state while leaving the page open.
