@@ -39,6 +39,18 @@ class LocalBridgeClient:
 
     def call_tool(self, name: str, args: dict[str, Any] | None = None) -> str:
         self._ensure_running()
+        output = self._call_tool(name, args, return_none_on_connection_failure=False)
+        assert isinstance(output, str)
+        return output
+
+    def call_tool_if_running(self, name: str, args: dict[str, Any] | None = None) -> str | None:
+        if not self._health_ok():
+            return None
+        return self._call_tool(name, args, return_none_on_connection_failure=True)
+
+    def _call_tool(
+        self, name: str, args: dict[str, Any] | None, *, return_none_on_connection_failure: bool
+    ) -> str | None:
         payload = json.dumps({"name": name, "args": args or {}}).encode()
         request = self._call_request(payload)
         try:
@@ -53,15 +65,25 @@ class LocalBridgeClient:
                 pass
             raise SurfAgentError(f"{self.backend_label} bridge tool {name} failed: {detail}") from exc
         except TimeoutError as exc:
-            raise BridgeUnavailable(
-                f"{self.backend_label} bridge tool {name} timed out after {self.timeout_s:g}s{self.timeout_hint}"
-            ) from exc
+            raise self._tool_timeout(name, exc) from exc
         except urllib.error.URLError as exc:
-            raise BridgeUnavailable(f"{self.backend_label} bridge call failed: {exc}") from exc
+            if return_none_on_connection_failure and not _is_timeout_url_error(exc):
+                return None
+            raise self._bridge_unavailable(exc) from exc
         except OSError as exc:
-            raise BridgeUnavailable(f"{self.backend_label} bridge call failed: {exc}") from exc
+            if return_none_on_connection_failure:
+                return None
+            raise self._bridge_unavailable(exc) from exc
         result = data.get("result")
         return result if isinstance(result, str) else ""
+
+    def _tool_timeout(self, name: str, exc: BaseException) -> BridgeUnavailable:
+        return BridgeUnavailable(
+            f"{self.backend_label} bridge tool {name} timed out after {self.timeout_s:g}s{self.timeout_hint}"
+        )
+
+    def _bridge_unavailable(self, exc: BaseException) -> BridgeUnavailable:
+        return BridgeUnavailable(f"{self.backend_label} bridge call failed: {exc}")
 
     def stop(self) -> str:
         if not self._health_ok():
@@ -115,6 +137,10 @@ class LocalBridgeClient:
                 return response.status == 200 and data.get("status") == "ok"
         except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
             return False
+
+
+def _is_timeout_url_error(error: urllib.error.URLError) -> bool:
+    return isinstance(error.reason, TimeoutError)
 
 
 class LocalBridgeBackend:

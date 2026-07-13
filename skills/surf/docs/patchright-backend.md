@@ -41,7 +41,7 @@ SURF_AGENT_BACKEND=patchright surf-agent --thread main open https://example.com
 Patchright supports these core commands through a local Python bridge:
 
 ```text
-open, new, snapshot, text, click, fill, type, press, scroll, wait, back, screenshot, eval, close, focus, state, list
+open, new, snapshot, text, click, fill, type, press, scroll, wait, back, screenshot, eval, close, close-matching, close-all, focus, state, list
 ```
 
 ## Implementation notes
@@ -54,7 +54,6 @@ open, new, snapshot, text, click, fill, type, press, scroll, wait, back, screens
 ## Limitations
 
 - Chrome-extension behavior is profile/browser dependent; verify 1Password manually.
-- `close-matching` is not implemented.
 
 
 ## Live cookie refresh and idle stop

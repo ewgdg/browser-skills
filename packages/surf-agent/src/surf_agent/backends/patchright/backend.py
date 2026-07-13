@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shlex
 import subprocess
 from pathlib import Path
@@ -36,6 +37,24 @@ class PatchrightBackend(LocalBridgeBackend):
 
     def __init__(self, agent: Any, *, client: PatchrightBridgeClient, welcome_url: Callable[[], str]) -> None:
         super().__init__(agent, client=client, welcome_url=welcome_url)
+
+    def close_matching(self, pattern: str) -> int:
+        pattern = pattern.strip()
+        if not pattern:
+            raise SurfAgentError("close-matching requires a thread glob pattern", exit_code=2)
+
+        output = self.client.call_tool_if_running("close-matching", {"pattern": pattern})
+        if output is None:
+            self._print_output(json.dumps({"pattern": pattern, "closed": [], "failed": []}, sort_keys=True) + "\n")
+            return 0
+        try:
+            result = json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise SurfAgentError("Patchright bridge close-matching returned invalid JSON") from exc
+        if not isinstance(result, dict) or not isinstance(result.get("failed"), list):
+            raise SurfAgentError("Patchright bridge close-matching returned invalid JSON")
+        self._print_output(output)
+        return 1 if result["failed"] else 0
 
     def profile_open(self, url: str, *, profile_dir: str, app_id: str, window_class: str) -> int:
         if browser_executable_family(self.agent.chrome_bin) != "chrome":

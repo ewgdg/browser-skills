@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import fnmatch
 import inspect
 import json
 import os
@@ -149,6 +150,26 @@ class PatchrightRuntime:
             # The HTTP handler arms this only after its success response is written.
             self._idle_close_pending = True
             return "closed\n"
+        if name == "close-matching":
+            pattern = str(args.get("pattern") or "").strip()
+            if not pattern:
+                raise RuntimeError("close-matching requires a thread glob pattern")
+            result: dict[str, Any] = {"pattern": pattern, "closed": [], "failed": []}
+            for managed_thread, slot in sorted(self.pages.items()):
+                if not fnmatch.fnmatchcase(managed_thread, pattern):
+                    continue
+                item = {"thread": managed_thread, "page_id": slot.page_token}
+                try:
+                    await self._maybe_await(slot.page.close())
+                except Exception:
+                    result["failed"].append(item)
+                else:
+                    self.pages.pop(managed_thread, None)
+                    result["closed"].append(item)
+            # The HTTP handler arms this only after its success response is written.
+            if not result["failed"]:
+                self._idle_close_pending = True
+            return json.dumps(result, sort_keys=True) + "\n"
         if name == "scroll" and str(args.get("direction") or "down") not in {"up", "down", "top", "bottom"}:
             raise RuntimeError("scroll requires direction: up, down, top, or bottom")
         await self._start_async()
@@ -229,7 +250,7 @@ class PatchrightRuntime:
         raise RuntimeError(f"unsupported Patchright command: {name}")
 
     def after_response(self, name: str) -> None:
-        if name != "close" or not self._idle_close_pending:
+        if name not in {"close", "close-matching"} or not self._idle_close_pending:
             return
         self._idle_close_pending = False
         if self._visible_pages():
