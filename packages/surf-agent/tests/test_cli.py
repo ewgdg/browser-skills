@@ -712,12 +712,13 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(context.new_page_calls, 0)
         self.assertEqual(context.cdp_calls, [("Target.createTarget", {"url": "https://welcome.test/", "newWindow": True, "background": False})])
 
-    def test_patchright_new_page_closes_restored_pages_instead_of_adopting_them(self):
+    def test_patchright_new_page_adopts_clean_startup_page(self):
         class FakePage:
             def __init__(self, url, *, target_id="page-target"):
                 self.url = url
                 self.target_id = target_id
                 self.closed = False
+                self.goto_calls = []
 
             def is_closed(self):
                 return self.closed
@@ -725,22 +726,9 @@ class AxiBackendTests(unittest.TestCase):
             def close(self):
                 self.closed = True
 
-        class FakeSession:
-            def __init__(self, context, page):
-                self.context = context
-                self.page = page
-                self.detached = False
-
-            def send(self, method, params=None):
-                if method == "Target.getTargetInfo":
-                    return {"targetInfo": {"targetId": self.page.target_id}}
-                self.context.cdp_calls.append((method, params))
-                page = FakePage(params["url"], target_id="target-1")
-                self.context.pages.append(page)
-                return {"targetId": "target-1"}
-
-            def detach(self):
-                self.detached = True
+            def goto(self, url, wait_until=None):
+                self.goto_calls.append((url, wait_until))
+                self.url = url
 
         class FakeContext:
             def __init__(self, pages):
@@ -754,10 +742,6 @@ class AxiBackendTests(unittest.TestCase):
                 self.pages.append(page)
                 return page
 
-            def new_cdp_session(self, page):
-                self.anchor = page
-                return FakeSession(self, page)
-
         restored = FakePage("https://restored.test/")
         newtab = FakePage("about:blank")
         context = FakeContext([restored, newtab])
@@ -766,14 +750,13 @@ class AxiBackendTests(unittest.TestCase):
 
         slot = runtime._run(runtime._new_page("thread", url="https://welcome.test/"))
 
-        self.assertIsNot(slot.page, restored)
-        self.assertIsNot(slot.page, newtab)
+        self.assertIs(slot.page, newtab)
         self.assertEqual(slot.page.url, "https://welcome.test/")
+        self.assertEqual(newtab.goto_calls, [("https://welcome.test/", "domcontentloaded")])
         self.assertTrue(restored.closed)
-        self.assertTrue(newtab.closed)
-        self.assertFalse(slot.page.closed)
+        self.assertFalse(newtab.closed)
         self.assertEqual(context.new_page_calls, 0)
-        self.assertEqual(context.cdp_calls, [("Target.createTarget", {"url": "https://welcome.test/", "newWindow": True, "background": False})])
+        self.assertEqual(context.cdp_calls, [])
 
     def test_patchright_new_page_restarts_closed_context_then_retries_cdp(self):
         class FakePage:

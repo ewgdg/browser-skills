@@ -98,9 +98,21 @@ class FakeContext:
         return FakeSession(self, page)
 
 
-def test_first_thread_reuses_launch_startup_window(tmp_path: Path) -> None:
-    startup_page = FakePage()
-    context = FakeContext([startup_page])
+def test_first_thread_adopts_clean_startup_page_and_closes_restored_page(tmp_path: Path) -> None:
+    events: list[str] = []
+
+    class EventPage(FakePage):
+        def close(self) -> None:
+            events.append(f"close:{self.target_id}")
+            super().close()
+
+        def goto(self, url: str, wait_until: str | None = None) -> None:
+            events.append(f"goto:{self.target_id}:{url}")
+            super().goto(url, wait_until)
+
+    restored_page = EventPage("https://www.reddit.com/", target_id="restored")
+    startup_page = EventPage("about:blank", target_id="startup")
+    context = FakeContext([restored_page, startup_page])
     runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
     runtime.browser_or_context = context
 
@@ -109,12 +121,13 @@ def test_first_thread_reuses_launch_startup_window(tmp_path: Path) -> None:
     assert slot.page is startup_page
     assert slot.page.url == "https://www.reddit.com/"
     assert startup_page.goto_calls == ["https://reddit.com"]
+    assert restored_page.closed is True
     assert startup_page.closed is False
-    assert context.pages == [startup_page]
+    assert events == ["close:restored", "goto:startup:https://reddit.com"]
     assert context.cdp_calls == []
 
 
-def test_multiple_startup_pages_are_not_adopted(tmp_path: Path) -> None:
+def test_first_thread_adopts_first_of_multiple_startup_pages(tmp_path: Path) -> None:
     first_startup = FakePage("about:blank", target_id="startup-one")
     second_startup = FakePage("chrome://newtab/", target_id="startup-two")
     context = FakeContext([first_startup, second_startup], created_target_id="created-target")
@@ -123,31 +136,96 @@ def test_multiple_startup_pages_are_not_adopted(tmp_path: Path) -> None:
 
     slot = runtime._run(runtime._new_page("thread", url="https://welcome.test/"))
 
-    assert slot.page is context.created_page
-    assert slot.page not in {first_startup, second_startup}
-    assert first_startup.closed is True
+    assert slot.page is first_startup
+    assert first_startup.goto_calls == ["https://welcome.test/"]
+    assert first_startup.closed is False
     assert second_startup.closed is True
-    assert context.create_target_calls == 1
-    assert context.cdp_calls == [
-        ("Target.createTarget", {"url": "https://welcome.test/", "newWindow": True, "background": False})
-    ]
+    assert context.create_target_calls == 0
+    assert context.cdp_calls == []
 
 
-def test_multiple_startup_pages_clean_restored_pages_and_keep_new_target(tmp_path: Path) -> None:
-    first_startup = FakePage("about:blank", target_id="startup-one")
-    second_startup = FakePage("chrome://newtab/", target_id="startup-two")
-    restored = FakePage("https://restored.test/", target_id="restored-target")
-    context = FakeContext([first_startup, second_startup, restored], created_target_id="created-target")
+def test_first_thread_adopts_first_restored_page_when_no_startup_page_exists(tmp_path: Path) -> None:
+    first_restored = FakePage("https://first-restored.test/", target_id="restored-one")
+    second_restored = FakePage("https://second-restored.test/", target_id="restored-two")
+    context = FakeContext([first_restored, second_restored])
     runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
     runtime.browser_or_context = context
 
     slot = runtime._run(runtime._new_page("thread", url="https://welcome.test/"))
 
-    assert slot.page is context.created_page
-    assert slot.page.closed is False
-    assert all(page.closed for page in (first_startup, second_startup, restored))
-    assert context.created_page in context.pages
-    assert context.create_target_calls == 1
+    assert slot.page is first_restored
+    assert first_restored.goto_calls == ["https://welcome.test/"]
+    assert first_restored.closed is False
+    assert second_restored.closed is True
+    assert context.cdp_calls == []
+
+
+def test_first_thread_navigates_adopted_page_to_about_blank(tmp_path: Path) -> None:
+    restored_page = FakePage("https://restored.test/", target_id="restored")
+    context = FakeContext([restored_page])
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.browser_or_context = context
+
+    slot = runtime._run(runtime._new_page("thread", url="about:blank"))
+
+    assert slot.page is restored_page
+    assert restored_page.goto_calls == ["about:blank"]
+    assert restored_page.url == "about:blank"
+    assert context.cdp_calls == []
+
+
+def test_closed_adopted_page_restarts_without_creating_replacement_window(monkeypatch, tmp_path: Path) -> None:
+    startup_page = FakePage("about:blank", target_id="startup")
+
+    class ClosingRestoredPage(FakePage):
+        def close(self) -> None:
+            super().close()
+            startup_page.closed = True
+
+    restored_page = ClosingRestoredPage("https://restored.test/", target_id="restored")
+    context = FakeContext([startup_page, restored_page])
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.browser_or_context = context
+
+    async def restart_closed_context() -> None:
+        raise RuntimeError("restart requested")
+
+    monkeypatch.setattr(runtime, "_restart_closed_context", restart_closed_context)
+
+    with pytest.raises(RuntimeError, match="restart requested"):
+        runtime._run(runtime._new_page("thread", url="https://welcome.test/"))
+
+    assert restored_page.closed is True
+    assert startup_page.goto_calls == []
+    assert context.create_target_calls == 0
+    assert context.cdp_calls == []
+
+
+def test_closed_adopted_page_during_navigation_restarts_without_creating_replacement_window(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class ClosingStartupPage(FakePage):
+        def goto(self, url: str, wait_until: str | None = None) -> None:
+            super().goto(url, wait_until)
+            self.closed = True
+            raise RuntimeError("navigation interrupted")
+
+    startup_page = ClosingStartupPage("about:blank", target_id="startup")
+    context = FakeContext([startup_page])
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.browser_or_context = context
+
+    async def restart_closed_context() -> None:
+        raise RuntimeError("restart requested")
+
+    monkeypatch.setattr(runtime, "_restart_closed_context", restart_closed_context)
+
+    with pytest.raises(RuntimeError, match="restart requested"):
+        runtime._run(runtime._new_page("thread", url="https://welcome.test/"))
+
+    assert startup_page.goto_calls == ["https://welcome.test/"]
+    assert context.create_target_calls == 0
+    assert context.cdp_calls == []
 
 
 def test_redirected_new_window_is_selected_by_exact_target_id_after_unrelated_race(monkeypatch, tmp_path: Path) -> None:

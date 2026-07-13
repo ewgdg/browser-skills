@@ -283,9 +283,9 @@ class PatchrightRuntime:
         target_url = str(url or "about:blank")
 
         async def create_page() -> Any:
-            startup_page = await self._reuse_startup_page(target_url)
-            if startup_page is not None:
-                return startup_page
+            initial_page = await self._adopt_initial_page(target_url)
+            if initial_page is not None:
+                return initial_page
             return await self._create_new_window_page(target_url)
 
         try:
@@ -301,18 +301,27 @@ class PatchrightRuntime:
         self.pages[thread] = slot
         return slot
 
-    async def _reuse_startup_page(self, url: str) -> Any | None:
+    async def _adopt_initial_page(self, url: str) -> Any | None:
         if self._open_owned_pages():
             return None
         context = self._context()
         open_pages = [page for page in list(context.pages) if self._page_is_open(page)]
-        if len(open_pages) != 1 or self._page_url(open_pages[0]) not in STARTUP_PAGE_URLS:
+        if not open_pages:
             return None
-        # Only the singular fresh startup page is already ours; restored or concurrent
-        # pages must go through pre-create cleanup and exact CDP target correlation.
-        page = open_pages[0]
-        if url not in STARTUP_PAGE_URLS:
+        # The first thread reuses one launch page to avoid a visible window swap; later
+        # threads require CDP target IDs so concurrent windows cannot be misidentified.
+        page = next((page for page in open_pages if self._page_url(page) in STARTUP_PAGE_URLS), open_pages[0])
+        await self._close_unowned_pages(context, keep_ids={id(page)})
+        if not self._page_is_open(page):
+            raise RuntimeError(CLOSED_TARGET_MESSAGE)
+        try:
             await self._maybe_await(page.goto(url, wait_until="domcontentloaded"))
+        except Exception as exc:
+            if not self._page_is_open(page):
+                raise RuntimeError(CLOSED_TARGET_MESSAGE) from exc
+            raise
+        if not self._page_is_open(page):
+            raise RuntimeError(CLOSED_TARGET_MESSAGE)
         return page
 
     async def _create_new_window_page(self, url: str) -> Any:
