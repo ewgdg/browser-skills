@@ -16,18 +16,9 @@ Optional backends exist, but stay opt-in:
 
 Backend selection priority: `SURF_AGENT_BACKEND`, then persisted platform user config (`surf-agent backend show` prints path), then `axi` default. Backend docs: [overview](docs/backends.md), [AXI](docs/axi-backend.md), [Camoufox](docs/camoufox-backend.md), [Patchright](docs/patchright-backend.md).
 
-## Live cookie import
+## Login cookie setup
 
-Cookie import is opt-in. It exposes only explicitly allowed domains unless the user deliberately selects `--all-domains`:
-
-```bash
-surf-agent profile cookie-source set --source ~/.config/google-chrome --source-profile Default --domain github.com
-surf-agent profile cookie-source show
-surf-agent profile import-cookies
-surf-agent profile cookie-source reset
-```
-
-The live source can remain locked because Surf uses a SQLite online backup. Source and destination must be the same Chrome family and OS user and have equal `Local State.os_crypt` metadata. For imported Linux v11 cookies, Patchright disables its `--password-store=basic` and `--use-mock-keychain` automation defaults so Chrome uses the real OS password store/keychain. Import upserts cookies without deleting destination-only rows; source logout is therefore not propagated. Automatic refresh happens only before an inactive AXI/Patchright profile starts and only after the source fingerprint changes, never on a timer. If validation fails, startup stops; fix configuration or run the explicit import command after stopping Surf. Camoufox does not support cookie import.
+Cookie import is optional and automatic after one-time setup. When the user wants Surf to reuse existing Chrome login state, follow [cookie import setup and debugging](docs/cookie-import.md). Otherwise, no cookie management is needed.
 
 ## Prerequisites
 
@@ -43,7 +34,7 @@ Persistent data lives in platform user dirs by default: config, thread state, an
 - New threads first open a short `Surf Agent` bootstrap in a normal `--new-window` Chrome window so human login/unblock has toolbar, back/forward, and extension controls. `new` then opens the welcome page; `open <url>` navigates directly to the requested URL.
 - Default browser backend uses a dedicated surf-agent Chrome profile, so backend page listing only sees Surf Agent profile pages, not the user's main Chrome tabs.
 - `surf-agent` talks to the browser bridge over local HTTP for normal operations and embeds browser profile defaults.
-- Closing the last user-visible page stops the bridge after a two-second recheck. When live cookie import is configured, the next startup can refresh cookies safely.
+- Closing the last user-visible page stops the bridge after a two-second recheck.
 - Use `--thread` to select a page/window.
 - Reuse a thread for one browsing task.
 - Use unique thread ids for parallel agents unless intentionally sharing one page.
@@ -216,4 +207,4 @@ surf-agent close-matching 'run-42-*'
 surf-agent close-all
 ```
 
-Cleanup closes remembered browser pages. The last visible page triggers a two-second idle recheck and then stops the bridge; a new page during grace cancels it. With live cookie import configured, this makes the next startup eligible to refresh cookies. Use `reset` only when intentionally clearing state while leaving page open.
+Cleanup closes remembered browser pages. The last visible page triggers a two-second idle recheck and then stops the bridge; a new page during grace cancels it. Use `reset` only when intentionally clearing state while leaving page open.
