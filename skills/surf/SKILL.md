@@ -1,6 +1,6 @@
 ---
 name: surf
-description: Browser control through `surf-agent`, backed by a persistent browser bridge and a dedicated surf-agent Chrome profile. Use for browsing, testing, screenshots, forms, page inspection, and debugging without touching the user's main Chrome tabs.
+description: Real browser control for web research, documentation lookup, browsing, testing, screenshots, forms, page inspection, and debugging. Use as a fallback when lightweight API-based tools are unavailable, or as the primary approach when you need high-fidelity browser access that won't be blocked.
 ---
 
 # surf
