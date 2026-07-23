@@ -16,9 +16,11 @@ Optional backends exist, but stay opt-in:
 
 Backend selection priority: `SURF_AGENT_BACKEND`, then persisted platform user config (`surf-agent backend show` prints path), then `axi` default. Backend docs: [overview](docs/backends.md), [AXI](docs/axi-backend.md), [Camoufox](docs/camoufox-backend.md), [Patchright](docs/patchright-backend.md).
 
-## Login cookie setup
+## Login state
 
-Cookie import is optional and automatic after one-time setup. When the user wants Surf to reuse existing Chrome login state, follow [cookie import setup and debugging](docs/cookie-import.md). Otherwise, no cookie management is needed.
+**Cookie import** is optional and automatic after one-time setup. When the user wants Surf to reuse existing Chrome login state, follow [cookie import setup and debugging](docs/cookie-import.md).
+
+**1Password autofill** via browser extension. Setup: [1Password setup](docs/1password-setup.md). Workflow: [1Password autofill](docs/1password-autofill.md).
 
 ## Prerequisites
 
