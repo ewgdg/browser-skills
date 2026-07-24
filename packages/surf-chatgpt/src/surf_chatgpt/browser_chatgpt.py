@@ -119,7 +119,6 @@ def ask_reusable_session(
     except SkillError as exc:
         if target and exc.type in HUMAN_GATE_ERRORS:
             preserve_for_handoff = True
-            _focus_target_best_effort(runner, target)
             exc.handoff = _human_gate_handoff(exc.type, target.thread)
             exc.hint = _human_gate_hint(exc.type, target.thread)
         raise
@@ -180,7 +179,6 @@ def select_reusable_model_choice(
         }
     except SkillError as exc:
         if exc.type in HUMAN_GATE_ERRORS:
-            _focus_target_best_effort(runner, target)
             retry = ["model", "select", "--thread", target.thread]
             if model_query:
                 retry.extend(["--model", model_query])
@@ -261,14 +259,6 @@ def _close_target_best_effort(runner: SurfRunner, target: BrowserTarget) -> None
         pass
 
 
-def _focus_target_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
-    try:
-        runner.focus(target.thread, timeout=10)
-    except SkillError:
-        # The resumable thread is still useful even if the window manager cannot focus it.
-        pass
-
-
 def _human_gate_handoff(error_type: str, thread: str, *, retry: list[str] | None = None) -> dict[str, Any]:
     action = "complete_login" if error_type == "login_required" else "complete_challenge"
     return {
@@ -281,7 +271,7 @@ def _human_gate_handoff(error_type: str, thread: str, *, retry: list[str] | None
 def _human_gate_hint(error_type: str, thread: str, *, retry: list[str] | None = None) -> str:
     task = "Log in to ChatGPT" if error_type == "login_required" else "Complete the ChatGPT verification challenge"
     retry_command = shlex.join(["surf-chatgpt", *(retry or ["ask", "--thread", thread])])
-    return f"{task} in the focused Surf Agent window, then retry with `{retry_command}`."
+    return f"{task} in the preserved Surf Agent window, then retry with `{retry_command}`."
 
 
 def _wait_load_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:

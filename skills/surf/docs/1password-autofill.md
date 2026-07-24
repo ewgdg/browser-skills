@@ -45,4 +45,4 @@ Check the final diff: if still on the login page, 1Password didn't auto-submit â
 
 ## Fallback (locked or no match)
 
-When the snapshot doesn't show the "1Password menu is available" status, fall back to human-in-the-loop: focus the window, tell user to autofill, then snapshot after confirmation.
+When the snapshot doesn't show the "1Password menu is available" status, fall back to the human-in-the-loop workflow in the main Surf skill.

@@ -148,7 +148,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertNotIn(["focus"], [command[1] for command in surf.commands])
         self.assertNotIn(["close"], [command[1] for command in surf.commands])
 
-    def test_model_selection_login_handoff_returns_valid_thinking_retry(self):
+    def test_model_selection_login_handoff_preserves_thread_without_focus(self):
         class LoginFake(FakeSurfRunner):
             def _handle_js(self, code):
                 if "hasPrompt" in code and "loginRequired" in code:
@@ -160,11 +160,16 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
             select_reusable_model_choice(model_query=None, thinking_query="Instant", surf=surf)
 
         thread = surf.commands[0][0]
+        self.assertEqual(ctx.exception.type, "login_required")
+        self.assertEqual(ctx.exception.handoff["action"], "complete_login")
+        self.assertEqual(ctx.exception.handoff["thread"], thread)
         self.assertEqual(
             ctx.exception.handoff["retry"],
             ["model", "select", "--thread", thread, "--thinking", "Instant"],
         )
-        self.assertEqual(surf.commands[-1], (thread, ["focus"]))
+        self.assertIn("preserved Surf Agent window", ctx.exception.hint)
+        self.assertNotIn("focused", ctx.exception.hint)
+        self.assertNotIn(["focus"], [command[1] for command in surf.commands])
         self.assertNotIn(["close"], [command[1] for command in surf.commands])
 
     def test_ephemeral_opens_thread_returns_session_and_closes(self):
@@ -183,7 +188,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(surf.commands[1], (thread, ["open", "https://chatgpt.com/"]))
         self.assertEqual(surf.commands[-1], (thread, ["close"]))
 
-    def test_ephemeral_login_failure_preserves_and_focuses_resumable_thread(self):
+    def test_ephemeral_login_failure_preserves_resumable_thread_without_focus(self):
         class LoginFake(FakeSurfRunner):
             def _handle_js(self, code):
                 if "hasPrompt" in code and "loginRequired" in code:
@@ -193,12 +198,18 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = LoginFake()
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session("x", ReusableAskOptions(session_policy="ephemeral", timeout=5), surf=surf)
+
         self.assertEqual(ctx.exception.type, "login_required")
         thread = surf.commands[0][0]
-        self.assertEqual(surf.commands[-1], (thread, ["focus"]))
+        self.assertNotIn(["focus"], [command[1] for command in surf.commands])
         self.assertNotIn(["close"], [command[1] for command in surf.commands])
+        self.assertEqual(ctx.exception.handoff["action"], "complete_login")
         self.assertEqual(ctx.exception.handoff["thread"], thread)
         self.assertEqual(ctx.exception.handoff["retry"], ["ask", "--thread", thread])
+        self.assertIn("preserved Surf Agent window", ctx.exception.hint)
+        self.assertNotIn("focused", ctx.exception.hint)
+        self.assertNotIn("inject", surf.js_events)
+        self.assertNotIn("send", surf.js_events)
 
     def test_logged_out_prompt_composer_still_requires_login_by_default(self):
         class LoggedOutComposerFake(FakeSurfRunner):
@@ -210,12 +221,15 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = LoggedOutComposerFake()
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session("x", ReusableAskOptions(session_policy="ephemeral", timeout=5), surf=surf)
+
         self.assertEqual(ctx.exception.type, "login_required")
         self.assertIn("logged-in", ctx.exception.message)
-        self.assertEqual(surf.commands[-1][1], ["focus"])
+        self.assertNotIn(["focus"], [command[1] for command in surf.commands])
         self.assertNotIn(["close"], [command[1] for command in surf.commands])
+        self.assertNotIn("inject", surf.js_events)
+        self.assertNotIn("send", surf.js_events)
 
-    def test_ephemeral_challenge_failure_preserves_and_focuses_resumable_thread(self):
+    def test_ephemeral_challenge_failure_preserves_resumable_thread_without_focus(self):
         class ChallengeFake(FakeSurfRunner):
             def _handle_js(self, code):
                 if "hasPrompt" in code and "loginRequired" in code:
@@ -229,21 +243,25 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         thread = surf.commands[0][0]
         self.assertEqual(ctx.exception.type, "captcha_or_cloudflare")
         self.assertEqual(ctx.exception.handoff["action"], "complete_challenge")
-        self.assertEqual(surf.commands[-1], (thread, ["focus"]))
+        self.assertEqual(ctx.exception.handoff["thread"], thread)
+        self.assertNotIn(["focus"], [command[1] for command in surf.commands])
         self.assertNotIn(["close"], [command[1] for command in surf.commands])
+        self.assertIn("preserved Surf Agent window", ctx.exception.hint)
+        self.assertNotIn("focused", ctx.exception.hint)
+        self.assertNotIn("inject", surf.js_events)
+        self.assertNotIn("send", surf.js_events)
 
-    def test_focus_failure_does_not_replace_human_gate_or_close_thread(self):
-        class FocusFailureFake(FakeSurfRunner):
+    def test_human_gate_never_calls_focus(self):
+        class FocusForbiddenFake(FakeSurfRunner):
             def _handle_js(self, code):
                 if "hasPrompt" in code and "loginRequired" in code:
                     return {"hasPrompt": False, "challenge": False, "loginRequired": True, "authenticated": False}
                 return super()._handle_js(code)
 
             def focus(self, thread, timeout=10):
-                self.commands.append((thread, ["focus"]))
-                raise SkillError("browser_unavailable", "window manager unavailable")
+                raise AssertionError(f"automatic human gate focused thread {thread}")
 
-        surf = FocusFailureFake()
+        surf = FocusForbiddenFake()
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session("x", ReusableAskOptions(session_policy="ephemeral", timeout=5), surf=surf)
 

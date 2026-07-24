@@ -30,7 +30,7 @@ uv tool install \
 Also required:
 
 - surf-agent browser backend configured and able to open pages.
-- Logged in to `chatgpt.com` in the surf-agent browser profile. Run `surf-chatgpt login`; it opens and focuses a dedicated login window through the normal Surf bridge, including when the bridge is already running.
+- Logged in to `chatgpt.com` in the surf-agent browser profile. Run `surf-chatgpt login` to open a dedicated login window through the normal Surf bridge, including when the bridge is already running.
 
 ## Commands
 
@@ -57,7 +57,7 @@ Default output is compact JSON:
 Errors are structured and nonzero:
 
 ```json
-{"ok":false,"source":"external-chatgpt-via-surf-agent","error":{"type":"login_required","message":"ChatGPT login required","hint":"Log in to ChatGPT in the focused Surf Agent window, then retry the same prompt with `surf-chatgpt ask --thread surf-chatgpt-...`.","handoff":{"action":"complete_login","thread":"surf-chatgpt-...","retry":["ask","--thread","surf-chatgpt-..."]}}}
+{"ok":false,"source":"external-chatgpt-via-surf-agent","error":{"type":"login_required","message":"ChatGPT login required","hint":"Log in to ChatGPT in the preserved Surf Agent window, then retry the same prompt with `surf-chatgpt ask --thread surf-chatgpt-...`.","handoff":{"action":"complete_login","thread":"surf-chatgpt-...","retry":["ask","--thread","surf-chatgpt-..."]}}}
 ```
 
 ## Model / thinking selection
@@ -120,15 +120,15 @@ Failure classes include `login_required`, `captcha_or_cloudflare`, `ui_changed`,
 
 ## Login workflow
 
-When `ask` returns `login_required` or `captcha_or_cloudflare` with `error.handoff`, it preserves and focuses the exact blocked browser thread. Ask the user to complete the indicated action in that window. After confirmation, retry the same prompt using the returned arguments:
+When `ask` or `model select` returns `login_required` or `captcha_or_cloudflare` with `error.handoff`, it preserves the exact blocked browser thread. Message the user with the indicated action and preserved thread, then stop and wait for explicit confirmation. After confirmation, retry the same operation using the returned arguments. For `ask`, retain and resend the exact original prompt:
 
 ```bash
 surf-chatgpt ask --thread '<error.handoff.thread>' 'same prompt'
 ```
 
-Do not open a different login thread, close the preserved thread, proceed anonymously, or resend before the user confirms. The original prompt is not sent before readiness checks complete.
+Keep using the preserved thread and wait for confirmation before retrying. The original prompt is not sent before readiness checks complete.
 
-Use `surf-chatgpt login` only for proactive login or a `login_required` error without handoff metadata. Ask the user to log in to ChatGPT in the opened Surf Agent browser profile, then retry. Do not proceed with logged-out ChatGPT unless the user explicitly asks for anonymous ChatGPT and accepts `--allow-logged-out`.
+Use `surf-chatgpt login` only for proactive login or a `login_required` error without handoff metadata. Ask the user to log in through the dedicated window, then retry. Do not proceed with logged-out ChatGPT unless the user explicitly asks for anonymous ChatGPT and accepts `--allow-logged-out`.
 
 ## Validation checklist
 

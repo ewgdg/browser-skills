@@ -79,18 +79,18 @@ Use the already-known red case and change one variable:
 2. Disable `honor-xdg-activation-with-invalid-serial` and reload Niri.
 3. Navigate the same target to Google; record Niri focus after `domcontentloaded` and again after a short settling interval.
 4. Repeat for ChatGPT and a passive page, for both first and reused targets.
-5. Run the explicit HITL focus command once.
+5. Trigger and complete a HITL handoff.
 
 Success criteria:
 
 - Normal navigation never changes the focused Niri window.
-- Explicit HITL still has a deliberate way to surface the Surf window.
+- The HITL workflow remains usable for manual completion.
 
-The fifth step matters: default Niri may also reject an intentional CDP `bringToFront()` if Chromium has no valid recent input serial. If so, keep Niri's protection and make HITL explicit through a compositor-authorized action or a user notification/manual focus flow. Do not globally re-enable invalid activations just to make HITL focus work.
+The fifth step verifies that the manual unblock workflow still works under the corrected compositor policy.
 
 ## Fix direction after the test
 
 1. **Preferred system policy:** remove the Niri debug opt-out. This is the generic boundary that decides whether an unfocused client may take desktop focus.
-2. **Preserve HITL intentionally:** if CDP `bringToFront()` is rejected, use an explicit Niri IPC focus action for the known Surf window, or notify the user and keep waiting. This action belongs only on login/CAPTCHA handoff.
-3. **Browser-local defense in depth:** if the init-script probe proves `window.focus()` is the site trigger, suppress top-level `window.focus()` in background Surf pages and restore normal behavior for explicit HITL. This modifies page semantics and is less robust than compositor enforcement.
+2. **Preserve HITL intentionally:** keep login/CAPTCHA handoff explicit and user-driven.
+3. **Browser-local defense in depth:** if the init-script probe proves `window.focus()` is the site trigger, suppress top-level `window.focus()` in background Surf pages. This modifies page semantics and is less robust than compositor enforcement.
 4. **Do not treat `focus: false`, `Page.navigate`, or focus emulation as a complete fix.** They control target creation, navigation, or page-visible focus state—not the compositor's activation policy.

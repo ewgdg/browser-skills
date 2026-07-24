@@ -77,12 +77,11 @@ surf-agent close-matching 'run-42-*'
 ```bash
 surf-agent --thread main open https://x.com/explore
 surf-agent --thread main snapshot || true
-surf-agent --thread main focus
 ```
 
-Tell user: "Please complete blocker in Chrome, then tell me when done."
+Tell the user: "Please complete the blocker in the Surf Agent window, then tell me when done."
 
-After user confirms:
+Stop and wait for explicit confirmation. After the user confirms:
 
 ```bash
 surf-agent --thread main snapshot
