@@ -74,6 +74,7 @@ from .constants import (
     SURF_AGENT_WINDOW_TITLE,
 )
 from .errors import SurfAgentError
+from .pacing import PACING_PROFILE_NAMES, Pacer
 
 __all__ = [
     "APP_DIRS",
@@ -176,6 +177,7 @@ class AgentConfig:
 class DoOptions:
     jsonl: bool = False
     quiet: bool = False
+    pace: str = "none"
 
 
 @dataclass
@@ -314,6 +316,7 @@ class SurfAgent:
         if command in FORBIDDEN_COMMANDS:
             raise SurfAgentError(forbidden_message(command), exit_code=2)
         values = tuple(args[1:])
+        validate_paced_mutation_args(command, values)
         if command == "snapshot" and len(args) > 1:
             mode = parse_snapshot_flags(args)
             if mode == "baseline":
@@ -322,10 +325,8 @@ class SurfAgent:
             decision = choose_snapshot_diff(None, current)
             return decision.output
         if command == "open":
-            require_arg_count(values, 1, "open requires exactly one URL")
             return self.browser_backend.open(values[0])
         if command == "new":
-            reject_args(command, values)
             return self.browser_backend.new()
         if command == "snapshot":
             reject_args(command, values)
@@ -334,23 +335,14 @@ class SurfAgent:
             reject_args(command, values)
             return self.browser_backend.text()
         if command == "click":
-            require_arg_count(values, 1, "click requires exactly one target")
             return self.browser_backend.click(values[0])
         if command == "fill":
-            if len(values) < 2:
-                raise SurfAgentError("fill requires target and text", exit_code=2)
             return self.browser_backend.fill(values[0], " ".join(values[1:]))
         if command == "type":
-            if not values:
-                raise SurfAgentError("type requires text", exit_code=2)
             return self.browser_backend.type_text(" ".join(values))
         if command == "press":
-            require_arg_count(values, 1, "press requires exactly one key")
             return self.browser_backend.press(values[0])
         if command == "scroll":
-            require_arg_count(values, 1, "scroll requires direction: up, down, top, or bottom")
-            if values[0] not in {"up", "down", "top", "bottom"}:
-                raise SurfAgentError("scroll requires direction: up, down, top, or bottom", exit_code=2)
             return self.browser_backend.scroll(values[0])
         if command == "wait":
             require_arg_count(values, 1, "wait requires one duration in milliseconds or text target")
@@ -360,7 +352,6 @@ class SurfAgent:
         if command == "eval":
             return self.browser_backend.evaluate(parse_eval_code(values, stdin=sys.stdin))
         if command == "back":
-            reject_args(command, values)
             return self.browser_backend.back()
         raise SurfAgentError(f"unsupported browser command: {command}", exit_code=2)
 
@@ -898,6 +889,23 @@ def coerce_int(value: Any) -> int | None:
         return None
 
 
+def validate_paced_mutation_args(command: str, values: Sequence[str]) -> None:
+    if command == "open":
+        require_arg_count(values, 1, "open requires exactly one URL")
+    elif command in {"new", "back"}:
+        reject_args(command, values)
+    elif command == "click":
+        require_arg_count(values, 1, "click requires exactly one target")
+    elif command == "fill" and len(values) < 2:
+        raise SurfAgentError("fill requires target and text", exit_code=2)
+    elif command == "type" and not values:
+        raise SurfAgentError("type requires text", exit_code=2)
+    elif command == "press":
+        require_arg_count(values, 1, "press requires exactly one key")
+    elif command == "scroll":
+        require_arg_count(values, 1, "scroll requires direction: up, down, top, or bottom")
+        if values[0] not in {"up", "down", "top", "bottom"}:
+            raise SurfAgentError("scroll requires direction: up, down, top, or bottom", exit_code=2)
 
 
 def require_arg_count(values: Sequence[str], expected: int, message: str) -> None:
@@ -1100,7 +1108,19 @@ def format_snapshot_header(kind: str, reason: str) -> str:
 DO_SEPARATORS = {"::", "--then"}
 DO_SHELL_OPERATORS = {"|", "&&", "||", ";"}
 DO_FORBIDDEN_COMMANDS = (MANAGEMENT_COMMANDS - {"state"}) | {"list"}
-def run_do(agent: SurfAgent, *, thread: str, argv: Sequence[str], stdin: Any = None, stdout: Any = None, stderr: Any = None) -> int:
+DO_PACED_MUTATION_COMMANDS = {"open", "new", "back", "fill", "type", "click", "press", "scroll"}
+
+
+def run_do(
+    agent: SurfAgent,
+    *,
+    thread: str,
+    argv: Sequence[str],
+    stdin: Any = None,
+    stdout: Any = None,
+    stderr: Any = None,
+    pacer: Pacer | None = None,
+) -> int:
     stdin = sys.stdin if stdin is None else stdin
     stdout = sys.stdout if stdout is None else stdout
     stderr = sys.stderr if stderr is None else stderr
@@ -1110,11 +1130,16 @@ def run_do(agent: SurfAgent, *, thread: str, argv: Sequence[str], stdin: Any = N
         print(f"surf-agent: {exc}", file=stderr)
         return exc.exit_code
 
+    active_pacer = pacer or Pacer.for_name(options.pace)
     context = DoContext()
     emitted: list[tuple[int, DoStep, str]] = []
     json_records: list[dict[str, Any]] = []
+    previous_step: DoStep | None = None
     for index, step in enumerate(steps, start=1):
         try:
+            if previous_step and should_pace_do_transition(previous_step, step, options=options):
+                validate_paced_mutation_args(step.command, step.args[1:])
+                active_pacer.pause()
             output = execute_do_step(agent, step, thread=thread, context=context)
         except SurfAgentError as exc:
             if options.jsonl:
@@ -1124,6 +1149,7 @@ def run_do(agent: SurfAgent, *, thread: str, argv: Sequence[str], stdin: Any = N
                 print(f"surf-agent do: step {index} `{step.display}` failed: {exc}", file=stderr)
             return exc.exit_code
 
+        previous_step = step
         if should_emit_step(step, index=index, total=len(steps), options=options):
             if options.jsonl:
                 json_records.append(do_success_record(index, step, output))
@@ -1141,13 +1167,20 @@ def parse_do_invocation(argv: Sequence[str], *, stdin: Any) -> tuple[DoOptions, 
     args = list(argv)
     jsonl = False
     quiet = False
-    while args and args[0] in {"--jsonl", "--quiet"}:
+    pace = "none"
+    while args and args[0] in {"--jsonl", "--quiet", "--pace"}:
         flag = args.pop(0)
         if flag == "--jsonl":
             jsonl = True
         elif flag == "--quiet":
             quiet = True
-    options = DoOptions(jsonl=jsonl, quiet=quiet)
+        elif flag == "--pace":
+            if not args:
+                raise SurfAgentError("--pace requires natural or none", exit_code=2)
+            pace = args.pop(0)
+            if pace not in PACING_PROFILE_NAMES:
+                raise SurfAgentError(f"unsupported --pace profile: {pace}; expected natural or none", exit_code=2)
+    options = DoOptions(jsonl=jsonl, quiet=quiet, pace=pace)
 
     if not args or args == ["-"]:
         if hasattr(stdin, "isatty") and stdin.isatty():
@@ -1236,6 +1269,14 @@ def execute_do_step(agent: SurfAgent, step: DoStep, *, thread: str, context: DoC
             context.snapshot_baseline = current
             return decision.output
     return agent.execute_in_window(step.args)
+
+
+def should_pace_do_transition(previous: DoStep, following: DoStep, *, options: DoOptions) -> bool:
+    if options.pace == "none":
+        return False
+    if previous.command == "wait" or following.command == "wait":
+        return False
+    return following.command in DO_PACED_MUTATION_COMMANDS
 
 
 def should_emit_step(step: DoStep, *, index: int, total: int, options: DoOptions) -> bool:
@@ -1404,7 +1445,7 @@ def print_help(stream: Any) -> None:
         "  surf-agent close-matching <glob>               close remembered thread pages/windows whose thread names match\n"
         "  surf-agent [--thread ID] reset                 clear thread state without closing page\n"
         "  surf-agent [--thread ID] bridge stop           explicit destructive browser bridge stop\n"
-        "  surf-agent [--thread ID] do [-]                run newline-separated steps from stdin\n"
+        "  surf-agent [--thread ID] do [--pace natural|none] [-]  run composed steps; pacing is opt-in\n"
         "  surf-agent [--thread ID] <command...>          run supported browser command in thread page\n\n"
         "Supported browser commands:\n"
         "  open <url>, snapshot, text, eval <code|--stdin|--file path>, click <target>, fill <target> <text>, type <text>,\n"
@@ -1416,6 +1457,7 @@ def print_help(stream: Any) -> None:
         "  printf 'document.title' | surf-agent --thread main eval --stdin\n"
         "  surf-agent --thread main eval --file /tmp/script.js\n"
         "  printf 'open https://example.com\\nsnapshot\\n' | surf-agent --thread main do\n"
+        "  surf-agent --thread main do --pace natural open https://example.com :: fill @e1 hello :: click @e2\n"
         "  surf-agent profile open https://x.com\n"
         "  surf-agent profile cookie-source set --source ~/.config/google-chrome --source-profile Default --domain github.com\n"
         "  surf-agent profile import-cookies\n"

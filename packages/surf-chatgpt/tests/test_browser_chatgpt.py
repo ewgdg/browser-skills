@@ -1,5 +1,6 @@
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from patchright.sync_api import sync_playwright
 
@@ -17,6 +18,19 @@ class FakeTime:
 
     def sleep(self, seconds):
         self.now += seconds
+
+
+class NoOpPacer:
+    def pause(self):
+        pass
+
+
+class RecordingPacer:
+    def __init__(self, events):
+        self.events = events
+
+    def pause(self):
+        self.events.append("pace")
 
 
 class FakeSurfRunner:
@@ -105,6 +119,11 @@ class FakeSurfRunner:
 
 
 class BrowserChatGPTSessionTests(unittest.TestCase):
+    def setUp(self):
+        self.pacer_factory = patch("surf_agent.pacing.Pacer.for_name", return_value=NoOpPacer())
+        self.pacer_factory.start()
+        self.addCleanup(self.pacer_factory.stop)
+
     def test_model_selection_dry_run_stays_open_without_stealing_focus(self):
         class VerifiedSelectionFake(FakeSurfRunner):
             def _handle_js(self, code):
@@ -188,6 +207,31 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(surf.commands[1], (thread, ["open", "https://chatgpt.com/"]))
         self.assertEqual(surf.commands[-1], (thread, ["close"]))
 
+    def test_default_pacing_pauses_after_injection_before_submit(self):
+        surf = FakeSurfRunner()
+
+        result = ask_reusable_session(
+            "normal user prompt",
+            ReusableAskOptions(session_policy="ephemeral", timeout=5, pace="natural"),
+            surf=surf,
+            pacer=RecordingPacer(surf.js_events),
+        )
+
+        self.assertEqual(result["response"], "assistant answer")
+        self.assertEqual(surf.js_events[:5], ["status", "snapshot", "inject", "pace", "send"])
+        self.assertEqual(surf.js_events.count("pace"), 1)
+
+    def test_pacing_opt_out_skips_semantic_pauses(self):
+        surf = FakeSurfRunner()
+
+        ask_reusable_session(
+            "normal user prompt",
+            ReusableAskOptions(session_policy="ephemeral", timeout=5, pace="none"),
+            surf=surf,
+        )
+
+        self.assertNotIn("pace", surf.js_events)
+
     def test_ephemeral_login_failure_preserves_resumable_thread_without_focus(self):
         class LoginFake(FakeSurfRunner):
             def _handle_js(self, code):
@@ -197,9 +241,15 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
 
         surf = LoginFake()
         with self.assertRaises(SkillError) as ctx:
-            ask_reusable_session("x", ReusableAskOptions(session_policy="ephemeral", timeout=5), surf=surf)
+            ask_reusable_session(
+                "x",
+                ReusableAskOptions(session_policy="ephemeral", timeout=5, pace="natural"),
+                surf=surf,
+                pacer=RecordingPacer(surf.js_events),
+            )
 
         self.assertEqual(ctx.exception.type, "login_required")
+        self.assertNotIn("pace", surf.js_events)
         thread = surf.commands[0][0]
         self.assertNotIn(["focus"], [command[1] for command in surf.commands])
         self.assertNotIn(["close"], [command[1] for command in surf.commands])
@@ -430,12 +480,14 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, model_query="pro", thinking_query="High"),
+            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, model_query="pro", thinking_query="High", pace="natural"),
             surf=surf,
+            pacer=RecordingPacer(surf.js_events),
         )
         self.assertEqual(result["model"], "GPT-5.5 Pro")
         self.assertEqual(result["thinking"], "High")
-        self.assertLess(surf.js_events.index("model"), surf.js_events.index("inject"))
+        self.assertEqual(surf.js_events[:7], ["status", "model", "pace", "snapshot", "inject", "pace", "send"])
+        self.assertEqual(surf.js_events.count("pace"), 2)
 
     def test_empty_model_menu_is_retried_until_ready_before_prompt(self):
         class DelayedModelMenuFake(FakeSurfRunner):
@@ -453,13 +505,15 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = DelayedModelMenuFake()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(session_policy="ephemeral", timeout=5, model_query="pro", thinking_query="High"),
+            ReusableAskOptions(session_policy="ephemeral", timeout=5, model_query="pro", thinking_query="High", pace="natural"),
             surf=surf,
+            pacer=RecordingPacer(surf.js_events),
         )
 
         self.assertEqual(result["model"], "GPT-5.5 Pro")
         self.assertEqual(surf.model_attempts, 3)
-        self.assertLess(surf.js_events.index("model"), surf.js_events.index("inject"))
+        self.assertEqual(surf.js_events.count("pace"), 2)
+        self.assertEqual(surf.js_events[:7], ["status", "model", "pace", "snapshot", "inject", "pace", "send"])
 
     def test_latest_model_and_highest_thinking_request_reaches_selector(self):
         surf = FakeSurfRunner()

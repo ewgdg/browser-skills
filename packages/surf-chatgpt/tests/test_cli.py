@@ -21,6 +21,26 @@ class CliValidationTests(unittest.TestCase):
         options = mocked.call_args.args[1]
         self.assertIsNone(options.model_query)
         self.assertEqual(options.thinking_query, "pro")
+        self.assertEqual(options.pace, "natural")
+
+    def test_ask_accepts_pacing_opt_out(self):
+        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "--pace", "none", "x"], stdout=out)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(mocked.call_args.args[1].pace, "none")
+
+    def test_ask_rejects_unknown_pacing_profile_as_structured_invalid_args(self):
+        out = io.StringIO()
+
+        code = cli.main(["ask", "--pace", "fast", "x"], stdout=out)
+
+        self.assertEqual(code, 2)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["error"]["type"], "invalid_args")
+        self.assertIn("--pace", payload["error"]["message"])
 
     def test_model_select_verifies_picker_without_reading_or_sending_a_prompt(self):
         fake = {

@@ -44,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--thinking", help="Fuzzy ChatGPT thinking-mode query, e.g. instant, high, extra-high, or pro. Use highest for the first available mode.")
     ask.add_argument("--allow-logged-out", action="store_true", help="Allow anonymous ChatGPT. Default requires a logged-in ChatGPT session so account models are available.")
     ask.add_argument("--timeout", type=int, default=2700, help="ChatGPT wait timeout in seconds. Default: 2700.")
+    ask.add_argument("--pace", choices=("natural", "none"), default="natural", help="Inter-action pacing profile. Default: natural; use none to disable.")
     ask.add_argument("--format", choices=("json", "text"), default="json")
     ask.add_argument("prompt", nargs="?", help="Prompt text. If omitted, read stdin. Use -- before prompts that start with -.")
 
@@ -147,6 +148,7 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
         timeout=args.timeout,
         start_new=args.new or _keep_open_implies_new(args),
         allow_logged_out=args.allow_logged_out,
+        pace=args.pace,
     )
     return ask_chatgpt(user_prompt, options)
 

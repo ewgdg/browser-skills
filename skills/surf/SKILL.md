@@ -135,6 +135,8 @@ surf-agent --thread main wait "Loaded"
 
 `do` composes one command per stdin line in the current thread. It is fail-fast. Non-final step output is suppressed unless the step has `--emit`; final step output is printed unless it has `--quiet`. A single emitted step prints raw output. Multiple emitted steps are separated with fenced `surf-step` blocks.
 
+Use `do --pace natural` to add a short randomized pause before non-initial navigation, input, activation, and scroll steps. Observation commands and generic `eval` remain immediate. An explicit `wait` suppresses automatic pacing on both adjacent boundaries, so delays do not stack. Pacing is opt-in for `do`; standalone commands and plain `do` remain unchanged. Use `--pace none` to state the default explicitly.
+
 Snapshot modes inside one `do` invocation:
 
 - `snapshot`: full snapshot; does not set a baseline.
@@ -160,6 +162,13 @@ EOF
 
 surf-agent --thread main do --jsonl <<'EOF'
 open https://example.com --emit
+snapshot
+EOF
+
+surf-agent --thread main do --pace natural <<'EOF'
+open https://example.com
+fill @search "browser skills"
+press Enter
 snapshot
 EOF
 ```

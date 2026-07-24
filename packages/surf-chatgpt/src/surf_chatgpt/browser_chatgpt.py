@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
+from surf_agent.pacing import Pacer
+
 from .errors import SkillError
 from .extract import clean_response
 from .page_detection import blocking_challenge_detector_js
@@ -58,6 +60,7 @@ class ReusableAskOptions:
     timeout: int = 2700
     thinking_query: str | None = None
     allow_logged_out: bool = False
+    pace: str = "natural"
 
 
 def ask_reusable_session(
@@ -65,6 +68,7 @@ def ask_reusable_session(
     options: ReusableAskOptions,
     *,
     surf: SurfRunner | None = None,
+    pacer: Pacer | None = None,
 ) -> dict[str, Any]:
     """Ask ChatGPT through controlled browser automation.
 
@@ -72,6 +76,7 @@ def ask_reusable_session(
     Persistent continuity is explicit: callers pass a ChatGPT `/c/<id>` URL or id.
     """
     runner = surf or SurfRunner()
+    active_pacer = pacer or Pacer.for_name(options.pace)
     started_at = time.time()
     target: BrowserTarget | None = None
     preserve_for_handoff = False
@@ -82,10 +87,14 @@ def ask_reusable_session(
         if options.allow_logged_out and (options.model_query or options.thinking_query):
             raise SkillError("invalid_args", "--allow-logged-out cannot be combined with model or thinking selection")
         _assert_chatgpt_ready(runner, target, allow_logged_out=options.allow_logged_out)
-        selection = _select_model_choice(runner, target, options.model_query, options.thinking_query) if (options.model_query or options.thinking_query) else {"model": "current", "thinking": None}
+        selection_requested = bool(options.model_query or options.thinking_query)
+        selection = _select_model_choice(runner, target, options.model_query, options.thinking_query) if selection_requested else {"model": "current", "thinking": None}
+        if selection_requested:
+            active_pacer.pause()
 
         baseline = _read_snapshot(runner, target)
         _inject_prompt(runner, target, prompt)
+        active_pacer.pause()
         _send_prompt(runner, target)
         response = _wait_for_response(runner, target, baseline, timeout_seconds=options.timeout)
         warnings: list[str] = list(response.warnings)

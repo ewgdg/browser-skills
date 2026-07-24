@@ -40,6 +40,7 @@ printf 'Question...' | surf-chatgpt ask
 printf 'Critique this plan: ...' | surf-chatgpt ask --format text
 surf-chatgpt ask --thinking pro 'Question...'
 surf-chatgpt ask --model latest --thinking highest 'Question...'
+surf-chatgpt ask --pace none 'Question...'  # disable default natural pacing
 surf-chatgpt ask --session '<session-id>' --model gpt-5.6-sol --thinking extra-high 'Follow up...'
 surf-chatgpt ask --thread '<thread-id>' 'Follow up in kept browser thread...'
 surf-chatgpt login
@@ -74,6 +75,10 @@ surf-chatgpt ask --model gpt-5.6-sol 'Question...'
 surf-chatgpt ask --model gpt-5.6-sol --thinking pro 'Question...'
 surf-chatgpt ask --model latest --thinking highest 'Question...'
 ```
+
+## Natural pacing
+
+`ask` uses short randomized UI pacing by default. Use `--pace none` to disable it.
 
 ## Session policy
 
@@ -136,6 +141,7 @@ Use `surf-chatgpt login` only for proactive login or a `login_required` error wi
 surf-chatgpt --help
 surf-chatgpt ask --format json < /dev/null; test $? -ne 0
 surf-chatgpt ask --help | grep -q -- 'prompt'
+surf-chatgpt ask --help | grep -q -- '--pace'
 surf-chatgpt login --help | grep -q -- 'manual login'
 surf-chatgpt ask --help | grep -q -- '--session' && surf-chatgpt ask --help | grep -q -- '--thread' && ! surf-chatgpt ask --help | grep -q -- '--window-id'
 surf-chatgpt session search --help | grep -q -- '--limit'

@@ -1642,6 +1642,207 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(error.getvalue(), "")
         self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "click", {"uid": "g1:1"}], ["bridge", "select_page", {"pageId": 22}], ["bridge", "take_snapshot", {}]])
 
+    def test_do_natural_pacing_runs_before_eligible_mutations_only(self):
+        events = []
+
+        class RecordingAgent:
+            def execute_in_window(self, args):
+                events.append(tuple(args))
+                return f"{args[0]} output"
+
+        class RecordingPacer:
+            def pause(self):
+                events.append("pace")
+
+        exit_code = run_do(
+            RecordingAgent(),
+            thread="thread",
+            argv=[
+                "--pace",
+                "natural",
+                "text",
+                "::",
+                "fill",
+                "@e1",
+                "hello",
+                "::",
+                "wait",
+                "1000",
+                "::",
+                "click",
+                "@e2",
+                "::",
+                "eval",
+                "1",
+                "::",
+                "scroll",
+                "down",
+                "::",
+                "screenshot",
+                "::",
+                "back",
+            ],
+            stdin=io.StringIO(),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            pacer=RecordingPacer(),
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            events,
+            [
+                ("text",),
+                "pace",
+                ("fill", "@e1", "hello"),
+                ("wait", "1000"),
+                ("click", "@e2"),
+                ("eval", "1"),
+                "pace",
+                ("scroll", "down"),
+                ("screenshot",),
+                "pace",
+                ("back",),
+            ],
+        )
+
+    def test_do_natural_pacing_preserves_jsonl_output_for_stdin_scripts(self):
+        events = []
+
+        class RecordingAgent:
+            def execute_in_window(self, args):
+                events.append(tuple(args))
+                return f"{args[0]} output"
+
+        class RecordingPacer:
+            def pause(self):
+                events.append("pace")
+
+        output = io.StringIO()
+        exit_code = run_do(
+            RecordingAgent(),
+            thread="thread",
+            argv=["--jsonl", "--pace", "natural"],
+            stdin=io.StringIO("eval 1 --emit\nclick @e1\n"),
+            stdout=output,
+            stderr=io.StringIO(),
+            pacer=RecordingPacer(),
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(events, [("eval", "1"), "pace", ("click", "@e1")])
+        records = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(
+            records,
+            [
+                {"command": "eval", "output": "eval output", "status": "success", "step": 1},
+                {"command": "click", "output": "click output", "status": "success", "step": 2},
+            ],
+        )
+
+    def test_do_defaults_to_no_pacing_and_never_pauses_after_final_step(self):
+        events = []
+
+        class RecordingAgent:
+            def execute_in_window(self, args):
+                events.append(tuple(args))
+                return "ok"
+
+        class RecordingPacer:
+            def pause(self):
+                events.append("pace")
+
+        exit_code = run_do(
+            RecordingAgent(),
+            thread="thread",
+            argv=["open", "https://example.test", "::", "click", "@e1"],
+            stdin=io.StringIO(),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            pacer=RecordingPacer(),
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(events, [("open", "https://example.test"), ("click", "@e1")])
+
+    def test_do_natural_pacing_does_not_sleep_before_invalid_mutation(self):
+        events = []
+
+        class RecordingAgent:
+            def execute_in_window(self, args):
+                events.append(tuple(args))
+                if args == ["click"]:
+                    raise SurfAgentError("click requires exactly one target", exit_code=2)
+                return "ok"
+
+        class RecordingPacer:
+            def pause(self):
+                events.append("pace")
+
+        exit_code = run_do(
+            RecordingAgent(),
+            thread="thread",
+            argv=["--pace", "natural", "text", "::", "click"],
+            stdin=io.StringIO(),
+            stdout=io.StringIO(),
+            stderr=io.StringIO(),
+            pacer=RecordingPacer(),
+        )
+
+        self.assertEqual(exit_code, 2)
+        self.assertEqual(events, [("text",)])
+
+    def test_do_natural_pacing_preserves_fail_fast_behavior(self):
+        events = []
+
+        class FailingAgent:
+            def execute_in_window(self, args):
+                events.append(tuple(args))
+                if args == ["click", "@e2"]:
+                    raise SurfAgentError("bad click", exit_code=1)
+                return "ok"
+
+        class RecordingPacer:
+            def pause(self):
+                events.append("pace")
+
+        output = io.StringIO()
+        error = io.StringIO()
+        exit_code = run_do(
+            FailingAgent(),
+            thread="thread",
+            argv=["--pace", "natural", "click", "@e1", "::", "click", "@e2", "::", "click", "@e3"],
+            stdin=io.StringIO(),
+            stdout=output,
+            stderr=error,
+            pacer=RecordingPacer(),
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(events, [("click", "@e1"), "pace", ("click", "@e2")])
+        self.assertEqual(output.getvalue(), "")
+        self.assertIn("step 2 `click @e2` failed: bad click", error.getvalue())
+
+    def test_do_rejects_missing_or_unknown_pacing_profile_before_execution(self):
+        class RecordingAgent:
+            def __init__(self):
+                self.calls = []
+
+            def execute_in_window(self, args):
+                self.calls.append(args)
+                return "ok"
+
+        for argv in (["--pace"], ["--pace", "fast", "click", "@e1"]):
+            with self.subTest(argv=argv):
+                agent = RecordingAgent()
+                error = io.StringIO()
+
+                exit_code = run_do(agent, thread="thread", argv=argv, stdin=io.StringIO(), stdout=io.StringIO(), stderr=error)
+
+                self.assertEqual(exit_code, 2)
+                self.assertIn("--pace", error.getvalue())
+                self.assertEqual(agent.calls, [])
+
     def test_do_snapshot_baseline_emits_nothing_and_keeps_state_file_clean(self):
         with TemporaryDirectory() as tmp:
             state_file = Path(tmp) / "thread.json"

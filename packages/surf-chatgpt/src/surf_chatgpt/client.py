@@ -21,6 +21,7 @@ class AskOptions:
     timeout: int = 2700
     start_new: bool = False
     allow_logged_out: bool = False
+    pace: str = "natural"
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ def ask_chatgpt(user_prompt: str, options: AskOptions, *, surf: SurfRunner | Non
             timeout=options.timeout,
             thinking_query=options.thinking_query,
             allow_logged_out=options.allow_logged_out,
+            pace=options.pace,
         ),
         surf=runner,
     )
