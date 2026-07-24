@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 from surf_chatgpt import cli
+from surf_chatgpt.errors import SkillError
 
 
 SOURCE = "external-chatgpt-via-surf-agent"
@@ -202,6 +203,36 @@ class CliValidationTests(unittest.TestCase):
             code = cli.main(["ask"], stdin=io.StringIO("x"), stdout=out)
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(out.getvalue())["answer"], "ok")
+
+    def test_human_gate_json_contains_resumable_thread(self):
+        error = SkillError(
+            "login_required",
+            "ChatGPT login required",
+            hint="Log in, then retry with the preserved thread.",
+            handoff={"action": "complete_login", "thread": "human-thread", "retry": ["ask", "--thread", "human-thread"]},
+        )
+        with patch("surf_chatgpt.cli.ask_chatgpt", side_effect=error):
+            out = io.StringIO()
+            code = cli.main(["ask"], stdin=io.StringIO("x"), stdout=out)
+
+        self.assertNotEqual(code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["error"]["handoff"]["thread"], "human-thread")
+        self.assertEqual(payload["error"]["handoff"]["retry"], ["ask", "--thread", "human-thread"])
+
+    def test_human_gate_text_contains_resumable_thread(self):
+        error = SkillError(
+            "captcha_or_cloudflare",
+            "ChatGPT challenge detected",
+            hint="Complete the challenge, then retry with `surf-chatgpt ask --thread human-thread`.",
+            handoff={"action": "complete_challenge", "thread": "human-thread", "retry": ["ask", "--thread", "human-thread"]},
+        )
+        with patch("surf_chatgpt.cli.ask_chatgpt", side_effect=error):
+            out = io.StringIO()
+            code = cli.main(["ask", "--format", "text"], stdin=io.StringIO("x"), stdout=out)
+
+        self.assertNotEqual(code, 0)
+        self.assertIn("--thread human-thread", out.getvalue())
 
     def test_ephemeral_thinking_high_passes_high_label_to_client(self):
         fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}

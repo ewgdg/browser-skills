@@ -7,6 +7,7 @@ from typing import Any
 
 from . import SOURCE_LABEL
 from .errors import SkillError
+from .page_detection import blocking_challenge_detector_js
 from .surf import SurfRunner
 from .temp_js import unlink_temp_file, write_temp_js
 
@@ -121,6 +122,7 @@ def _search_sessions_js(query: str, limit: int) -> str:
 return (async () => {{
   const query = {json.dumps(query)};
   const limit = {int(limit)};
+  {blocking_challenge_detector_js()}
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const compact = (value) => String(value || '').replace(/\\s+/g, ' ').trim();
   const visible = (node) => {{
@@ -143,7 +145,7 @@ return (async () => {{
   }};
 
   const pageText = compact(document.body?.innerText || '').toLowerCase();
-  if (document.querySelector('script[src*="/challenge-platform/"]') || pageText.includes('cloudflare') || pageText.includes('verify you are human') || pageText.includes('captcha')) {{
+  if (detectBlockingChallenge().present) {{
     return {{ status: 'captcha_or_cloudflare' }};
   }}
   const hasComposer = Boolean(document.querySelector('#prompt-textarea, [data-testid="composer-textarea"], textarea[name="prompt-textarea"], .ProseMirror, [contenteditable="true"]'));

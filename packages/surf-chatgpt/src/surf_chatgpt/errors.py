@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 ERROR_HINTS = {
@@ -25,16 +26,19 @@ class SkillError(Exception):
     message: str
     hint: str | None = None
     exit_code: int = 1
+    handoff: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         super().__init__(self.message)
         if self.hint is None:
             self.hint = ERROR_HINTS.get(self.type, ERROR_HINTS["unknown"])
 
-    def to_dict(self) -> dict[str, str]:
-        result = {"type": self.type, "message": self.message}
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {"type": self.type, "message": self.message}
         if self.hint:
             result["hint"] = self.hint
+        if self.handoff:
+            result["handoff"] = self.handoff
         return result
 
 
@@ -50,9 +54,15 @@ def classify_surf_failure(returncode: int, stdout: str, stderr: str) -> SkillErr
     lowered = raw.lower()
     msg = compact_message(raw) or f"surf-agent exited with code {returncode}"
 
-    if "login required" in lowered or "log in" in lowered or "login" in lowered and "chatgpt" in lowered:
+    if "login_required" in lowered or "chatgpt login required" in lowered or "chatgpt logged-in session required" in lowered:
         return SkillError("login_required", "ChatGPT login required")
-    if "cloudflare" in lowered or "captcha" in lowered or "challenge" in lowered:
+    challenge_markers = (
+        "captcha_or_cloudflare",
+        "chatgpt challenge detected",
+        "cloudflare challenge detected",
+        "captcha challenge detected",
+    )
+    if any(marker in lowered for marker in challenge_markers):
         return SkillError("captcha_or_cloudflare", "ChatGPT challenge detected")
     if "response timeout" in lowered or "request timed out" in lowered or "timeout" in lowered:
         return SkillError("timeout", "ChatGPT response timed out")

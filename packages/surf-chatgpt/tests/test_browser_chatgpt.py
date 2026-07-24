@@ -1,6 +1,8 @@
 import unittest
 from pathlib import Path
 
+from patchright.sync_api import sync_playwright
+
 import surf_chatgpt.browser_chatgpt as browser_chatgpt
 from surf_chatgpt.browser_chatgpt import ReusableAskOptions, ask_reusable_session
 from surf_chatgpt.errors import SkillError
@@ -38,6 +40,10 @@ class FakeSurfRunner:
     def close(self, thread, timeout=10):
         self.commands.append((thread, ["close"]))
         return "closed\n"
+
+    def focus(self, thread, timeout=10):
+        self.commands.append((thread, ["focus"]))
+        return "focused\n"
 
     def wait(self, thread, duration_or_text, timeout=35):
         self.commands.append((thread, ["wait", duration_or_text]))
@@ -115,7 +121,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(surf.commands[1], (thread, ["open", "https://chatgpt.com/"]))
         self.assertEqual(surf.commands[-1], (thread, ["close"]))
 
-    def test_ephemeral_closes_thread_after_structured_failure(self):
+    def test_ephemeral_login_failure_preserves_and_focuses_resumable_thread(self):
         class LoginFake(FakeSurfRunner):
             def _handle_js(self, code):
                 if "hasPrompt" in code and "loginRequired" in code:
@@ -126,7 +132,11 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session("x", ReusableAskOptions(session_policy="ephemeral", timeout=5), surf=surf)
         self.assertEqual(ctx.exception.type, "login_required")
-        self.assertEqual(surf.commands[-1][1], ["close"])
+        thread = surf.commands[0][0]
+        self.assertEqual(surf.commands[-1], (thread, ["focus"]))
+        self.assertNotIn(["close"], [command[1] for command in surf.commands])
+        self.assertEqual(ctx.exception.handoff["thread"], thread)
+        self.assertEqual(ctx.exception.handoff["retry"], ["ask", "--thread", thread])
 
     def test_logged_out_prompt_composer_still_requires_login_by_default(self):
         class LoggedOutComposerFake(FakeSurfRunner):
@@ -140,7 +150,43 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
             ask_reusable_session("x", ReusableAskOptions(session_policy="ephemeral", timeout=5), surf=surf)
         self.assertEqual(ctx.exception.type, "login_required")
         self.assertIn("logged-in", ctx.exception.message)
-        self.assertEqual(surf.commands[-1][1], ["close"])
+        self.assertEqual(surf.commands[-1][1], ["focus"])
+        self.assertNotIn(["close"], [command[1] for command in surf.commands])
+
+    def test_ephemeral_challenge_failure_preserves_and_focuses_resumable_thread(self):
+        class ChallengeFake(FakeSurfRunner):
+            def _handle_js(self, code):
+                if "hasPrompt" in code and "loginRequired" in code:
+                    return {"hasPrompt": False, "challenge": True, "loginRequired": False, "authenticated": False}
+                return super()._handle_js(code)
+
+        surf = ChallengeFake()
+        with self.assertRaises(SkillError) as ctx:
+            ask_reusable_session("x", ReusableAskOptions(session_policy="ephemeral", timeout=5), surf=surf)
+
+        thread = surf.commands[0][0]
+        self.assertEqual(ctx.exception.type, "captcha_or_cloudflare")
+        self.assertEqual(ctx.exception.handoff["action"], "complete_challenge")
+        self.assertEqual(surf.commands[-1], (thread, ["focus"]))
+        self.assertNotIn(["close"], [command[1] for command in surf.commands])
+
+    def test_focus_failure_does_not_replace_human_gate_or_close_thread(self):
+        class FocusFailureFake(FakeSurfRunner):
+            def _handle_js(self, code):
+                if "hasPrompt" in code and "loginRequired" in code:
+                    return {"hasPrompt": False, "challenge": False, "loginRequired": True, "authenticated": False}
+                return super()._handle_js(code)
+
+            def focus(self, thread, timeout=10):
+                self.commands.append((thread, ["focus"]))
+                raise SkillError("browser_unavailable", "window manager unavailable")
+
+        surf = FocusFailureFake()
+        with self.assertRaises(SkillError) as ctx:
+            ask_reusable_session("x", ReusableAskOptions(session_policy="ephemeral", timeout=5), surf=surf)
+
+        self.assertEqual(ctx.exception.type, "login_required")
+        self.assertNotIn(["close"], [command[1] for command in surf.commands])
 
     def test_allow_logged_out_preserves_anonymous_chatgpt_path(self):
         class LoggedOutComposerFake(FakeSurfRunner):
@@ -311,6 +357,30 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         self.assertEqual(result["thinking"], "High")
         self.assertLess(surf.js_events.index("model"), surf.js_events.index("inject"))
 
+    def test_empty_model_menu_is_retried_until_ready_before_prompt(self):
+        class DelayedModelMenuFake(FakeSurfRunner):
+            def __init__(self):
+                super().__init__()
+                self.model_attempts = 0
+
+            def _handle_js(self, code):
+                if "findModelButton" in code and "desiredModelQuery" in code:
+                    self.model_attempts += 1
+                    if self.model_attempts < 3:
+                        return {"ok": False, "reason": "model_missing", "available": []}
+                return super()._handle_js(code)
+
+        surf = DelayedModelMenuFake()
+        result = ask_reusable_session(
+            "normal user prompt",
+            ReusableAskOptions(session_policy="ephemeral", timeout=5, model_query="pro", thinking_label="High"),
+            surf=surf,
+        )
+
+        self.assertEqual(result["model"], "GPT-5.5 Pro")
+        self.assertEqual(surf.model_attempts, 3)
+        self.assertLess(surf.js_events.index("model"), surf.js_events.index("inject"))
+
     def test_latest_model_and_highest_thinking_request_reaches_selector(self):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
@@ -346,13 +416,15 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
                     return {"ok": False, "reason": "thinking_missing", "available": ["Instant", "Medium"]}
                 return super()._handle_js(code)
 
+        surf = ModelMissingFake()
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session(
                 "x",
                 ReusableAskOptions(session_policy="new", start_new=True, timeout=5, thinking_label="High"),
-                surf=ModelMissingFake(),
+                surf=surf,
             )
         self.assertEqual(ctx.exception.type, "model_unavailable")
+        self.assertEqual(surf.commands[-1][1], ["close"])
 
     def test_session_mode_without_url_fails_before_browser_use(self):
         surf = FakeSurfRunner()
@@ -360,6 +432,76 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
             ask_reusable_session("follow up", ReusableAskOptions(session_policy="session", timeout=5), surf=surf)
         self.assertEqual(ctx.exception.type, "invalid_args")
         self.assertEqual(surf.commands, [])
+
+
+class ChatGPTReadinessDomTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.playwright = sync_playwright().start()
+        cls.browser = cls.playwright.chromium.launch(channel="chrome", headless=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.playwright.stop()
+
+    def test_normal_chatgpt_assets_and_content_are_not_a_challenge(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content(
+                """
+                <script src="https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js"></script>
+                <button aria-label="Profile">Profile</button>
+                <div id="prompt-textarea" contenteditable="true"></div>
+                <aside>Captcha notes Cloudflare setup Verify you are human wording</aside>
+                """
+            )
+
+            status = page.evaluate("async () => {" + browser_chatgpt._status_js() + "}")
+
+            self.assertTrue(status["authenticated"])
+            self.assertTrue(status["hasPrompt"])
+            self.assertFalse(status["challenge"])
+        finally:
+            page.close()
+
+    def test_visible_challenge_surface_is_a_challenge(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content('<form id="challenge-form">Verify you are human</form>')
+
+            status = page.evaluate("async () => {" + browser_chatgpt._status_js() + "}")
+
+            self.assertTrue(status["challenge"])
+            self.assertEqual(status["challengeSignal"], "form#challenge-form")
+        finally:
+            page.close()
+
+    def test_hidden_challenge_surface_is_not_a_challenge(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content('<form id="challenge-form" hidden>Verify you are human</form>')
+
+            status = page.evaluate("async () => {" + browser_chatgpt._status_js() + "}")
+
+            self.assertFalse(status["challenge"])
+        finally:
+            page.close()
+
+    def test_sidebar_content_cannot_become_the_model_picker(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content(
+                '<aside><button aria-haspopup="menu" '
+                'aria-label="Open conversation options for Codex usage and model improvement">More</button></aside>'
+            )
+
+            result = page.evaluate("async () => {" + browser_chatgpt._select_model_choice_js("pro", "High") + "}")
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["reason"], "model_button_missing")
+        finally:
+            page.close()
 
 
 if __name__ == "__main__":

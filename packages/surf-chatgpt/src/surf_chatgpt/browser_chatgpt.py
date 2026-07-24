@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import uuid
 import time
 from dataclasses import dataclass
@@ -10,11 +11,14 @@ from urllib.parse import urlparse
 
 from .errors import SkillError
 from .extract import clean_response
+from .page_detection import blocking_challenge_detector_js
 from .surf import SurfRunner
 from .temp_js import unlink_temp_file, write_temp_js
 
 CHATGPT_HOME = "https://chatgpt.com/"
 CHATGPT_HOSTS = {"chatgpt.com", "www.chatgpt.com"}
+HUMAN_GATE_ERRORS = {"login_required", "captcha_or_cloudflare"}
+MODEL_UI_MAX_ATTEMPTS = 4
 
 PROMPT_SELECTORS = [
     "#prompt-textarea",
@@ -70,6 +74,7 @@ def ask_reusable_session(
     runner = surf or SurfRunner()
     started_at = time.time()
     target: BrowserTarget | None = None
+    preserve_for_handoff = False
 
     try:
         target = _resolve_target(runner, options)
@@ -111,8 +116,15 @@ def ask_reusable_session(
                 "saved": False,
             },
         }
+    except SkillError as exc:
+        if target and exc.type in HUMAN_GATE_ERRORS:
+            preserve_for_handoff = True
+            _focus_target_best_effort(runner, target)
+            exc.handoff = _human_gate_handoff(exc.type, target.thread)
+            exc.hint = _human_gate_hint(exc.type, target.thread)
+        raise
     finally:
-        if target and target.close_after:
+        if target and target.close_after and not preserve_for_handoff:
             _close_target_best_effort(runner, target)
 
 
@@ -176,6 +188,29 @@ def _close_target_best_effort(runner: SurfRunner, target: BrowserTarget) -> None
         pass
 
 
+def _focus_target_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
+    try:
+        runner.focus(target.thread, timeout=10)
+    except SkillError:
+        # The resumable thread is still useful even if the window manager cannot focus it.
+        pass
+
+
+def _human_gate_handoff(error_type: str, thread: str) -> dict[str, Any]:
+    action = "complete_login" if error_type == "login_required" else "complete_challenge"
+    return {
+        "action": action,
+        "thread": thread,
+        "retry": ["ask", "--thread", thread],
+    }
+
+
+def _human_gate_hint(error_type: str, thread: str) -> str:
+    task = "Log in to ChatGPT" if error_type == "login_required" else "Complete the ChatGPT verification challenge"
+    retry_command = shlex.join(["surf-chatgpt", "ask", "--thread", thread])
+    return f"{task} in the focused Surf Agent window, then retry the same prompt with `{retry_command}`."
+
+
 def _wait_load_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
     try:
         runner.wait(target.thread, "1000", timeout=35)
@@ -201,14 +236,14 @@ def _assert_chatgpt_ready(runner: SurfRunner, target: BrowserTarget, *, allow_lo
 def _select_model_choice(runner: SurfRunner, target: BrowserTarget, model_query: str | None, thinking_label: str | None) -> dict[str, Any]:
     selected_thinking = None
     if thinking_label and not model_query:
-        result = _run_js_file(runner, target, _select_thinking_level_js(thinking_label), timeout=15)
+        result = _run_selection_with_ui_retry(runner, target, _select_thinking_level_js(thinking_label), timeout=15)
         if not isinstance(result, dict):
             raise SkillError("parse_error", "ChatGPT thinking selection script returned unexpected data")
         if not result.get("ok"):
             _raise_model_selection_error(result, None, thinking_label)
         return {"model": "current", "thinking": result.get("selectedThinking") or thinking_label}
 
-    result = _run_js_file(runner, target, _select_model_choice_js(model_query, thinking_label), timeout=30)
+    result = _run_selection_with_ui_retry(runner, target, _select_model_choice_js(model_query, thinking_label), timeout=30)
     if not isinstance(result, dict):
         raise SkillError("parse_error", "ChatGPT model selection script returned unexpected data")
     if result.get("ok"):
@@ -219,6 +254,24 @@ def _select_model_choice(runner: SurfRunner, target: BrowserTarget, model_query:
         }
     _raise_model_selection_error(result, model_query, thinking_label)
     raise AssertionError("unreachable")
+
+
+def _run_selection_with_ui_retry(runner: SurfRunner, target: BrowserTarget, code: str, *, timeout: int) -> Any:
+    result: Any = None
+    for attempt in range(MODEL_UI_MAX_ATTEMPTS):
+        result = _run_js_file(runner, target, code, timeout=timeout)
+        if not _selection_ui_is_still_loading(result) or attempt == MODEL_UI_MAX_ATTEMPTS - 1:
+            return result
+        _wait_load_best_effort(runner, target)
+    raise AssertionError("unreachable")
+
+
+def _selection_ui_is_still_loading(result: Any) -> bool:
+    if not isinstance(result, dict) or result.get("ok"):
+        return False
+    available = result.get("available")
+    reason = result.get("reason")
+    return reason in {"model_button_missing", "menu_missing", "model_selector_missing", "model_missing", "thinking_missing"} and not available
 
 
 def _raise_model_selection_error(result: dict[str, Any], model_query: str | None, thinking_label: str | None) -> None:
@@ -433,11 +486,12 @@ def _surf_agent_function_source(body: str) -> str:
 def _status_js() -> str:
     return f"""
 return (async () => {{
+  {blocking_challenge_detector_js()}
   const promptSelectors = {json.dumps(PROMPT_SELECTORS)};
   const text = document.body?.innerText || '';
-  const lowered = text.toLowerCase();
   const hasPrompt = promptSelectors.some((selector) => document.querySelector(selector));
-  const challenge = Boolean(document.querySelector('script[src*="/challenge-platform/"]')) || lowered.includes('cloudflare') || lowered.includes('verify you are human') || lowered.includes('captcha');
+  const challengeDetection = detectBlockingChallenge();
+  const challenge = challengeDetection.present;
   const hasLoggedOutCta = /\\b(log in|sign up)\\b/i.test(text);
   const onLoginPage = location.href.includes('/auth/login');
   const session = await fetch('/api/auth/session', {{ credentials: 'include' }})
@@ -454,7 +508,7 @@ return (async () => {{
   const loginRequired = onLoginPage || (!hasPrompt && hasLoggedOutCta);
   const authenticated = !loginRequired && (authenticatedBySession || authenticatedByChrome);
   const loggedOut = !authenticated && hasLoggedOutCta;
-  return {{ url: location.href, title: document.title, hasPrompt, challenge, loginRequired, authenticated, loggedOut }};
+  return {{ url: location.href, title: document.title, hasPrompt, challenge, challengeSignal: challengeDetection.signal, loginRequired, authenticated, loggedOut }};
 }})();
 """.strip()
 
@@ -486,11 +540,13 @@ return (async () => {{
     const aria = (node.getAttribute?.('aria-label') || '').toLowerCase();
     const testid = (node.getAttribute?.('data-testid') || '').toLowerCase();
     const haystack = (label + ' ' + aria + ' ' + testid).toLowerCase();
+    const inComposer = Boolean(node.closest('main, form'));
+    if (!inComposer && !testid.includes('model')) return -1;
     let score = 0;
     if (testid.includes('model-switcher')) score += 100;
     if (/\b(instant|medium|high)\b/i.test(label)) score += 80;
     if (/model|gpt|intelligence/i.test(haystack)) score += 60;
-    if (node.closest('main, form')) score += 20;
+    if (inComposer) score += 20;
     if (/share|archive|delete|rename|pin chat|group chat/i.test(label)) score -= 200;
     return /model|gpt|intelligence|\b(instant|medium|high)\b/i.test(haystack) ? score : -1;
   }}
@@ -584,12 +640,14 @@ return (async () => {{
     const testid = (node.getAttribute?.('data-testid') || '').toLowerCase();
     const haystack = label + ' ' + aria + ' ' + testid;
     const lower = haystack.toLowerCase();
+    const inComposer = Boolean(node.closest('main, form'));
+    if (!inComposer && !testid.includes('model')) return -1;
     let score = 0;
     if (testid.includes('model-switcher')) score += 100;
     if (/\b(instant|medium|high)\b/i.test(label)) score += 80;
     if (/gpt[- ]?5\.?(5|4)|\b5\.[54]\b|pro|model|intelligence/i.test(haystack)) score += 70;
     if (aria.includes('model')) score += 50;
-    if (node.closest('main, form')) score += 20;
+    if (inComposer) score += 20;
     const rect = node.getBoundingClientRect();
     if (rect.top > window.innerHeight * 0.45) score += 10;
     if (/share|archive|delete|rename|pin chat|group chat/i.test(label)) score -= 200;
@@ -651,12 +709,12 @@ return (async () => {{
       if (token.length >= 2 && l.includes(token)) score += 80;
     }}
     score += versionScore(label);
-    if (/temporary|settings|customize|connector|project|archive|delete|share/i.test(label)) score -= 500;
+    if (/temporary|settings|customize|connector|project|archive|delete|share|pin chat/i.test(label)) score -= 500;
     return score;
   }}
   function isKnownThinkingLabel(label) {{ return /^(instant|medium|high)$/i.test(label); }}
-  function isNonThinkingLabel(label) {{ return /gpt|model|temporary|settings|customize|connector|project|archive|delete|share|more/i.test(label); }}
-  function isNonModelLabel(label) {{ return /temporary|settings|customize|connector|project|archive|delete|share/i.test(label); }}
+  function isNonThinkingLabel(label) {{ return /gpt|model|temporary|settings|customize|connector|project|archive|delete|share|pin chat|more/i.test(label); }}
+  function isNonModelLabel(label) {{ return /temporary|settings|customize|connector|project|archive|delete|share|pin chat/i.test(label); }}
   function firstAvailableThinkingItem(items) {{
     // ChatGPT presents higher thinking choices first; do not hard-code future labels.
     return items.find((item) => !item.disabled && !isNonThinkingLabel(item.label)) || null;
@@ -679,7 +737,8 @@ return (async () => {{
       let score = item.index;
       if (item.hasPopup) score += 80;
       if (/model|gpt[- ]?5|\b5\.[54]\b|pro|more/i.test(item.label)) score += 120;
-      if (/temporary|settings|customize|connector|project|archive|delete|share/i.test(item.label)) score -= 500;
+      // A sidebar context menu can briefly coexist with the model menu after UI updates.
+      if (/temporary|settings|customize|connector|project|archive|delete|share|pin chat/i.test(item.label)) score -= 500;
       return {{ item, score }};
     }}).sort((a, b) => b.score - a.score);
     return scored[0].item;

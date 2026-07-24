@@ -53,6 +53,9 @@ class SurfRunner:
     def close(self, thread: str, timeout: int = 10) -> str:
         return self.run_text(["close"], timeout=timeout, thread=thread)
 
+    def focus(self, thread: str, timeout: int = 10) -> str:
+        return self.run_text(["focus"], timeout=timeout, thread=thread)
+
     def wait(self, thread: str, duration_or_text: str, timeout: int = 35) -> str:
         return self.run_text(["wait", duration_or_text], timeout=timeout, thread=thread)
 

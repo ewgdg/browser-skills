@@ -1,6 +1,9 @@
 import unittest
 from pathlib import Path
 
+from patchright.sync_api import sync_playwright
+
+import surf_chatgpt.web_sessions as web_sessions
 from surf_chatgpt.errors import SkillError
 from surf_chatgpt.web_sessions import search_web_sessions
 
@@ -91,6 +94,40 @@ class WebSessionSearchTests(unittest.TestCase):
             search_web_sessions("x", limit=0, surf=surf)
         self.assertEqual(ctx.exception.type, "invalid_args")
         self.assertEqual(surf.commands, [])
+
+
+class WebSessionSearchDomTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.playwright = sync_playwright().start()
+        cls.browser = cls.playwright.chromium.launch(channel="chrome", headless=True)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.browser.close()
+        cls.playwright.stop()
+
+    def test_ordinary_challenge_words_do_not_block_session_search(self):
+        page = self.browser.new_page()
+        try:
+            fixture = """
+                <script src="https://chatgpt.com/cdn-cgi/challenge-platform/scripts/jsd/api.js"></script>
+                <div id="prompt-textarea" contenteditable="true"></div>
+                <button aria-label="Search chats">Search chats</button>
+                <div role="dialog" data-testid="search-chats">
+                  <input placeholder="Search chats">
+                  <a href="https://chatgpt.com/c/result-id">Captcha and Cloudflare notes</a>
+                </div>
+                """
+            page.route("https://chatgpt.com/**", lambda route: route.fulfill(status=200, content_type="text/html", body=fixture))
+            page.goto("https://chatgpt.com/")
+
+            result = page.evaluate("async () => {" + web_sessions._search_sessions_js("captcha", 5) + "}")
+
+            self.assertEqual(result["status"], "ok")
+            self.assertEqual(result["sessions"][0]["id"], "result-id")
+        finally:
+            page.close()
 
     def test_search_rejects_empty_query_before_opening_browser(self):
         surf = FakeSurfRunner({"status": "ok", "sessions": []})

@@ -46,6 +46,24 @@ class SurfWrapperTests(unittest.TestCase):
             SurfRunner(command_prefix=["surf-agent"], runner=fake_run).run_text(["state"])
         self.assertEqual(ctx.exception.type, "login_required")
 
+    def test_unrelated_challenge_word_is_not_classified_as_captcha(self):
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="Snapshot assertion challenge failed")
+
+        with self.assertRaises(SkillError) as ctx:
+            SurfRunner(command_prefix=["surf-agent"], runner=fake_run).run_text(["state"])
+
+        self.assertEqual(ctx.exception.type, "unknown")
+
+    def test_explicit_chatgpt_challenge_error_is_classified_as_captcha(self):
+        def fake_run(command, **kwargs):
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="ChatGPT challenge detected")
+
+        with self.assertRaises(SkillError) as ctx:
+            SurfRunner(command_prefix=["surf-agent"], runner=fake_run).run_text(["state"])
+
+        self.assertEqual(ctx.exception.type, "captcha_or_cloudflare")
+
     def test_invalid_json_like_eval_output_classified(self):
         with self.assertRaises(SkillError) as ctx:
             unwrap_eval_text("result: {not json}\n")
