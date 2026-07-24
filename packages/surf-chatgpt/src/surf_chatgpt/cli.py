@@ -7,7 +7,7 @@ from typing import IO, Any
 from urllib.parse import urlparse
 
 from . import SOURCE_LABEL
-from .client import AskOptions, ask_chatgpt
+from .client import AskOptions, ModelSelectOptions, ask_chatgpt, select_chatgpt_model
 from .errors import SkillError
 from .models import normalize_model_choice
 from .surf import SurfRunner
@@ -40,12 +40,21 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--new", action="store_true", help="Start a new ChatGPT session and return its session id/url.")
     ask.add_argument("--current", action="store_true", help="Use the default surf-agent thread (main).")
     ask.add_argument("--keep-open", action="store_true", help="Keep the opened surf-agent thread open and return its thread for follow-up. Without a session option, implies --new.")
-    ask.add_argument("--model", help="ChatGPT model query, e.g. latest, pro, gpt-5.5, gpt-5.5-pro, or gpt-5.4. Use latest to select the first available model in the web UI list.")
-    ask.add_argument("--thinking", choices=("low", "medium", "high", "highest"), help="ChatGPT thinking level. Maps low/medium/high to the web UI levels; highest selects the first available thinking level shown by the web UI.")
+    ask.add_argument("--model", help="Fuzzy ChatGPT model query, e.g. latest, gpt-5.6-sol, or gpt-5.4. Use latest for the first available model row.")
+    ask.add_argument("--thinking", help="Fuzzy ChatGPT thinking-mode query, e.g. instant, high, extra-high, or pro. Use highest for the first available mode.")
     ask.add_argument("--allow-logged-out", action="store_true", help="Allow anonymous ChatGPT. Default requires a logged-in ChatGPT session so account models are available.")
     ask.add_argument("--timeout", type=int, default=2700, help="ChatGPT wait timeout in seconds. Default: 2700.")
     ask.add_argument("--format", choices=("json", "text"), default="json")
     ask.add_argument("prompt", nargs="?", help="Prompt text. If omitted, read stdin. Use -- before prompts that start with -.")
+
+    model = subparsers.add_parser("model", help="Select and verify a ChatGPT model without sending a prompt; keep the browser open.")
+    model_sub = model.add_subparsers(dest="model_command", parser_class=JsonArgumentParser)
+    model_select = model_sub.add_parser("select", help="Select and verify picker state, then keep the browser open for inspection.")
+    model_select.add_argument("--model", help="Fuzzy ChatGPT model query, e.g. latest, gpt-5.6-sol, or gpt-5.4.")
+    model_select.add_argument("--thinking", help="Fuzzy ChatGPT thinking-mode query, e.g. instant, high, extra-high, or pro.")
+    model_select.add_argument("--thread", help="Retry selection in a preserved surf-agent thread after a login or verification handoff.")
+    model_select.add_argument("--format", choices=("json", "text"), default="json")
+
     session = subparsers.add_parser("session", help="Discover ChatGPT web sessions from the browser. No local alias state.")
     session_sub = session.add_subparsers(dest="session_command", parser_class=JsonArgumentParser)
 
@@ -91,6 +100,12 @@ def main(argv: list[str] | None = None, *, stdin: IO[str] | None = None, stdout:
             result = _handle_ask(args, stdin)
             _emit(result, args.format, stdout)
             return 0
+        if args.command == "model":
+            if args.model_command is None:
+                raise SkillError("invalid_args", "model requires a subcommand: select", exit_code=2)
+            result = _handle_model(args)
+            _emit(result, args.format, stdout)
+            return 0
         if args.command == "session":
             if args.session_command is None:
                 raise SkillError("invalid_args", "session requires a subcommand: current or search", exit_code=2)
@@ -126,7 +141,7 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
         thread=args.thread,
         keep_open=args.keep_open,
         model_query=model_choice.model_query,
-        thinking_label=model_choice.thinking_label,
+        thinking_query=model_choice.thinking_query,
         requested_model=args.model,
         requested_thinking=args.thinking,
         timeout=args.timeout,
@@ -134,6 +149,23 @@ def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
         allow_logged_out=args.allow_logged_out,
     )
     return ask_chatgpt(user_prompt, options)
+
+
+def _handle_model(args: argparse.Namespace) -> dict[str, Any]:
+    if args.model_command != "select":
+        raise SkillError("invalid_args", "unknown model command", exit_code=2)
+    if not args.model and not args.thinking:
+        raise SkillError("invalid_args", "model select requires --model or --thinking", exit_code=2)
+    model_choice = normalize_model_choice(args.model, args.thinking)
+    return select_chatgpt_model(
+        ModelSelectOptions(
+            model_query=model_choice.model_query,
+            thinking_query=model_choice.thinking_query,
+            requested_model=args.model,
+            requested_thinking=args.thinking,
+            thread=args.thread,
+        )
+    )
 
 
 def _session_policy(args: argparse.Namespace) -> str:
@@ -281,6 +313,14 @@ def _emit(result: dict[str, Any], fmt: str, stdout: IO[str]) -> None:
         print(f"external ChatGPT via surf-agent | session={session.get('policy')}{thread_suffix}", file=stdout)
         print("---", file=stdout)
         print(result.get("answer", ""), file=stdout)
+        return
+    if result.get("verified") is True:
+        selected_model = result.get("selected_model") or "-"
+        selected_thinking = result.get("selected_thinking") or "-"
+        active_picker = result.get("active_picker") or "-"
+        session = result.get("session") or {}
+        thread_suffix = f"\tthread={session.get('thread')}" if session.get("thread") else ""
+        print(f"verified\tmodel={selected_model}\tthinking={selected_thinking}\tpicker={active_picker}{thread_suffix}", file=stdout)
         return
     if "sessions" in result:
         sessions = result.get("sessions") or []

@@ -11,6 +11,67 @@ SOURCE = "external-chatgpt-via-surf-agent"
 
 
 class CliValidationTests(unittest.TestCase):
+    def test_thinking_pro_is_forwarded_as_an_independent_fuzzy_query(self):
+        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "--thinking", "pro"], stdin=io.StringIO("x"), stdout=out)
+
+        self.assertEqual(code, 0)
+        options = mocked.call_args.args[1]
+        self.assertIsNone(options.model_query)
+        self.assertEqual(options.thinking_query, "pro")
+
+    def test_model_select_verifies_picker_without_reading_or_sending_a_prompt(self):
+        fake = {
+            "ok": True,
+            "source": SOURCE,
+            "requested_model": "pro",
+            "requested_thinking": None,
+            "selected_model": "Pro",
+            "selected_thinking": None,
+            "active_picker": "Pro",
+            "verified": True,
+            "session": {"policy": "inspection", "thread": "inspect-model"},
+        }
+        with patch("surf_chatgpt.cli.select_chatgpt_model", create=True, return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["model", "select", "--model", "pro"], stdin=None, stdout=out)
+
+        self.assertEqual(code, 0)
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["verified"])
+        self.assertEqual(payload["active_picker"], "Pro")
+        options = mocked.call_args.args[0]
+        self.assertEqual(options.model_query, "pro")
+        self.assertEqual(options.requested_model, "pro")
+
+    def test_model_select_text_output_is_compact(self):
+        fake = {
+            "ok": True,
+            "source": SOURCE,
+            "selected_model": "Pro",
+            "selected_thinking": None,
+            "active_picker": "Pro",
+            "verified": True,
+            "session": {"policy": "inspection", "thread": "inspect-model"},
+        }
+        with patch("surf_chatgpt.cli.select_chatgpt_model", return_value=fake):
+            out = io.StringIO()
+            code = cli.main(["model", "select", "--model", "pro", "--format", "text"], stdout=out)
+
+        self.assertEqual(code, 0)
+        self.assertEqual(out.getvalue(), "verified\tmodel=Pro\tthinking=-\tpicker=Pro\tthread=inspect-model\n")
+
+    def test_model_select_requires_a_selection_query(self):
+        out = io.StringIO()
+        code = cli.main(["model", "select"], stdout=out)
+
+        self.assertEqual(code, 2)
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["error"]["type"], "invalid_args")
+        self.assertIn("requires --model or --thinking", payload["error"]["message"])
+
     def test_empty_stdin_error_is_structured(self):
         out = io.StringIO()
         code = cli.main(["ask", "--format", "json"], stdin=io.StringIO(""), stdout=out)
@@ -234,7 +295,7 @@ class CliValidationTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertIn("--thread human-thread", out.getvalue())
 
-    def test_ephemeral_thinking_high_passes_high_label_to_client(self):
+    def test_ephemeral_thinking_high_passes_query_to_client(self):
         fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
         with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
             out = io.StringIO()
@@ -242,9 +303,9 @@ class CliValidationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         options = mocked.call_args.args[1]
         self.assertEqual(options.session_policy, "ephemeral")
-        self.assertEqual(options.thinking_label, "High")
+        self.assertEqual(options.thinking_query, "high")
 
-    def test_new_thinking_high_passes_high_label_to_client_without_session(self):
+    def test_new_thinking_high_passes_query_to_client_without_session(self):
         fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "new"}}
         with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
             out = io.StringIO()
@@ -253,7 +314,7 @@ class CliValidationTests(unittest.TestCase):
         options = mocked.call_args.args[1]
         self.assertIsNone(options.model_query)
         self.assertEqual(options.session_policy, "new")
-        self.assertEqual(options.thinking_label, "High")
+        self.assertEqual(options.thinking_query, "high")
         self.assertEqual(options.requested_thinking, "high")
 
     def test_model_query_is_passed_to_client(self):
@@ -307,16 +368,20 @@ class CliValidationTests(unittest.TestCase):
         self.assertEqual(code, 0)
         options = mocked.call_args.args[1]
         self.assertEqual(options.model_query, "latest")
-        self.assertEqual(options.thinking_label, "highest")
+        self.assertEqual(options.thinking_query, "highest")
         self.assertEqual(options.requested_model, "latest")
         self.assertEqual(options.requested_thinking, "highest")
 
-    def test_model_suffix_thinking_conflict_is_structured(self):
-        out = io.StringIO()
-        code = cli.main(["ask", "--model", "gpt-5.5:high", "--thinking", "medium"], stdin=io.StringIO("x"), stdout=out)
-        self.assertNotEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["type"], "invalid_args")
+    def test_model_suffix_and_thinking_are_independent_queries(self):
+        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
+        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
+            out = io.StringIO()
+            code = cli.main(["ask", "--model", "gpt-5.5:high", "--thinking", "medium"], stdin=io.StringIO("x"), stdout=out)
+
+        self.assertEqual(code, 0)
+        options = mocked.call_args.args[1]
+        self.assertEqual(options.model_query, "gpt-5.5:high")
+        self.assertEqual(options.thinking_query, "medium")
 
     def test_text_mode_success_is_labeled_and_compact(self):
         fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral", "thread": "chat"}}

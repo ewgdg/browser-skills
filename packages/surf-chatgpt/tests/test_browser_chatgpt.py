@@ -4,7 +4,7 @@ from pathlib import Path
 from patchright.sync_api import sync_playwright
 
 import surf_chatgpt.browser_chatgpt as browser_chatgpt
-from surf_chatgpt.browser_chatgpt import ReusableAskOptions, ask_reusable_session
+from surf_chatgpt.browser_chatgpt import ReusableAskOptions, ask_reusable_session, select_reusable_model_choice
 from surf_chatgpt.errors import SkillError
 
 
@@ -105,11 +105,73 @@ class FakeSurfRunner:
 
 
 class BrowserChatGPTSessionTests(unittest.TestCase):
+    def test_model_selection_dry_run_stays_open_without_stealing_focus(self):
+        class VerifiedSelectionFake(FakeSurfRunner):
+            def _handle_js(self, code):
+                try:
+                    return super()._handle_js(code)
+                except AssertionError:
+                    if self.js_events == ["status", "model"]:
+                        self.js_events.append("verify-model")
+                        return {"ok": True, "activePicker": "GPT-5.5 Pro", "selectedItems": ["GPT-5.5 Pro"]}
+                    raise
+
+        surf = VerifiedSelectionFake()
+        result = select_reusable_model_choice(model_query="pro", thinking_query=None, surf=surf)
+
+        self.assertEqual(result["model"], "GPT-5.5 Pro")
+        self.assertEqual(result["activePicker"], "GPT-5.5 Pro")
+        self.assertTrue(result["verified"])
+        self.assertEqual(surf.js_events, ["status", "model", "verify-model"])
+        self.assertNotIn("inject", surf.js_events)
+        self.assertNotIn("send", surf.js_events)
+        self.assertEqual(result["session"]["policy"], "inspection")
+        self.assertNotIn(["focus"], [command[1] for command in surf.commands])
+        self.assertNotIn(["close"], [command[1] for command in surf.commands])
+
+    def test_model_selection_failure_stays_open_without_stealing_focus(self):
+        class MismatchedSelectionFake(FakeSurfRunner):
+            def _handle_js(self, code):
+                try:
+                    return super()._handle_js(code)
+                except AssertionError:
+                    if self.js_events == ["status", "model"]:
+                        return {"ok": True, "activePicker": "Instant", "selectedItems": ["Instant"]}
+                    raise
+
+        surf = MismatchedSelectionFake()
+        with self.assertRaises(SkillError) as ctx:
+            select_reusable_model_choice(model_query="pro", thinking_query=None, surf=surf)
+
+        self.assertEqual(ctx.exception.type, "ui_changed")
+        self.assertIn("Instant", ctx.exception.message)
+        self.assertNotIn(["focus"], [command[1] for command in surf.commands])
+        self.assertNotIn(["close"], [command[1] for command in surf.commands])
+
+    def test_model_selection_login_handoff_returns_valid_thinking_retry(self):
+        class LoginFake(FakeSurfRunner):
+            def _handle_js(self, code):
+                if "hasPrompt" in code and "loginRequired" in code:
+                    return {"hasPrompt": False, "challenge": False, "loginRequired": True, "authenticated": False}
+                return super()._handle_js(code)
+
+        surf = LoginFake()
+        with self.assertRaises(SkillError) as ctx:
+            select_reusable_model_choice(model_query=None, thinking_query="Instant", surf=surf)
+
+        thread = surf.commands[0][0]
+        self.assertEqual(
+            ctx.exception.handoff["retry"],
+            ["model", "select", "--thread", thread, "--thinking", "Instant"],
+        )
+        self.assertEqual(surf.commands[-1], (thread, ["focus"]))
+        self.assertNotIn(["close"], [command[1] for command in surf.commands])
+
     def test_ephemeral_opens_thread_returns_session_and_closes(self):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(session_policy="ephemeral", timeout=5, thinking_label="High"),
+            ReusableAskOptions(session_policy="ephemeral", timeout=5, thinking_query="High"),
             surf=surf,
         )
         thread = result["session"]["thread"]
@@ -350,7 +412,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, model_query="pro", thinking_label="High"),
+            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, model_query="pro", thinking_query="High"),
             surf=surf,
         )
         self.assertEqual(result["model"], "GPT-5.5 Pro")
@@ -373,7 +435,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = DelayedModelMenuFake()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(session_policy="ephemeral", timeout=5, model_query="pro", thinking_label="High"),
+            ReusableAskOptions(session_policy="ephemeral", timeout=5, model_query="pro", thinking_query="High"),
             surf=surf,
         )
 
@@ -385,7 +447,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         surf = FakeSurfRunner()
         result = ask_reusable_session(
             "normal user prompt",
-            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, model_query="latest", thinking_label="highest"),
+            ReusableAskOptions(session_policy="new", start_new=True, timeout=5, model_query="latest", thinking_query="highest"),
             surf=surf,
         )
         self.assertEqual(result["model"], "GPT-5.5")
@@ -420,7 +482,7 @@ class BrowserChatGPTSessionTests(unittest.TestCase):
         with self.assertRaises(SkillError) as ctx:
             ask_reusable_session(
                 "x",
-                ReusableAskOptions(session_policy="new", start_new=True, timeout=5, thinking_label="High"),
+                ReusableAskOptions(session_policy="new", start_new=True, timeout=5, thinking_query="High"),
                 surf=surf,
             )
         self.assertEqual(ctx.exception.type, "model_unavailable")
@@ -500,6 +562,153 @@ class ChatGPTReadinessDomTests(unittest.TestCase):
 
             self.assertFalse(result["ok"])
             self.assertEqual(result["reason"], "model_button_missing")
+        finally:
+            page.close()
+
+    def test_current_mixed_picker_does_not_treat_pro_mode_as_a_model(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content(
+                """
+                <style>
+                  [hidden] { display: none; }
+                  [role="menuitem"], [role="menuitemradio"], button { display: block; padding: 4px; }
+                </style>
+                <main><form>
+                  <button id="picker" type="button" aria-haspopup="menu">Instant</button>
+                  <div id="mode-menu" role="menu" hidden>
+                    <div role="menuitemradio" aria-checked="true" data-state="checked">Instant<span>5.5</span></div>
+                    <div id="pro" role="menuitemradio" aria-checked="false" data-state="unchecked">Pro</div>
+                    <div id="model-submenu" role="menuitem" aria-haspopup="menu" data-state="closed">GPT-5.6 Sol</div>
+                  </div>
+                  <div id="models" role="menu" hidden>
+                    <div role="menuitemradio" aria-checked="true" data-state="checked">GPT-5.6 Sol</div>
+                    <div role="menuitemradio" aria-checked="false" data-state="unchecked">GPT-5.5</div>
+                  </div>
+                </form></main>
+                <script>
+                  const picker = document.querySelector('#picker');
+                  const modeMenu = document.querySelector('#mode-menu');
+                  const models = document.querySelector('#models');
+                  picker.addEventListener('click', () => { modeMenu.hidden = false; });
+                  document.querySelector('#model-submenu').addEventListener('click', () => { models.hidden = false; });
+                  document.querySelector('#pro').addEventListener('click', (event) => {
+                    for (const item of modeMenu.querySelectorAll('[role="menuitemradio"]')) {
+                      item.setAttribute('aria-checked', String(item === event.currentTarget));
+                      item.setAttribute('data-state', item === event.currentTarget ? 'checked' : 'unchecked');
+                    }
+                    picker.textContent = 'Pro';
+                    modeMenu.hidden = true;
+                    models.hidden = true;
+                  });
+                </script>
+                """
+            )
+
+            selection = page.evaluate("async () => {" + browser_chatgpt._select_model_choice_js("pro", None) + "}")
+            self.assertFalse(selection["ok"])
+            self.assertEqual(selection["reason"], "model_missing")
+            self.assertNotIn("Pro", selection["available"])
+        finally:
+            page.close()
+
+    def test_current_mixed_picker_selects_pro_as_a_thinking_mode(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content(
+                """
+                <style>
+                  [hidden] { display: none; }
+                  [role="menuitemradio"], button { display: block; padding: 4px; }
+                </style>
+                <main><form>
+                  <button id="picker" type="button" aria-haspopup="menu">Instant</button>
+                  <div id="mode-menu" role="menu" hidden>
+                    <div role="menuitemradio" aria-checked="true">Instant</div>
+                    <div id="pro" role="menuitemradio" aria-checked="false">Pro</div>
+                  </div>
+                </form></main>
+                <script>
+                  const picker = document.querySelector('#picker');
+                  const modeMenu = document.querySelector('#mode-menu');
+                  picker.addEventListener('click', () => { modeMenu.hidden = false; });
+                  document.querySelector('#pro').addEventListener('click', () => {
+                    picker.textContent = 'Pro';
+                    modeMenu.hidden = true;
+                  });
+                </script>
+                """
+            )
+
+            selection = page.evaluate("async () => {" + browser_chatgpt._select_thinking_level_js("pro") + "}")
+
+            self.assertTrue(selection["ok"])
+            self.assertEqual(selection["selectedThinking"], "Pro")
+            self.assertEqual(page.locator("#picker").inner_text(), "Pro")
+        finally:
+            page.close()
+
+    def test_thinking_query_fuzzily_matches_extra_high(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content(
+                """
+                <style>[hidden] { display: none; } [role="menuitemradio"], button { display: block; padding: 4px; }</style>
+                <main><form>
+                  <button id="picker" type="button" aria-haspopup="menu">Instant</button>
+                  <div id="mode-menu" role="menu" hidden>
+                    <div id="extra-high" role="menuitemradio">Extra High</div>
+                  </div>
+                </form></main>
+                <script>
+                  const picker = document.querySelector('#picker');
+                  const menu = document.querySelector('#mode-menu');
+                  picker.addEventListener('click', () => { menu.hidden = false; });
+                  document.querySelector('#extra-high').addEventListener('click', () => { picker.textContent = 'Extra High'; menu.hidden = true; });
+                </script>
+                """
+            )
+
+            selection = page.evaluate("async () => {" + browser_chatgpt._select_thinking_level_js("extra-high") + "}")
+
+            self.assertTrue(selection["ok"])
+            self.assertEqual(selection["selectedThinking"], "Extra High")
+        finally:
+            page.close()
+
+    def test_current_mixed_picker_can_leave_pro_for_high_thinking(self):
+        page = self.browser.new_page()
+        try:
+            page.set_content(
+                """
+                <style>
+                  [hidden] { display: none; }
+                  [role="menuitemradio"], button { display: block; padding: 4px; }
+                </style>
+                <main><form>
+                  <button id="picker" type="button" aria-haspopup="menu">Pro</button>
+                  <div id="mode-menu" role="menu" hidden>
+                    <div id="high" role="menuitemradio" aria-checked="false">High</div>
+                    <div role="menuitemradio" aria-checked="true">Pro</div>
+                  </div>
+                </form></main>
+                <script>
+                  const picker = document.querySelector('#picker');
+                  const modeMenu = document.querySelector('#mode-menu');
+                  picker.addEventListener('click', () => { modeMenu.hidden = false; });
+                  document.querySelector('#high').addEventListener('click', () => {
+                    picker.textContent = 'High';
+                    modeMenu.hidden = true;
+                  });
+                </script>
+                """
+            )
+
+            selection = page.evaluate("async () => {" + browser_chatgpt._select_thinking_level_js("High") + "}")
+
+            self.assertTrue(selection["ok"])
+            self.assertEqual(selection["selectedThinking"], "High")
+            self.assertEqual(page.locator("#picker").inner_text(), "High")
         finally:
             page.close()
 

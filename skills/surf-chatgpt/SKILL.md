@@ -38,9 +38,9 @@ Also required:
 surf-chatgpt ask 'Question...'
 printf 'Question...' | surf-chatgpt ask
 printf 'Critique this plan: ...' | surf-chatgpt ask --format text
-surf-chatgpt ask --thinking high 'Question...'
+surf-chatgpt ask --thinking pro 'Question...'
 surf-chatgpt ask --model latest --thinking highest 'Question...'
-surf-chatgpt ask --session '<session-id>' --model gpt-5.5 --thinking medium 'Follow up...'
+surf-chatgpt ask --session '<session-id>' --model gpt-5.6-sol --thinking extra-high 'Follow up...'
 surf-chatgpt ask --thread '<thread-id>' 'Follow up in kept browser thread...'
 surf-chatgpt login
 surf-chatgpt --help
@@ -62,18 +62,18 @@ Errors are structured and nonzero:
 
 ## Model / thinking selection
 
-`--model` is a fuzzy query against models visible in ChatGPT's web model picker. `--model latest` selects the first available model in the web UI list. No silent fallback: if no usable match is found, command fails with `model_unavailable`.
+`--model` fuzzily searches the nested model rows. `--thinking` independently fuzzily searches top-level thinking modes such as `Pro` and `Extra High`. `--model latest` and `--thinking highest` select the first available row in their respective lists. No silent fallback: an unavailable query fails with `model_unavailable`.
 `surf-chatgpt ask` requires a logged-in ChatGPT session by default, even if the logged-out page exposes a prompt composer. This prevents accidental use of anonymous/free ChatGPT when the user expects account models. Use `--allow-logged-out` only when the user explicitly wants anonymous ChatGPT; it cannot be combined with `--model` or `--thinking`.
 
+For optional no-prompt picker inspection, read [model picker inspection](references/model-selection.md).
+
 ```bash
-surf-chatgpt ask --thinking high 'Question...'
-surf-chatgpt ask --model pro 'Question...'
-surf-chatgpt ask --model gpt-5.5 'Question...'
-surf-chatgpt ask --model gpt-5.5:high 'Question...'
+surf-chatgpt ask --thinking pro 'Question...'
+surf-chatgpt ask --thinking extra-high 'Question...'
+surf-chatgpt ask --model gpt-5.6-sol 'Question...'
+surf-chatgpt ask --model gpt-5.6-sol --thinking pro 'Question...'
 surf-chatgpt ask --model latest --thinking highest 'Question...'
 ```
-
-Thinking mapping: `low` -> `Instant`, `medium` -> `Medium`, `high` -> `High`, `highest` -> first available thinking level shown by the web UI after model selection.
 
 ## Session policy
 

@@ -56,7 +56,7 @@ class ReusableAskOptions:
     model_query: str | None = None
     start_new: bool = False
     timeout: int = 2700
-    thinking_label: str | None = None
+    thinking_query: str | None = None
     allow_logged_out: bool = False
 
 
@@ -79,10 +79,10 @@ def ask_reusable_session(
     try:
         target = _resolve_target(runner, options)
         _wait_load_best_effort(runner, target)
-        if options.allow_logged_out and (options.model_query or options.thinking_label):
+        if options.allow_logged_out and (options.model_query or options.thinking_query):
             raise SkillError("invalid_args", "--allow-logged-out cannot be combined with model or thinking selection")
         _assert_chatgpt_ready(runner, target, allow_logged_out=options.allow_logged_out)
-        selection = _select_model_choice(runner, target, options.model_query, options.thinking_label) if (options.model_query or options.thinking_label) else {"model": "current", "thinking": None}
+        selection = _select_model_choice(runner, target, options.model_query, options.thinking_query) if (options.model_query or options.thinking_query) else {"model": "current", "thinking": None}
 
         baseline = _read_snapshot(runner, target)
         _inject_prompt(runner, target, prompt)
@@ -126,6 +126,79 @@ def ask_reusable_session(
     finally:
         if target and target.close_after and not preserve_for_handoff:
             _close_target_best_effort(runner, target)
+
+
+def select_reusable_model_choice(
+    *,
+    model_query: str | None,
+    thinking_query: str | None,
+    thread: str | None = None,
+    surf: SurfRunner | None = None,
+) -> dict[str, Any]:
+    """Select and verify picker state without injecting or sending a prompt."""
+    if not model_query and not thinking_query:
+        raise SkillError("invalid_args", "model selection requires a model or thinking level")
+
+    runner = surf or SurfRunner()
+    # This command is an inspection surface, so preserve the exact page the user asked to examine.
+    target = _existing_thread_chatgpt_target(thread) if thread else _open_chatgpt_url(runner, CHATGPT_HOME, reused=False, close_after=False)
+    try:
+        _wait_load_best_effort(runner, target)
+        _assert_chatgpt_ready(runner, target)
+        selection = _select_model_choice(runner, target, model_query, thinking_query)
+        inspection = _run_js_file(runner, target, _inspect_model_choice_js(), timeout=20)
+        if not isinstance(inspection, dict) or not inspection.get("ok"):
+            raise SkillError("ui_changed", "ChatGPT active model picker state could not be inspected")
+
+        expected_labels = [
+            label
+            for label in (selection.get("model") if model_query else None, selection.get("thinking") if thinking_query else None)
+            if label and label != "current"
+        ]
+        selected_items = inspection.get("selectedItems")
+        if not isinstance(selected_items, list):
+            raise SkillError("parse_error", "ChatGPT active model picker returned unexpected selected items")
+        verified = all(any(_picker_labels_match(expected, actual) for actual in selected_items) for expected in expected_labels)
+        if not verified:
+            selected_summary = ", ".join(str(item) for item in selected_items) or "none"
+            raise SkillError(
+                "ui_changed",
+                f"ChatGPT did not reflect the requested selection. Checked picker items: {selected_summary}",
+            )
+
+        return {
+            "model": selection.get("model"),
+            "thinking": selection.get("thinking"),
+            "activePicker": inspection.get("activePicker"),
+            "selectedItems": selected_items,
+            "verified": True,
+            "session": {
+                "policy": "thread" if thread else "inspection",
+                "thread": target.thread,
+                "thread_id": target.thread,
+            },
+        }
+    except SkillError as exc:
+        if exc.type in HUMAN_GATE_ERRORS:
+            _focus_target_best_effort(runner, target)
+            retry = ["model", "select", "--thread", target.thread]
+            if model_query:
+                retry.extend(["--model", model_query])
+            if thinking_query:
+                retry.extend(["--thinking", thinking_query])
+            exc.handoff = _human_gate_handoff(exc.type, target.thread, retry=retry)
+            exc.hint = _human_gate_hint(exc.type, target.thread, retry=retry)
+        raise
+
+
+def _picker_labels_match(expected: Any, actual: Any) -> bool:
+    expected_compact = _compact_picker_label(expected)
+    actual_compact = _compact_picker_label(actual)
+    return bool(expected_compact and actual_compact and (expected_compact in actual_compact or actual_compact in expected_compact))
+
+
+def _compact_picker_label(value: Any) -> str:
+    return "".join(character for character in str(value).lower() if character.isalnum())
 
 
 @dataclass(frozen=True)
@@ -196,19 +269,19 @@ def _focus_target_best_effort(runner: SurfRunner, target: BrowserTarget) -> None
         pass
 
 
-def _human_gate_handoff(error_type: str, thread: str) -> dict[str, Any]:
+def _human_gate_handoff(error_type: str, thread: str, *, retry: list[str] | None = None) -> dict[str, Any]:
     action = "complete_login" if error_type == "login_required" else "complete_challenge"
     return {
         "action": action,
         "thread": thread,
-        "retry": ["ask", "--thread", thread],
+        "retry": retry or ["ask", "--thread", thread],
     }
 
 
-def _human_gate_hint(error_type: str, thread: str) -> str:
+def _human_gate_hint(error_type: str, thread: str, *, retry: list[str] | None = None) -> str:
     task = "Log in to ChatGPT" if error_type == "login_required" else "Complete the ChatGPT verification challenge"
-    retry_command = shlex.join(["surf-chatgpt", "ask", "--thread", thread])
-    return f"{task} in the focused Surf Agent window, then retry the same prompt with `{retry_command}`."
+    retry_command = shlex.join(["surf-chatgpt", *(retry or ["ask", "--thread", thread])])
+    return f"{task} in the focused Surf Agent window, then retry with `{retry_command}`."
 
 
 def _wait_load_best_effort(runner: SurfRunner, target: BrowserTarget) -> None:
@@ -233,26 +306,26 @@ def _assert_chatgpt_ready(runner: SurfRunner, target: BrowserTarget, *, allow_lo
         raise SkillError("ui_changed", "ChatGPT prompt composer not found")
 
 
-def _select_model_choice(runner: SurfRunner, target: BrowserTarget, model_query: str | None, thinking_label: str | None) -> dict[str, Any]:
+def _select_model_choice(runner: SurfRunner, target: BrowserTarget, model_query: str | None, thinking_query: str | None) -> dict[str, Any]:
     selected_thinking = None
-    if thinking_label and not model_query:
-        result = _run_selection_with_ui_retry(runner, target, _select_thinking_level_js(thinking_label), timeout=15)
+    if thinking_query and not model_query:
+        result = _run_selection_with_ui_retry(runner, target, _select_thinking_level_js(thinking_query), timeout=15)
         if not isinstance(result, dict):
             raise SkillError("parse_error", "ChatGPT thinking selection script returned unexpected data")
         if not result.get("ok"):
-            _raise_model_selection_error(result, None, thinking_label)
-        return {"model": "current", "thinking": result.get("selectedThinking") or thinking_label}
+            _raise_model_selection_error(result, None, thinking_query)
+        return {"model": "current", "thinking": result.get("selectedThinking") or thinking_query}
 
-    result = _run_selection_with_ui_retry(runner, target, _select_model_choice_js(model_query, thinking_label), timeout=30)
+    result = _run_selection_with_ui_retry(runner, target, _select_model_choice_js(model_query, thinking_query), timeout=30)
     if not isinstance(result, dict):
         raise SkillError("parse_error", "ChatGPT model selection script returned unexpected data")
     if result.get("ok"):
-        selected_thinking = result.get("selectedThinking") or thinking_label
+        selected_thinking = result.get("selectedThinking") or thinking_query
         return {
             "model": result.get("selectedModel") or model_query or "current",
             "thinking": selected_thinking,
         }
-    _raise_model_selection_error(result, model_query, thinking_label)
+    _raise_model_selection_error(result, model_query, thinking_query)
     raise AssertionError("unreachable")
 
 
@@ -274,14 +347,14 @@ def _selection_ui_is_still_loading(result: Any) -> bool:
     return reason in {"model_button_missing", "menu_missing", "model_selector_missing", "model_missing", "thinking_missing"} and not available
 
 
-def _raise_model_selection_error(result: dict[str, Any], model_query: str | None, thinking_label: str | None) -> None:
+def _raise_model_selection_error(result: dict[str, Any], model_query: str | None, thinking_query: str | None) -> None:
     available = result.get("available")
     suffix = f" Available: {', '.join(available)}" if isinstance(available, list) and available else ""
     reason = result.get("reason") or "model unavailable"
     if reason in {"model_button_missing", "menu_missing", "model_selector_missing"}:
         raise SkillError("ui_changed", f"ChatGPT model menu unavailable: {reason}")
     if reason == "thinking_missing":
-        raise SkillError("model_unavailable", f"ChatGPT thinking level {thinking_label!r} unavailable.{suffix}")
+        raise SkillError("model_unavailable", f"ChatGPT thinking level {thinking_query!r} unavailable.{suffix}")
     raise SkillError("model_unavailable", f"ChatGPT model {model_query!r} unavailable.{suffix}")
 
 
@@ -513,12 +586,13 @@ return (async () => {{
 """.strip()
 
 
-def _select_thinking_level_js(thinking_label: str) -> str:
+def _select_thinking_level_js(thinking_query: str) -> str:
     return rf"""
 return (async () => {{
-  const desiredThinking = {json.dumps(thinking_label)};
+  const desiredThinking = {json.dumps(thinking_query)};
   const desiredThinkingNorm = desiredThinking.toLowerCase();
   function sleep(ms) {{ return new Promise((resolve) => setTimeout(resolve, ms)); }}
+  function compact(value) {{ return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ''); }}
   function textOf(node) {{ return (node?.textContent || node?.innerText || node?.getAttribute?.('aria-label') || '').trim(); }}
   function isVisible(node) {{
     const rect = node?.getBoundingClientRect?.();
@@ -544,11 +618,12 @@ return (async () => {{
     if (!inComposer && !testid.includes('model')) return -1;
     let score = 0;
     if (testid.includes('model-switcher')) score += 100;
-    if (/\b(instant|medium|high)\b/i.test(label)) score += 80;
+    // The current picker button can expose only its active mode label, including Pro.
+    if (/\b(instant|medium|high|pro)\b/i.test(label)) score += 80;
     if (/model|gpt|intelligence/i.test(haystack)) score += 60;
     if (inComposer) score += 20;
     if (/share|archive|delete|rename|pin chat|group chat/i.test(label)) score -= 200;
-    return /model|gpt|intelligence|\b(instant|medium|high)\b/i.test(haystack) ? score : -1;
+    return /model|gpt|intelligence|\b(instant|medium|high|pro)\b/i.test(haystack) ? score : -1;
   }}
   function findModelButton() {{
     const selectors = ['[data-testid="model-switcher-dropdown-button"]', 'button[aria-haspopup="menu"]', 'button[aria-expanded]', '[role="button"]'];
@@ -574,11 +649,28 @@ return (async () => {{
     // ChatGPT presents higher thinking choices first; do not hard-code future labels.
     return items.find((item) => !item.disabled && !isNonThinkingLabel(item.label)) || null;
   }}
+  function thinkingItemScore(item) {{
+    if (item.disabled || isNonThinkingLabel(item.label)) return -9999;
+    const label = compact(item.label);
+    const query = compact(desiredThinking);
+    if (!label || !query) return -9999;
+    let score = 0;
+    if (label === query) score += 1000;
+    if (label.includes(query)) score += 700;
+    if (query.includes(label)) score += 200;
+    for (const token of desiredThinkingNorm.match(/[a-z]+|\d+/g) || []) {{
+      if (token.length >= 2 && label.includes(token)) score += 80;
+    }}
+    return score;
+  }}
   function findThinkingMatch(items) {{
     if (desiredThinkingNorm === 'highest') {{
       return firstAvailableThinkingItem(items);
     }}
-    return items.find((item) => item.label.toLowerCase() === desiredThinkingNorm && !item.disabled) || null;
+    const best = items
+      .map((item) => ({{ item, score: thinkingItemScore(item) }}))
+      .sort((a, b) => b.score - a.score)[0];
+    return best && best.score >= 120 ? best.item : null;
   }}
   document.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }}));
   await sleep(60);
@@ -596,11 +688,11 @@ return (async () => {{
 """.strip()
 
 
-def _select_model_choice_js(model_query: str | None, thinking_label: str | None) -> str:
+def _select_model_choice_js(model_query: str | None, thinking_query: str | None) -> str:
     return rf"""
 return (async () => {{
   const desiredModelQuery = {json.dumps(model_query)};
-  const desiredThinking = {json.dumps(thinking_label)};
+  const desiredThinking = {json.dumps(thinking_query)};
   const desiredThinkingNorm = desiredThinking ? desiredThinking.toLowerCase() : null;
   const latestModelRequested = compact(desiredModelQuery) === 'latest';
   function sleep(ms) {{ return new Promise((resolve) => setTimeout(resolve, ms)); }}
@@ -719,15 +811,32 @@ return (async () => {{
     // ChatGPT presents higher thinking choices first; do not hard-code future labels.
     return items.find((item) => !item.disabled && !isNonThinkingLabel(item.label)) || null;
   }}
+  function thinkingItemScore(item) {{
+    if (item.disabled || isNonThinkingLabel(item.label)) return -9999;
+    const label = compact(item.label);
+    const query = compact(desiredThinking);
+    if (!label || !query) return -9999;
+    let score = 0;
+    if (label === query) score += 1000;
+    if (label.includes(query)) score += 700;
+    if (query.includes(label)) score += 200;
+    for (const token of desiredThinkingNorm.match(/[a-z]+|\d+/g) || []) {{
+      if (token.length >= 2 && label.includes(token)) score += 80;
+    }}
+    return score;
+  }}
   function findThinkingMatch(items) {{
     if (desiredThinkingNorm === 'highest') {{
       return firstAvailableThinkingItem(items);
     }}
-    return items.find((item) => item.label.toLowerCase() === desiredThinkingNorm && !item.disabled) || null;
+    const best = items
+      .map((item) => ({{ item, score: thinkingItemScore(item) }}))
+      .sort((a, b) => b.score - a.score)[0];
+    return best && best.score >= 120 ? best.item : null;
   }}
-  function firstAvailableModelItem(items, selector) {{
+  function firstAvailableModelItem(items) {{
     // ChatGPT keeps its newest/preferred models first; latest means first usable model row.
-    return items.find((item) => item.node !== selector.node && !item.disabled && !isKnownThinkingLabel(item.label) && !isNonModelLabel(item.label)) || null;
+    return items.find((item) => !item.disabled && !isKnownThinkingLabel(item.label) && !isNonModelLabel(item.label)) || null;
   }}
   function findModelSelector(items) {{
     const thinking = new Set(['instant', 'medium', 'high']);
@@ -752,23 +861,25 @@ return (async () => {{
     let items = visibleItems();
     const selector = findModelSelector(items);
     if (!selector) return {{ ok: false, reason: 'model_selector_missing', desired: desiredModelQuery, button: button.label, available: items.map((item) => item.label).slice(0, 30) }};
+    // Only rows revealed by the nested selector are models; parent rows are thinking modes.
+    const parentNodes = new Set(items.map((item) => item.node));
     selector.node.dispatchEvent(new MouseEvent('mouseover', {{ bubbles: true, cancelable: true, view: window }}));
     dispatchClickSequence(selector.node);
     await sleep(250);
     items = visibleItems();
+    const modelItems = items.filter((item) => item.node !== selector.node && !parentNodes.has(item.node));
     if (latestModelRequested) {{
-      const first = firstAvailableModelItem(items, selector);
-      if (!first) return {{ ok: false, reason: 'model_missing', desired: desiredModelQuery, selector: selector.label, available: items.map((item) => item.label + (item.disabled ? ' (disabled)' : '')).slice(0, 40) }};
+      const first = firstAvailableModelItem(modelItems);
+      if (!first) return {{ ok: false, reason: 'model_missing', desired: desiredModelQuery, selector: selector.label, available: modelItems.map((item) => item.label + (item.disabled ? ' (disabled)' : '')).slice(0, 40) }};
       dispatchClickSequence(first.node);
       selectedModel = first.label;
       await sleep(150);
     }} else {{
-      const scored = items
-        .filter((item) => item.node !== selector.node)
+      const scored = modelItems
         .map((item) => ({{ item, score: modelItemScore(item, desiredModelQuery) }}))
         .sort((a, b) => b.score - a.score);
       const best = scored[0];
-      if (!best || best.score < 120) return {{ ok: false, reason: 'model_missing', desired: desiredModelQuery, selector: selector.label, available: items.map((item) => item.label + (item.disabled ? ' (disabled)' : '')).slice(0, 40) }};
+      if (!best || best.score < 120) return {{ ok: false, reason: 'model_missing', desired: desiredModelQuery, selector: selector.label, available: modelItems.map((item) => item.label + (item.disabled ? ' (disabled)' : '')).slice(0, 40) }};
       dispatchClickSequence(best.item.node);
       selectedModel = best.item.label;
       await sleep(150);
@@ -788,6 +899,83 @@ return (async () => {{
 
   return {{ ok: true, selectedModel, selectedThinking }};
 }})();
+""".strip()
+
+
+def _inspect_model_choice_js() -> str:
+    return r"""
+return (async () => {
+  function sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)); }
+  function textOf(node) { return (node?.textContent || node?.innerText || node?.getAttribute?.('aria-label') || '').replace(/\s+/g, ' ').trim(); }
+  function isVisible(node) {
+    const rect = node?.getBoundingClientRect?.();
+    const style = node ? window.getComputedStyle(node) : null;
+    return Boolean(rect && rect.width > 0 && rect.height > 0 && style?.visibility !== 'hidden' && style?.display !== 'none');
+  }
+  function dispatchClickSequence(target) {
+    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+      const common = { bubbles: true, cancelable: true, view: window };
+      const event = type.startsWith('pointer') && 'PointerEvent' in window
+        ? new PointerEvent(type, { ...common, pointerId: 1, pointerType: 'mouse' })
+        : new MouseEvent(type, common);
+      target.dispatchEvent(event);
+    }
+  }
+  function modelButtonScore(node) {
+    if (!isVisible(node)) return -1;
+    const label = textOf(node);
+    const aria = (node.getAttribute?.('aria-label') || '').toLowerCase();
+    const testid = (node.getAttribute?.('data-testid') || '').toLowerCase();
+    const inComposer = Boolean(node.closest('main, form'));
+    if (!inComposer && !testid.includes('model')) return -1;
+    const haystack = `${label} ${aria} ${testid}`;
+    if (!/model|gpt|intelligence|instant|medium|high|pro|thinking/i.test(haystack)) return -1;
+    let score = inComposer ? 30 : 0;
+    if (testid.includes('model-switcher')) score += 100;
+    if (aria.includes('model')) score += 60;
+    if (node.getAttribute?.('aria-haspopup') === 'menu') score += 20;
+    return score;
+  }
+  function findModelButton() {
+    const nodes = Array.from(document.querySelectorAll('[data-testid="model-switcher-dropdown-button"], button[aria-haspopup="menu"], button[aria-expanded], [role="button"]'));
+    return nodes
+      .map((node) => ({ node, label: textOf(node), score: modelButtonScore(node) }))
+      .filter((item) => item.score >= 0)
+      .sort((left, right) => right.score - left.score)[0] || null;
+  }
+  function visibleItems() {
+    const nodes = Array.from(document.querySelectorAll('[role="menu"] [role="menuitemradio"], [role="menu"] [role="menuitem"], [data-radix-menu-content] [role="menuitemradio"], [data-radix-menu-content] [role="menuitem"], [cmdk-item]'));
+    return nodes.filter(isVisible).map((node) => ({
+      node,
+      label: textOf(node),
+      checked: node.getAttribute?.('aria-checked') === 'true' || node.getAttribute?.('data-state') === 'checked',
+      hasPopup: node.getAttribute?.('aria-haspopup') === 'menu',
+    })).filter((item) => item.label);
+  }
+  function checkedLabels(items) { return items.filter((item) => item.checked).map((item) => item.label); }
+
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+  await sleep(60);
+  const button = findModelButton();
+  if (!button) return { ok: false, reason: 'model_button_missing' };
+  const activePicker = button.label;
+  dispatchClickSequence(button.node);
+  await sleep(220);
+
+  let items = visibleItems();
+  const selectedItems = checkedLabels(items);
+  const modelSubmenu = items.find((item) => item.hasPopup && /model|gpt|o\d/i.test(item.label));
+  if (modelSubmenu) {
+    modelSubmenu.node.dispatchEvent(new MouseEvent('mouseover', { bubbles: true, cancelable: true, view: window }));
+    dispatchClickSequence(modelSubmenu.node);
+    await sleep(220);
+    items = visibleItems();
+    selectedItems.push(...checkedLabels(items));
+  }
+
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true, cancelable: true }));
+  return { ok: true, activePicker, selectedItems: Array.from(new Set(selectedItems)) };
+})();
 """.strip()
 
 
