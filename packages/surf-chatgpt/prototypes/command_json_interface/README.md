@@ -34,6 +34,9 @@ surf-chatgpt session abandon SESSION
 
 - Plain `ask` returns after ChatGPT assigns a durable session and Surf rebinds
   its page to the deterministic session thread.
+- Public session objects contain only the durable session ID. The canonical
+  `https://chatgpt.com/c/<id>` recovery URL is derived internally rather than
+  duplicated in output.
 - `ask --session` submits a follow-up after resolving or recovering the durable
   ChatGPT session. `ask --thread` submits through a preserved pre-session page
   when login or a challenge blocked the original submission.

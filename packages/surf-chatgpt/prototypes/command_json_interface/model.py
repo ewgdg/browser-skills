@@ -55,7 +55,7 @@ class PrototypeState:
 
 
 def public_session(session: Session) -> JsonObject:
-    return {"id": session.id, "url": session.url}
+    return {"id": session.id}
 
 
 def internal_state(state: PrototypeState) -> JsonObject:
