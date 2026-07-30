@@ -1,443 +1,555 @@
+from __future__ import annotations
+
+import contextlib
 import io
 import json
-import unittest
-from unittest.mock import patch
+import signal
+import sys
+from dataclasses import dataclass, field
+from typing import Any
+
+import pytest
 
 from surf_chatgpt import cli
-from surf_chatgpt.errors import SkillError
+from surf_chatgpt.contracts import (
+    AbandonRequest,
+    AskRequest,
+    CommandOutcome,
+    CurrentSessionRequest,
+    HandoffRequest,
+    LoginRequest,
+    ObservationMode,
+    ObservationRequest,
+    Pace,
+    RecentSessionsRequest,
+)
+from surf_chatgpt.errors import PublicError, PublicErrorType
+from surf_chatgpt.session_address import SessionAddress
 
 
-SOURCE = "external-chatgpt-via-surf-agent"
+SUCCESS = CommandOutcome.success({"session": {"id": "abc123"}})
 
 
-class CliValidationTests(unittest.TestCase):
-    def test_thinking_pro_is_forwarded_as_an_independent_fuzzy_query(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--thinking", "pro"], stdin=io.StringIO("x"), stdout=out)
+@dataclass
+class RecordingLifecycle:
+    outcome: CommandOutcome = SUCCESS
+    calls: list[tuple[str, object]] = field(default_factory=list)
 
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertIsNone(options.model_query)
-        self.assertEqual(options.thinking_query, "pro")
-        self.assertEqual(options.pace, "natural")
+    def _record(self, operation: str, request: object) -> CommandOutcome:
+        self.calls.append((operation, request))
+        return self.outcome
 
-    def test_ask_accepts_pacing_opt_out(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--pace", "none", "x"], stdout=out)
+    def ask(self, request: AskRequest) -> CommandOutcome:
+        return self._record("ask", request)
 
-        self.assertEqual(code, 0)
-        self.assertEqual(mocked.call_args.args[1].pace, "none")
+    def observe(self, request: ObservationRequest) -> CommandOutcome:
+        return self._record("observe", request)
 
-    def test_ask_rejects_unknown_pacing_profile_as_structured_invalid_args(self):
-        out = io.StringIO()
+    def current(self, request: CurrentSessionRequest) -> CommandOutcome:
+        return self._record("current", request)
 
-        code = cli.main(["ask", "--pace", "fast", "x"], stdout=out)
+    def handoff(self, request: HandoffRequest) -> CommandOutcome:
+        return self._record("handoff", request)
 
-        self.assertEqual(code, 2)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["type"], "invalid_args")
-        self.assertIn("--pace", payload["error"]["message"])
+    def abandon(self, request: AbandonRequest) -> CommandOutcome:
+        return self._record("abandon", request)
 
-    def test_model_select_verifies_picker_without_reading_or_sending_a_prompt(self):
-        fake = {
-            "ok": True,
-            "source": SOURCE,
-            "requested_model": "pro",
-            "requested_thinking": None,
-            "selected_model": "Pro",
-            "selected_thinking": None,
-            "active_picker": "Pro",
-            "verified": True,
-            "session": {"policy": "inspection", "thread": "inspect-model"},
-        }
-        with patch("surf_chatgpt.cli.select_chatgpt_model", create=True, return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["model", "select", "--model", "pro"], stdin=None, stdout=out)
+    def recent(self, request: RecentSessionsRequest) -> CommandOutcome:
+        return self._record("recent", request)
 
-        self.assertEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertTrue(payload["verified"])
-        self.assertEqual(payload["active_picker"], "Pro")
-        options = mocked.call_args.args[0]
-        self.assertEqual(options.model_query, "pro")
-        self.assertEqual(options.requested_model, "pro")
+    def login(self, request: LoginRequest) -> CommandOutcome:
+        return self._record("login", request)
 
-    def test_model_select_text_output_is_compact(self):
-        fake = {
-            "ok": True,
-            "source": SOURCE,
-            "selected_model": "Pro",
-            "selected_thinking": None,
-            "active_picker": "Pro",
-            "verified": True,
-            "session": {"policy": "inspection", "thread": "inspect-model"},
-        }
-        with patch("surf_chatgpt.cli.select_chatgpt_model", return_value=fake):
-            out = io.StringIO()
-            code = cli.main(["model", "select", "--model", "pro", "--format", "text"], stdout=out)
 
-        self.assertEqual(code, 0)
-        self.assertEqual(out.getvalue(), "verified\tmodel=Pro\tthinking=-\tpicker=Pro\tthread=inspect-model\n")
+class RaisingLifecycle(RecordingLifecycle):
+    def __init__(self, raised: BaseException) -> None:
+        super().__init__()
+        self.raised = raised
 
-    def test_model_select_requires_a_selection_query(self):
-        out = io.StringIO()
-        code = cli.main(["model", "select"], stdout=out)
+    def _record(self, operation: str, request: object) -> CommandOutcome:
+        raise self.raised
 
-        self.assertEqual(code, 2)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["type"], "invalid_args")
-        self.assertIn("requires --model or --thinking", payload["error"]["message"])
 
-    def test_empty_stdin_error_is_structured(self):
-        out = io.StringIO()
-        code = cli.main(["ask", "--format", "json"], stdin=io.StringIO(""), stdout=out)
-        self.assertNotEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertFalse(payload["ok"])
-        self.assertEqual(payload["error"]["type"], "empty_prompt")
+def invoke(
+    argv: list[str],
+    *,
+    lifecycle: RecordingLifecycle | None = None,
+    stdin: str = "",
+    stdout: io.StringIO | None = None,
+) -> tuple[int, dict[str, Any], str, RecordingLifecycle]:
+    active_lifecycle = lifecycle or RecordingLifecycle()
+    output = stdout or io.StringIO()
+    errors = io.StringIO()
+    code = cli.main(
+        argv,
+        stdin=io.StringIO(stdin),
+        stdout=output,
+        stderr=errors,
+        lifecycle=active_lifecycle,
+    )
+    rendered = output.getvalue()
+    payload = json.loads(rendered)
+    return code, payload, errors.getvalue(), active_lifecycle
 
-    def test_keyboard_interrupt_is_structured_without_traceback(self):
-        out = io.StringIO()
-        err = io.StringIO()
-        with patch("surf_chatgpt.cli.ask_chatgpt", side_effect=KeyboardInterrupt):
-            code = cli.main(["ask"], stdin=io.StringIO("x"), stdout=out, stderr=err)
 
-        self.assertEqual(code, 130)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["type"], "interrupted")
-        self.assertEqual(err.getvalue(), "")
-        self.assertNotIn("Traceback", out.getvalue())
+def test_plain_ask_dispatches_one_typed_request_and_one_compact_json_object() -> None:
+    code, payload, stderr, lifecycle = invoke(["ask", "hello"])
 
-    def test_positional_prompt_is_passed_to_client_and_ignores_stdin(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "argv prompt"], stdin=io.StringIO("stdin prompt"), stdout=out)
-        self.assertEqual(code, 0)
-        self.assertEqual(mocked.call_args.args[0], "argv prompt")
-
-    def test_dash_prefixed_prompt_uses_argparse_separator(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--", "-dash prompt"], stdin=io.StringIO(""), stdout=out)
-        self.assertEqual(code, 0)
-        self.assertEqual(mocked.call_args.args[0], "-dash prompt")
-
-    def test_prompt_shaping_flags_are_removed_except_thread_session_flag(self):
-        for flag in ("--mode", "--max-chars", "--max-words"):
-            with self.subTest(flag=flag):
-                out = io.StringIO()
-                code = cli.main(["ask", flag, "x"], stdin=io.StringIO("x"), stdout=out)
-                self.assertNotEqual(code, 0)
-                payload = json.loads(out.getvalue())
-                self.assertEqual(payload["error"]["type"], "invalid_args")
-                self.assertIn("unrecognized arguments", payload["error"]["message"])
-
-    def test_allow_logged_out_cannot_be_combined_with_model_selection(self):
-        out = io.StringIO()
-        code = cli.main(["ask", "--allow-logged-out", "--model", "pro"], stdin=io.StringIO("x"), stdout=out)
-        self.assertNotEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["type"], "invalid_args")
-        self.assertIn("--allow-logged-out", payload["error"]["message"])
-
-    def test_keep_open_without_session_mode_implies_new_session(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "new", "thread": "t"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--keep-open"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertEqual(options.session_policy, "new")
-        self.assertTrue(options.start_new)
-        self.assertTrue(options.keep_open)
-
-    def test_keep_open_is_passed_to_client(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "session", "thread": "t"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--session", "abc", "--keep-open"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertTrue(options.keep_open)
-
-    def test_thread_is_passed_to_client(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "thread", "thread": "chat"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--thread", "chat"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertEqual(options.session_policy, "thread")
-        self.assertEqual(options.thread, "chat")
-
-    def test_session_id_is_normalized_and_passed_to_client(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "session", "url": "https://chatgpt.com/c/abc", "id": "abc"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--session", "abc"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertEqual(options.session_url, "https://chatgpt.com/c/abc")
-
-    def test_session_url_is_passed_to_client(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "session", "url": "https://chatgpt.com/c/abc", "id": "abc"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--session", "https://chatgpt.com/c/abc"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertEqual(options.session_url, "https://chatgpt.com/c/abc")
-
-    def test_window_id_is_not_retained(self):
-        out = io.StringIO()
-        code = cli.main(["ask", "--window-id", "99"], stdin=io.StringIO("x"), stdout=out)
-        self.assertNotEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["type"], "invalid_args")
-        self.assertIn("unrecognized arguments", payload["error"]["message"])
-
-    def test_session_without_subcommand_is_structured_invalid_args(self):
-        out = io.StringIO()
-        err = io.StringIO()
-        code = cli.main(["session"], stdout=out, stderr=err)
-        self.assertNotEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["type"], "invalid_args")
-        self.assertIn("session requires a subcommand: current or search", payload["error"]["message"])
-        self.assertEqual(err.getvalue(), "")
-
-    def test_session_current_returns_thread_conversation(self):
-        class FakeSurfRunner:
-            def eval_code(self, thread, code, timeout=30):
-                if thread != "research":
-                    raise AssertionError(thread)
-                if "location.href" in code:
-                    return "https://chatgpt.com/c/session-123?model=gpt-5.5"
-                if "document.title" in code:
-                    return "Research chat"
-                raise AssertionError(code)
-
-        with patch("surf_chatgpt.cli.SurfRunner", return_value=FakeSurfRunner()):
-            out = io.StringIO()
-            code = cli.main(["session", "current", "--thread", "research"], stdout=out)
-        self.assertEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["session"]["id"], "session-123")
-        self.assertEqual(payload["session"]["url"], "https://chatgpt.com/c/session-123?model=gpt-5.5")
-        self.assertEqual(payload["session"]["title"], "Research chat")
-        self.assertEqual(payload["session"]["thread"], "research")
-
-    def test_session_current_returns_null_for_thread_chatgpt_home(self):
-        class FakeSurfRunner:
-            def eval_code(self, thread, code, timeout=30):
-                return "https://chatgpt.com/" if "location.href" in code else "ChatGPT"
-
-        with patch("surf_chatgpt.cli.SurfRunner", return_value=FakeSurfRunner()):
-            out = io.StringIO()
-            code = cli.main(["session", "current"], stdout=out)
-        self.assertEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertIsNone(payload["session"])
-        self.assertIn("not a conversation", payload["warning"])
-
-    def test_session_current_returns_null_when_thread_not_chatgpt(self):
-        class FakeSurfRunner:
-            def eval_code(self, thread, code, timeout=30):
-                return "https://example.com/"
-
-        with patch("surf_chatgpt.cli.SurfRunner", return_value=FakeSurfRunner()):
-            out = io.StringIO()
-            code = cli.main(["session", "current"], stdout=out)
-        self.assertEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertIsNone(payload["session"])
-        self.assertIn("not on ChatGPT", payload["warning"])
-
-    def test_session_search_uses_web_search_and_returns_sessions(self):
-        fake = {"ok": True, "source": SOURCE, "query": "rust async", "sessions": [{"id": "abc", "url": "https://chatgpt.com/c/abc", "title": "Rust async"}]}
-        with patch("surf_chatgpt.cli.search_web_sessions", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["session", "search", "rust async", "--limit", "3"], stdout=out)
-        self.assertEqual(code, 0)
-        mocked.assert_called_once_with("rust async", limit=3)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["sessions"][0]["id"], "abc")
-
-    def test_session_search_text_mode_lists_sessions(self):
-        fake = {"ok": True, "source": SOURCE, "query": "rust async", "sessions": [{"id": "abc", "url": "https://chatgpt.com/c/abc", "title": "Rust async"}]}
-        with patch("surf_chatgpt.cli.search_web_sessions", return_value=fake):
-            out = io.StringIO()
-            code = cli.main(["session", "search", "rust async", "--format", "text"], stdout=out)
-        self.assertEqual(code, 0)
-        self.assertIn("abc\tRust async\thttps://chatgpt.com/c/abc", out.getvalue())
-
-    def test_ephemeral_ask_uses_client_and_returns_json(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake):
-            out = io.StringIO()
-            code = cli.main(["ask"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        self.assertEqual(json.loads(out.getvalue())["answer"], "ok")
-
-    def test_human_gate_json_contains_resumable_thread(self):
-        error = SkillError(
-            "login_required",
-            "ChatGPT login required",
-            hint="Log in, then retry with the preserved thread.",
-            handoff={"action": "complete_login", "thread": "human-thread", "retry": ["ask", "--thread", "human-thread"]},
+    assert code == 0
+    assert payload == {"ok": True, "session": {"id": "abc123"}}
+    assert stderr == ""
+    assert lifecycle.calls == [
+        (
+            "ask",
+            AskRequest(prompt="hello", pace=Pace.NATURAL),
         )
-        with patch("surf_chatgpt.cli.ask_chatgpt", side_effect=error):
-            out = io.StringIO()
-            code = cli.main(["ask"], stdin=io.StringIO("x"), stdout=out)
+    ]
 
-        self.assertNotEqual(code, 0)
-        payload = json.loads(out.getvalue())
-        self.assertEqual(payload["error"]["handoff"]["thread"], "human-thread")
-        self.assertEqual(payload["error"]["handoff"]["retry"], ["ask", "--thread", "human-thread"])
+    output = io.StringIO()
+    cli.main(["ask", "hello"], stdin=io.StringIO(), stdout=output, lifecycle=RecordingLifecycle())
+    assert output.getvalue() == '{"ok":true,"session":{"id":"abc123"}}\n'
 
-    def test_human_gate_text_contains_resumable_thread(self):
-        error = SkillError(
-            "captcha_or_cloudflare",
-            "ChatGPT challenge detected",
-            hint="Complete the challenge, then retry with `surf-chatgpt ask --thread human-thread`.",
-            handoff={"action": "complete_challenge", "thread": "human-thread", "retry": ["ask", "--thread", "human-thread"]},
+
+def test_ask_uses_stdin_only_when_the_positional_prompt_is_absent() -> None:
+    _, _, _, stdin_lifecycle = invoke(["ask"], stdin="from stdin\n")
+    _, _, _, positional_lifecycle = invoke(["ask", "argument"], stdin="ignored")
+
+    assert stdin_lifecycle.calls[0][1] == AskRequest(prompt="from stdin\n", pace=Pace.NATURAL)
+    assert positional_lifecycle.calls[0][1] == AskRequest(prompt="argument", pace=Pace.NATURAL)
+
+
+def test_ask_normalizes_addressing_and_all_specified_options_before_dispatch() -> None:
+    _, _, _, lifecycle = invoke(
+        [
+            "ask",
+            "--session",
+            "https://chatgpt.com/c/ABC_123-x",
+            "--model",
+            "latest",
+            "--thinking",
+            "pro",
+            "--wait=12.5",
+            "--retain",
+            "--pace",
+            "none",
+            "--allow-logged-out",
+            "follow up",
+        ]
+    )
+
+    request = lifecycle.calls[0][1]
+    assert isinstance(request, AskRequest)
+    assert request.session is not None
+    assert request.session.id == "ABC_123-x"
+    assert request.session.to_public_json() == {"id": "ABC_123-x"}
+    assert request.session.canonical_url == "https://chatgpt.com/c/ABC_123-x"
+    assert request.session.thread == "surf-chatgpt-session-ABC_123-x"
+    assert request.model == "latest"
+    assert request.thinking == "pro"
+    assert request.wait_timeout_seconds == 12.5
+    assert request.retain is True
+    assert request.pace is Pace.NONE
+    assert request.allow_logged_out is True
+
+
+def test_bare_wait_preserves_the_following_prompt_and_uses_the_default_timeout() -> None:
+    _, _, _, lifecycle = invoke(["ask", "--wait", "prompt"])
+
+    assert lifecycle.calls == [
+        (
+            "ask",
+            AskRequest(
+                prompt="prompt",
+                wait_timeout_seconds=2700.0,
+                pace=Pace.NATURAL,
+            ),
         )
-        with patch("surf_chatgpt.cli.ask_chatgpt", side_effect=error):
-            out = io.StringIO()
-            code = cli.main(["ask", "--format", "text"], stdin=io.StringIO("x"), stdout=out)
-
-        self.assertNotEqual(code, 0)
-        self.assertIn("--thread human-thread", out.getvalue())
-
-    def test_ephemeral_thinking_high_passes_query_to_client(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--thinking", "high"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertEqual(options.session_policy, "ephemeral")
-        self.assertEqual(options.thinking_query, "high")
-
-    def test_new_thinking_high_passes_query_to_client_without_session(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "new"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--new", "--thinking", "high"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertIsNone(options.model_query)
-        self.assertEqual(options.session_policy, "new")
-        self.assertEqual(options.thinking_query, "high")
-        self.assertEqual(options.requested_thinking, "high")
-
-    def test_model_query_is_passed_to_client(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--model", "pro"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertEqual(options.model_query, "pro")
-
-    def test_allow_logged_out_is_passed_to_client(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--allow-logged-out"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertTrue(options.allow_logged_out)
-
-    def test_login_opens_and_focuses_chatgpt_through_bridge(self):
-        class FakeSurfRunner:
-            def __init__(self):
-                self.calls = []
-
-            def run_text(self, args, timeout=30, thread=None):
-                self.calls.append((list(args), timeout, thread))
-                return "opened\n"
-
-        fake_runner = FakeSurfRunner()
-        with patch("surf_chatgpt.cli.SurfRunner", return_value=fake_runner):
-            out = io.StringIO()
-            code = cli.main(["login"], stdout=out)
-        self.assertEqual(code, 0)
-        self.assertEqual(
-            fake_runner.calls,
-            [
-                (["open", "https://chatgpt.com/"], 30, "surf-chatgpt-login"),
-                (["focus"], 10, "surf-chatgpt-login"),
-            ],
-        )
-        payload = json.loads(out.getvalue())
-        self.assertTrue(payload["ok"])
-        self.assertEqual(payload["action"], "login_opened")
-
-    def test_latest_model_and_highest_thinking_are_passed_to_client(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--model", "latest", "--thinking", "highest"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertEqual(options.model_query, "latest")
-        self.assertEqual(options.thinking_query, "highest")
-        self.assertEqual(options.requested_model, "latest")
-        self.assertEqual(options.requested_thinking, "highest")
-
-    def test_model_suffix_and_thinking_are_independent_queries(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake) as mocked:
-            out = io.StringIO()
-            code = cli.main(["ask", "--model", "gpt-5.5:high", "--thinking", "medium"], stdin=io.StringIO("x"), stdout=out)
-
-        self.assertEqual(code, 0)
-        options = mocked.call_args.args[1]
-        self.assertEqual(options.model_query, "gpt-5.5:high")
-        self.assertEqual(options.thinking_query, "medium")
-
-    def test_text_mode_success_is_labeled_and_compact(self):
-        fake = {"ok": True, "source": SOURCE, "answer": "ok", "session": {"policy": "ephemeral", "thread": "chat"}}
-        with patch("surf_chatgpt.cli.ask_chatgpt", return_value=fake):
-            out = io.StringIO()
-            code = cli.main(["ask", "--format", "text"], stdin=io.StringIO("x"), stdout=out)
-        self.assertEqual(code, 0)
-        rendered = out.getvalue()
-        self.assertIn("external ChatGPT via surf-agent", rendered)
-        self.assertIn("thread=chat", rendered)
-        self.assertIn("ok", rendered)
-
-    def test_text_mode_error_is_labeled(self):
-        out = io.StringIO()
-        code = cli.main(["ask", "--format", "text"], stdin=io.StringIO(""), stdout=out)
-        self.assertNotEqual(code, 0)
-        self.assertIn("external ChatGPT via surf-agent error: empty_prompt", out.getvalue())
-
-    def test_login_text_mode_tells_user_next_action(self):
-        class FakeSurfRunner:
-            def run_text(self, args, timeout=30, thread=None):
-                return "opened\n"
-
-        with patch("surf_chatgpt.cli.SurfRunner", return_value=FakeSurfRunner()):
-            out = io.StringIO()
-            code = cli.main(["login", "--format", "text"], stdout=out)
-        self.assertEqual(code, 0)
-        self.assertIn("Log in to ChatGPT", out.getvalue())
-
-    def test_login_help_mentions_manual_login(self):
-        out = io.StringIO()
-        with patch("sys.stdout", out), self.assertRaises(SystemExit) as ctx:
-            cli.main(["login", "--help"])
-        self.assertEqual(ctx.exception.code, 0)
-        self.assertIn("manual login", out.getvalue())
+    ]
 
 
-if __name__ == "__main__":
-    unittest.main()
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["ask", "--session", "abc", "--thread", "preserved", "prompt"],
+        ["ask", "--wait=0", "prompt"],
+        ["ask", "--wait=-1", "prompt"],
+        ["ask", "--wait=nan", "prompt"],
+        ["ask", "--wait=inf", "prompt"],
+        ["ask", "--model", "", "prompt"],
+        ["ask", "--thread", "", "prompt"],
+        ["ask", "--unknown-option", "prompt"],
+        ["unknown-command"],
+    ],
+)
+def test_invalid_grammar_returns_one_safe_exit_2_object(argv: list[str]) -> None:
+    lifecycle = RecordingLifecycle()
+    code, payload, stderr, _ = invoke(argv, lifecycle=lifecycle)
+
+    assert code == 2
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "invalid_args"
+    assert stderr == ""
+    assert lifecycle.calls == []
+
+
+@pytest.mark.parametrize("stdin", ["", " \n\t"])
+def test_empty_prompt_returns_empty_prompt_and_exit_2(stdin: str) -> None:
+    code, payload, stderr, lifecycle = invoke(["ask"], stdin=stdin)
+
+    assert code == 2
+    assert payload["error"]["type"] == "empty_prompt"
+    assert stderr == ""
+    assert lifecycle.calls == []
+
+
+@pytest.mark.parametrize(
+    ("argv", "operation", "expected_request"),
+    [
+        (
+            ["session", "current", "--thread", "preserved"],
+            "current",
+            CurrentSessionRequest(thread="preserved"),
+        ),
+        (
+            ["session", "status", "https://chatgpt.com/c/abc", "--retain"],
+            "observe",
+            ObservationRequest(
+                session=SessionAddress.parse("abc"),
+                mode=ObservationMode.STATUS,
+                retain=True,
+            ),
+        ),
+        (
+            ["session", "result", "abc"],
+            "observe",
+            ObservationRequest(
+                session=SessionAddress.parse("abc"),
+                mode=ObservationMode.RESULT_ONCE,
+            ),
+        ),
+        (
+            ["session", "result", "abc", "--wait"],
+            "observe",
+            ObservationRequest(
+                session=SessionAddress.parse("abc"),
+                mode=ObservationMode.RESULT_WAIT,
+                wait_timeout_seconds=2700.0,
+            ),
+        ),
+        (
+            ["session", "handoff", "abc"],
+            "handoff",
+            HandoffRequest(session=SessionAddress.parse("abc")),
+        ),
+        (
+            ["session", "recent"],
+            "recent",
+            RecentSessionsRequest(),
+        ),
+        (
+            ["session", "recent", "--thread", "discovery"],
+            "recent",
+            RecentSessionsRequest(thread="discovery"),
+        ),
+        (
+            ["abandon", "abc"],
+            "abandon",
+            AbandonRequest(session=SessionAddress.parse("abc")),
+        ),
+        (
+            ["abandon", "--thread", "login"],
+            "abandon",
+            AbandonRequest(thread="login"),
+        ),
+        (["login"], "login", LoginRequest()),
+    ],
+)
+def test_session_abandon_and_login_grammar_dispatch_through_one_lifecycle_seam(
+    argv: list[str],
+    operation: str,
+    expected_request: object,
+) -> None:
+    _, _, _, lifecycle = invoke(argv)
+
+    actual_operation, actual_request = lifecycle.calls[0]
+    assert actual_operation == operation
+    assert actual_request == expected_request
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        [],
+        ["session"],
+        ["session", "current"],
+        ["session", "status", ""],
+        ["abandon"],
+        ["abandon", "abc", "--thread", "preserved"],
+    ],
+)
+def test_missing_empty_or_ambiguous_required_input_exits_2(argv: list[str]) -> None:
+    code, payload, _, lifecycle = invoke(argv)
+
+    assert code == 2
+    assert payload["error"]["type"] == "invalid_args"
+    assert lifecycle.calls == []
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "abc.def",
+        "http://chatgpt.com/c/abc",
+        "https://www.chatgpt.com/c/abc",
+        "https://chatgpt.com/c/abc?model=pro",
+    ],
+)
+def test_malformed_session_input_fails_before_lifecycle_work(reference: str) -> None:
+    lifecycle = RecordingLifecycle()
+    code, payload, _, _ = invoke(
+        ["session", "status", reference],
+        lifecycle=lifecycle,
+    )
+
+    assert code == 2
+    assert payload["error"]["type"] == "invalid_args"
+    assert lifecycle.calls == []
+
+
+def test_parser_errors_do_not_echo_command_argument_content() -> None:
+    _, payload, stderr, _ = invoke(["not-a-command", "private-prompt-content"])
+
+    rendered = json.dumps(payload)
+    assert "not-a-command" not in rendered
+    assert "private-prompt-content" not in rendered
+    assert stderr == ""
+
+
+def test_operational_and_unexpected_failures_are_safe_single_objects() -> None:
+    public_failure = RaisingLifecycle(PublicError(PublicErrorType.BROWSER_UNAVAILABLE))
+    code, payload, stderr, _ = invoke(["login"], lifecycle=public_failure)
+    assert code == 1
+    assert payload["error"]["type"] == "browser_unavailable"
+    assert stderr == ""
+
+    unexpected = RaisingLifecycle(RuntimeError("raw secret browser diagnostic"))
+    code, payload, stderr, _ = invoke(["login"], lifecycle=unexpected)
+    assert code == 1
+    assert payload["error"]["type"] == "internal_error"
+    assert "raw secret browser diagnostic" not in json.dumps(payload)
+    assert stderr == ""
+
+
+def test_default_lifecycle_fails_safely_before_owned_page_support_exists() -> None:
+    output = io.StringIO()
+    errors = io.StringIO()
+
+    code = cli.main(["login"], stdout=output, stderr=errors)
+
+    assert code == 1
+    assert json.loads(output.getvalue())["error"]["type"] == "unsupported_browser_capability"
+    assert errors.getvalue() == ""
+
+
+class FlushRecordingStream(io.StringIO):
+    def __init__(self, events: list[str]) -> None:
+        super().__init__()
+        self.events = events
+
+    def flush(self) -> None:
+        self.events.append("flush")
+        super().flush()
+
+
+@pytest.mark.parametrize("cleanup_raises", [False, True])
+def test_private_cleanup_runs_only_after_json_flush_and_cannot_replace_output(
+    cleanup_raises: bool,
+) -> None:
+    events: list[str] = []
+
+    def cleanup() -> None:
+        assert events == ["flush"]
+        events.append("cleanup")
+        if cleanup_raises:
+            raise RuntimeError("private cleanup detail")
+
+    outcome = CommandOutcome.success(
+        {"session": {"id": "abc123"}},
+        post_output_cleanup=cleanup,
+    )
+    output = FlushRecordingStream(events)
+
+    code, payload, stderr, _ = invoke(
+        ["login"],
+        lifecycle=RecordingLifecycle(outcome=outcome),
+        stdout=output,
+    )
+
+    assert code == 0
+    assert payload == {"ok": True, "session": {"id": "abc123"}}
+    assert stderr == ""
+    assert events == ["flush", "cleanup"]
+
+
+def test_lifecycle_and_cleanup_diagnostics_cannot_bypass_the_json_output_path() -> None:
+    class NoisyLifecycle(RecordingLifecycle):
+        def login(self, request: LoginRequest) -> CommandOutcome:
+            print("private lifecycle stdout")
+            print("private lifecycle stderr", file=sys.stderr)
+
+            def noisy_cleanup() -> None:
+                print("private cleanup stdout")
+                print("private cleanup stderr", file=sys.stderr)
+
+            return CommandOutcome.success(
+                {"handoff": {"action": "complete_login", "thread": "login"}},
+                post_output_cleanup=noisy_cleanup,
+            )
+
+    code, payload, stderr, _ = invoke(["login"], lifecycle=NoisyLifecycle())
+
+    assert code == 0
+    assert payload == {
+        "ok": True,
+        "handoff": {"action": "complete_login", "thread": "login"},
+    }
+    assert stderr == ""
+
+
+@pytest.mark.parametrize(
+    ("signal_number", "expected_exit"),
+    [(signal.SIGINT, 130), (signal.SIGTERM, 143)],
+)
+def test_caught_process_signals_emit_one_interruption_object(
+    signal_number: signal.Signals,
+    expected_exit: int,
+) -> None:
+    class SignallingLifecycle(RecordingLifecycle):
+        def login(self, request: LoginRequest) -> CommandOutcome:
+            signal.raise_signal(signal_number)
+            raise AssertionError("signal handler returned")
+
+    code, payload, stderr, _ = invoke(["login"], lifecycle=SignallingLifecycle())
+
+    assert code == expected_exit
+    assert payload["ok"] is False
+    assert payload["error"]["type"] == "interrupted"
+    assert stderr == ""
+
+
+def test_signal_raised_while_writing_is_still_projected_as_one_interruption_object() -> None:
+    class SignallingOutput(io.StringIO):
+        should_signal = True
+
+        def write(self, value: str) -> int:
+            if self.should_signal:
+                self.should_signal = False
+                signal.raise_signal(signal.SIGTERM)
+            return super().write(value)
+
+    output = SignallingOutput()
+    code = cli.main(["login"], stdout=output, lifecycle=RecordingLifecycle())
+
+    assert code == 143
+    assert json.loads(output.getvalue())["error"]["type"] == "interrupted"
+    assert output.getvalue().count("\n") == 1
+
+
+def test_signal_during_flush_never_appends_a_second_json_object() -> None:
+    class FlushSignallingOutput(io.StringIO):
+        should_signal = True
+
+        def flush(self) -> None:
+            if self.should_signal:
+                self.should_signal = False
+                signal.raise_signal(signal.SIGTERM)
+            super().flush()
+
+    output = FlushSignallingOutput()
+    code = cli.main(["login"], stdout=output, lifecycle=RecordingLifecycle())
+
+    assert code == 143
+    assert json.loads(output.getvalue())["error"]["type"] == "interrupted"
+    assert output.getvalue().count("\n") == 1
+
+
+def test_non_seekable_output_defers_signals_until_the_success_object_is_committed() -> None:
+    class NonSeekableSignallingOutput(io.StringIO):
+        should_signal = True
+
+        def tell(self) -> int:
+            raise io.UnsupportedOperation("not seekable")
+
+        def flush(self) -> None:
+            if self.should_signal:
+                self.should_signal = False
+                signal.raise_signal(signal.SIGTERM)
+            super().flush()
+
+    output = NonSeekableSignallingOutput()
+    code = cli.main(["login"], stdout=output, lifecycle=RecordingLifecycle())
+
+    assert code == 0
+    assert json.loads(output.getvalue()) == {
+        "ok": True,
+        "session": {"id": "abc123"},
+    }
+    assert output.getvalue().count("\n") == 1
+
+
+def test_failed_output_rollback_is_treated_as_an_already_committed_object() -> None:
+    class UnrollbackableSignallingOutput(io.StringIO):
+        should_signal = True
+
+        def seek(self, offset: int, whence: int = 0) -> int:
+            raise io.UnsupportedOperation("rollback unavailable")
+
+        def flush(self) -> None:
+            if self.should_signal:
+                self.should_signal = False
+                signal.raise_signal(signal.SIGTERM)
+            super().flush()
+
+    output = UnrollbackableSignallingOutput()
+    code = cli.main(["login"], stdout=output, lifecycle=RecordingLifecycle())
+
+    assert code == 0
+    assert json.loads(output.getvalue()) == {
+        "ok": True,
+        "session": {"id": "abc123"},
+    }
+    assert output.getvalue().count("\n") == 1
+
+
+def test_signal_before_output_write_emits_the_interruption_object(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_dumps = json.dumps
+    should_signal = True
+
+    def signal_before_serializing(*args: object, **kwargs: object) -> str:
+        nonlocal should_signal
+        if should_signal:
+            should_signal = False
+            signal.raise_signal(signal.SIGTERM)
+        return real_dumps(*args, **kwargs)
+
+    monkeypatch.setattr(cli.json, "dumps", signal_before_serializing)
+    output = io.StringIO()
+
+    code = cli.main(["login"], stdout=output, lifecycle=RecordingLifecycle())
+
+    assert code == 143
+    assert json.loads(output.getvalue())["error"]["type"] == "interrupted"
+    assert output.getvalue().count("\n") == 1
+
+
+def test_help_remains_human_readable_and_emits_no_json() -> None:
+    output = io.StringIO()
+
+    with contextlib.redirect_stdout(output), pytest.raises(SystemExit) as raised:
+        cli.main(["--help"])
+
+    assert raised.value.code == 0
+    assert output.getvalue().startswith("usage: surf-chatgpt")
+    assert not output.getvalue().lstrip().startswith("{")

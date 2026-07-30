@@ -1,75 +1,174 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from enum import StrEnum
+from typing import Any, Final
 
 
-ERROR_HINTS = {
-    "empty_prompt": "Pass a prompt argument or pipe focused prompt/context into stdin.",
-    "invalid_args": "Use --help and choose either ephemeral mode or one explicit session mode.",
-    "login_required": "Run `surf-chatgpt login`, log in to chatgpt.com in the opened Surf Agent browser profile, then retry.",
-    "captcha_or_cloudflare": "Open the surf-agent profile and complete the ChatGPT challenge manually.",
-    "ui_changed": "Update surf-agent or this skill; ChatGPT UI selectors likely changed.",
-    "timeout": "Retry with --timeout SECONDS, smaller context, or a faster model.",
-    "surf_unavailable": "Install surf-agent and ensure it is on PATH.",
-    "browser_unavailable": "Start or repair the surf-agent browser bridge/profile.",
-    "model_unavailable": "Use a model available in your ChatGPT account or omit --model.",
-    "parse_error": "surf-agent returned unexpected output; retry or update surf-agent.",
-    "session_not_found": "Use ask --new to create a session, then pass the returned id/url with ask --session ID_OR_URL.",
-    "unknown": "Retry with smaller input. If it persists, inspect surf-agent manually.",
+class PublicErrorType(StrEnum):
+    INVALID_ARGS = "invalid_args"
+    EMPTY_PROMPT = "empty_prompt"
+    UNSUPPORTED_BROWSER_CAPABILITY = "unsupported_browser_capability"
+    BROWSER_IDENTITY_UNPROVEN = "browser_identity_unproven"
+    BROWSER_UNAVAILABLE = "browser_unavailable"
+    CAPACITY_EXCEEDED = "capacity_exceeded"
+    HUMAN_INTERVENTION_REQUIRED = "human_intervention_required"
+    SUBMISSION_OUTCOME_INDETERMINATE = "submission_outcome_indeterminate"
+    SESSION_REBIND_FAILED = "session_rebind_failed"
+    SESSION_NOT_FOUND = "session_not_found"
+    THREAD_NOT_FOUND = "thread_not_found"
+    OWNERSHIP_CONFLICT = "ownership_conflict"
+    AMBIGUOUS_SESSION_PAGE = "ambiguous_session_page"
+    INSPECTION_FAILED = "inspection_failed"
+    UI_CHANGED = "ui_changed"
+    MODEL_UNAVAILABLE = "model_unavailable"
+    ABANDONMENT_FAILED = "abandonment_failed"
+    INTERRUPTED = "interrupted"
+    INTERNAL_ERROR = "internal_error"
+
+
+class PublicErrorCauseType(StrEnum):
+    # The accepted specification defines no general cause vocabulary. Keep the
+    # demonstrated bridge-disconnect cause closed until a lifecycle ticket needs more.
+    BRIDGE_DISCONNECTED = "bridge_disconnected"
+
+
+class SubmissionPhase(StrEnum):
+    BEFORE_SEND = "before_send"
+    SEND_MAY_HAVE_OCCURRED_ID_UNKNOWN = "send_may_have_occurred_id_unknown"
+    ID_KNOWN_REBIND_PENDING = "id_known_rebind_pending"
+    HANDSHAKE_COMPLETE = "handshake_complete"
+    OBSERVING = "observing"
+
+
+@dataclass(frozen=True)
+class _PublicErrorDescription:
+    message: str
+    hint: str | None = None
+
+
+_PUBLIC_ERROR_DESCRIPTIONS: Final[dict[PublicErrorType, _PublicErrorDescription]] = {
+    PublicErrorType.INVALID_ARGS: _PublicErrorDescription(
+        "The command arguments are invalid.",
+        "Use --help to inspect the supported command grammar.",
+    ),
+    PublicErrorType.EMPTY_PROMPT: _PublicErrorDescription(
+        "The prompt is empty.",
+        "Pass a non-empty prompt argument or provide one on stdin.",
+    ),
+    PublicErrorType.UNSUPPORTED_BROWSER_CAPABILITY: _PublicErrorDescription(
+        "The selected browser backend cannot provide the required owned-page guarantees.",
+        "Select the Patchright backend before retrying.",
+    ),
+    PublicErrorType.BROWSER_IDENTITY_UNPROVEN: _PublicErrorDescription(
+        "The dedicated browser profile identity could not be proven.",
+    ),
+    PublicErrorType.BROWSER_UNAVAILABLE: _PublicErrorDescription(
+        "The browser bridge or owned page is unavailable.",
+        "Start or repair the dedicated Surf browser bridge, then retry.",
+    ),
+    PublicErrorType.CAPACITY_EXCEEDED: _PublicErrorDescription(
+        "The browser bridge already owns the maximum number of protected surf-chatgpt pages.",
+        "Resolve or release one retained page before allocating another.",
+    ),
+    PublicErrorType.HUMAN_INTERVENTION_REQUIRED: _PublicErrorDescription(
+        "The browser requires user intervention.",
+        "Complete the requested browser action manually before retrying.",
+    ),
+    PublicErrorType.SUBMISSION_OUTCOME_INDETERMINATE: _PublicErrorDescription(
+        "The prompt may have been sent, but no recoverable ChatGPT session ID was observed.",
+        "Inspect the preserved thread after resolving any browser gate; do not resubmit automatically.",
+    ),
+    PublicErrorType.SESSION_REBIND_FAILED: _PublicErrorDescription(
+        "The ChatGPT session was assigned, but exact-page rebinding did not complete.",
+        "Use the returned session and preserved thread for recovery; do not resubmit automatically.",
+    ),
+    PublicErrorType.SESSION_NOT_FOUND: _PublicErrorDescription(
+        "The ChatGPT session could not be resolved.",
+    ),
+    PublicErrorType.THREAD_NOT_FOUND: _PublicErrorDescription(
+        "The preserved Surf thread could not be resolved.",
+    ),
+    PublicErrorType.OWNERSHIP_CONFLICT: _PublicErrorDescription(
+        "The owned browser page no longer matches the requested operation.",
+    ),
+    PublicErrorType.AMBIGUOUS_SESSION_PAGE: _PublicErrorDescription(
+        "More than one browser page matches the requested ChatGPT session.",
+        "Inspect the browser manually and remove the ambiguity before retrying.",
+    ),
+    PublicErrorType.INSPECTION_FAILED: _PublicErrorDescription(
+        "The browser page state could not be safely classified.",
+        "Inspect the preserved page manually before retrying.",
+    ),
+    PublicErrorType.UI_CHANGED: _PublicErrorDescription(
+        "The required ChatGPT interface could not be identified.",
+        "Update surf-chatgpt for the current ChatGPT interface before retrying.",
+    ),
+    PublicErrorType.MODEL_UNAVAILABLE: _PublicErrorDescription(
+        "The requested model or thinking choice could not be affirmed.",
+        "Choose an option visible in the current ChatGPT picker.",
+    ),
+    PublicErrorType.ABANDONMENT_FAILED: _PublicErrorDescription(
+        "The retained browser page could not be safely abandoned.",
+        "The page remains preserved for manual inspection.",
+    ),
+    PublicErrorType.INTERRUPTED: _PublicErrorDescription(
+        "The operation was interrupted.",
+    ),
+    PublicErrorType.INTERNAL_ERROR: _PublicErrorDescription(
+        "An internal surf-chatgpt error occurred.",
+        "Retry once; if the failure persists, update surf-chatgpt.",
+    ),
 }
 
 
-@dataclass
-class SkillError(Exception):
-    type: str
-    message: str
-    hint: str | None = None
-    exit_code: int = 1
-    handoff: dict[str, Any] | None = None
+_PUBLIC_CAUSE_MESSAGES: Final[dict[PublicErrorCauseType, str]] = {
+    PublicErrorCauseType.BRIDGE_DISCONNECTED: "The browser bridge connection ended.",
+}
+
+
+@dataclass(frozen=True)
+class PublicErrorCause:
+    type: PublicErrorCauseType
+    phase: SubmissionPhase
 
     def __post_init__(self) -> None:
-        super().__init__(self.message)
-        if self.hint is None:
-            self.hint = ERROR_HINTS.get(self.type, ERROR_HINTS["unknown"])
+        if not isinstance(self.type, PublicErrorCauseType):
+            raise TypeError("Public error causes require an allow-listed cause type.")
+        if not isinstance(self.phase, SubmissionPhase):
+            raise TypeError("Public error causes require an allow-listed phase.")
 
-    def to_dict(self) -> dict[str, Any]:
-        result: dict[str, Any] = {"type": self.type, "message": self.message}
-        if self.hint:
-            result["hint"] = self.hint
-        if self.handoff:
-            result["handoff"] = self.handoff
+    def to_public_json(self) -> dict[str, str]:
+        return {
+            "type": self.type.value,
+            "phase": self.phase.value,
+            "message": _PUBLIC_CAUSE_MESSAGES[self.type],
+        }
+
+
+class PublicError(Exception):
+    def __init__(
+        self,
+        error_type: PublicErrorType,
+        *,
+        cause: PublicErrorCause | None = None,
+    ) -> None:
+        if not isinstance(error_type, PublicErrorType):
+            raise TypeError("Public errors require an allow-listed error type.")
+        if cause is not None and not isinstance(cause, PublicErrorCause):
+            raise TypeError("Public errors require an allow-listed cause.")
+        self.type = error_type
+        self.cause = cause
+        super().__init__(_PUBLIC_ERROR_DESCRIPTIONS[error_type].message)
+
+    def to_public_json(self) -> dict[str, Any]:
+        description = _PUBLIC_ERROR_DESCRIPTIONS[self.type]
+        result: dict[str, Any] = {
+            "type": self.type.value,
+            "message": description.message,
+        }
+        if description.hint is not None:
+            result["hint"] = description.hint
+        if self.cause is not None:
+            result["cause"] = self.cause.to_public_json()
         return result
-
-
-def compact_message(text: str, limit: int = 300) -> str:
-    cleaned = " ".join((text or "").split())
-    if len(cleaned) <= limit:
-        return cleaned
-    return cleaned[: limit - 1].rstrip() + "…"
-
-
-def classify_surf_failure(returncode: int, stdout: str, stderr: str) -> SkillError:
-    raw = f"{stdout}\n{stderr}".strip()
-    lowered = raw.lower()
-    msg = compact_message(raw) or f"surf-agent exited with code {returncode}"
-
-    if "login_required" in lowered or "chatgpt login required" in lowered or "chatgpt logged-in session required" in lowered:
-        return SkillError("login_required", "ChatGPT login required")
-    challenge_markers = (
-        "captcha_or_cloudflare",
-        "chatgpt challenge detected",
-        "cloudflare challenge detected",
-        "captcha challenge detected",
-    )
-    if any(marker in lowered for marker in challenge_markers):
-        return SkillError("captcha_or_cloudflare", "ChatGPT challenge detected")
-    if "response timeout" in lowered or "request timed out" in lowered or "timeout" in lowered:
-        return SkillError("timeout", "ChatGPT response timed out")
-    if "prompt textarea not ready" in lowered or "element not found" in lowered or "selector" in lowered or "ui" in lowered:
-        return SkillError("ui_changed", "ChatGPT UI automation failed")
-    if "no remembered browser page" in lowered or "browser bridge" in lowered or "dedicated profile" in lowered or "connection refused" in lowered or "chrome running" in lowered:
-        return SkillError("browser_unavailable", "surf-agent browser bridge unavailable")
-    if "model" in lowered and ("not found" in lowered or "unavailable" in lowered or "failed" in lowered):
-        return SkillError("model_unavailable", "Requested ChatGPT model unavailable")
-    return SkillError("unknown", msg)

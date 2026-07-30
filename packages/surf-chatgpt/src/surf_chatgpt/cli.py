@@ -1,20 +1,33 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import json
+import math
+import signal
 import sys
-from typing import IO, Any
-from urllib.parse import urlparse
+import threading
+from collections.abc import Iterable, Iterator
+from types import FrameType
+from typing import IO, Any, NoReturn
 
-from . import SOURCE_LABEL
-from .client import AskOptions, ModelSelectOptions, ask_chatgpt, select_chatgpt_model
-from .errors import SkillError
-from .models import normalize_model_choice
-from .surf import SurfRunner
-from .web_sessions import search_web_sessions
+from .commands import execute_command
+from .contracts import (
+    CommandOutcome,
+    DEFAULT_OBSERVATION_TIMEOUT_SECONDS,
+    ProcessExitCode,
+    exit_code_for_error_type,
+)
+from .errors import PublicError, PublicErrorType
+from .session_address import InvalidSessionAddress, SessionAddress
+from .session_lifecycle import SessionLifecycle
 
-LOGIN_THREAD = "surf-chatgpt-login"
-CHATGPT_URL = "https://chatgpt.com/"
+
+_SIGNAL_EXIT_CODES = {
+    signal.SIGINT: ProcessExitCode.INTERRUPTED,
+    signal.SIGTERM: ProcessExitCode.TERMINATED,
+}
 
 
 class JsonArgumentParser(argparse.ArgumentParser):
@@ -22,342 +35,296 @@ class JsonArgumentParser(argparse.ArgumentParser):
         kwargs.setdefault("allow_abbrev", False)
         super().__init__(*args, **kwargs)
 
-    def error(self, message: str) -> None:  # keep default --help behavior, structure parser failures
-        raise SkillError("invalid_args", message, exit_code=2)
+    def error(self, message: str) -> NoReturn:
+        # argparse messages can echo command arguments. The public JSON path uses
+        # a fixed content-free error while --help remains human-readable.
+        raise PublicError(PublicErrorType.INVALID_ARGS)
+
+    def parse_args(
+        self,
+        args: Iterable[str] | None = None,
+        namespace: argparse.Namespace | None = None,
+    ) -> argparse.Namespace:
+        source = list(sys.argv[1:] if args is None else args)
+        parsed = super().parse_args(_expand_bare_wait(source), namespace)
+        if parsed is None:
+            raise RuntimeError("argparse returned no namespace")
+        return parsed
+
+
+class _CaughtSignal(Exception):
+    def __init__(self, signal_number: int) -> None:
+        self.signal_number = signal.Signals(signal_number)
+        self.output_committed = False
+        super().__init__(signal_number)
+
+
+class _DiscardingTextStream(io.TextIOBase):
+    def write(self, value: str) -> int:
+        return len(value)
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = JsonArgumentParser(
         prog="surf-chatgpt",
-        description="Compact external ChatGPT consultation through surf-agent browser automation.",
+        description="Submit and resume ChatGPT sessions through the dedicated Surf browser.",
     )
-    subparsers = parser.add_subparsers(dest="command", parser_class=JsonArgumentParser)
-
-    ask = subparsers.add_parser("ask", help="Forward a prompt argument or stdin to ChatGPT through surf-agent. Defaults to ephemeral one-shot mode.")
-    ask.add_argument("--ephemeral", action="store_true", help="Use a temporary controlled browser session. Default when no session option is given.")
-    ask.add_argument("--session", help="Continue a ChatGPT session by conversation id or https://chatgpt.com/c/<id> URL.")
-    ask.add_argument("--thread", help="Continue in an existing surf-agent thread returned by --keep-open.")
-    ask.add_argument("--new", action="store_true", help="Start a new ChatGPT session and return its session id/url.")
-    ask.add_argument("--current", action="store_true", help="Use the default surf-agent thread (main).")
-    ask.add_argument("--keep-open", action="store_true", help="Keep the opened surf-agent thread open and return its thread for follow-up. Without a session option, implies --new.")
-    ask.add_argument("--model", help="Fuzzy ChatGPT model query, e.g. latest, gpt-5.6-sol, or gpt-5.4. Use latest for the first available model row.")
-    ask.add_argument("--thinking", help="Fuzzy ChatGPT thinking-mode query, e.g. instant, high, extra-high, or pro. Use highest for the first available mode.")
-    ask.add_argument("--allow-logged-out", action="store_true", help="Allow anonymous ChatGPT. Default requires a logged-in ChatGPT session so account models are available.")
-    ask.add_argument("--timeout", type=int, default=2700, help="ChatGPT wait timeout in seconds. Default: 2700.")
-    ask.add_argument("--pace", choices=("natural", "none"), default="natural", help="Inter-action pacing profile. Default: natural; use none to disable.")
-    ask.add_argument("--format", choices=("json", "text"), default="json")
-    ask.add_argument("prompt", nargs="?", help="Prompt text. If omitted, read stdin. Use -- before prompts that start with -.")
-
-    model = subparsers.add_parser("model", help="Select and verify a ChatGPT model without sending a prompt; keep the browser open.")
-    model_sub = model.add_subparsers(dest="model_command", parser_class=JsonArgumentParser)
-    model_select = model_sub.add_parser("select", help="Select and verify picker state, then keep the browser open for inspection.")
-    model_select.add_argument("--model", help="Fuzzy ChatGPT model query, e.g. latest, gpt-5.6-sol, or gpt-5.4.")
-    model_select.add_argument("--thinking", help="Fuzzy ChatGPT thinking-mode query, e.g. instant, high, extra-high, or pro.")
-    model_select.add_argument("--thread", help="Retry selection in a preserved surf-agent thread after a login or verification handoff.")
-    model_select.add_argument("--format", choices=("json", "text"), default="json")
-
-    session = subparsers.add_parser("session", help="Discover ChatGPT web sessions from the browser. No local alias state.")
-    session_sub = session.add_subparsers(dest="session_command", parser_class=JsonArgumentParser)
-
-    session_current = session_sub.add_parser("current", help="Return the ChatGPT conversation id/url for a surf-agent thread.")
-    session_current.add_argument("--thread", default="main", help="surf-agent thread to inspect. Default: main.")
-    session_current.add_argument("--format", choices=("json", "text"), default="json")
-
-    session_search = session_sub.add_parser("search", help="Search real ChatGPT web sessions using ChatGPT's own search UI.")
-    session_search.add_argument("query")
-    session_search.add_argument("--limit", type=int, default=10, help="Maximum sessions to return. Default: 10.")
-    session_search.add_argument("--format", choices=("json", "text"), default="json")
-
-    login = subparsers.add_parser(
-        "login",
-        help="Open the surf-agent browser profile on ChatGPT for manual login.",
-        description="Open the surf-agent browser profile on ChatGPT for manual login.",
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        parser_class=JsonArgumentParser,
     )
-    login.add_argument("--format", choices=("json", "text"), default="json")
 
+    ask = subparsers.add_parser("ask", help="Submit one prompt and return its durable session.")
+    ask_address = ask.add_mutually_exclusive_group()
+    ask_address.add_argument("--session", type=_session_address, metavar="ID_OR_URL")
+    ask_address.add_argument("--thread", metavar="SURF_THREAD")
+    ask.add_argument("--model", metavar="QUERY")
+    ask.add_argument("--thinking", metavar="QUERY")
+    _add_wait_argument(ask)
+    ask.add_argument("--retain", action="store_true")
+    ask.add_argument("--pace", choices=("natural", "none"), default="natural")
+    ask.add_argument("--allow-logged-out", action="store_true")
+    ask.add_argument("prompt", nargs="?", metavar="PROMPT")
+
+    session = subparsers.add_parser("session", help="Inspect or recover a durable session.")
+    session_subparsers = session.add_subparsers(
+        dest="session_command",
+        required=True,
+        parser_class=JsonArgumentParser,
+    )
+
+    current = session_subparsers.add_parser("current", help="Inspect one exact preserved thread.")
+    current.add_argument("--thread", required=True, metavar="SURF_THREAD")
+
+    status = session_subparsers.add_parser("status", help="Classify the latest response attempt.")
+    status.add_argument("session", type=_session_address, metavar="SESSION")
+    status.add_argument("--retain", action="store_true")
+
+    result = session_subparsers.add_parser("result", help="Read or wait for the latest result.")
+    result.add_argument("session", type=_session_address, metavar="SESSION")
+    _add_wait_argument(result)
+    result.add_argument("--retain", action="store_true")
+
+    handoff = session_subparsers.add_parser("handoff", help="Preserve a session for manual inspection.")
+    handoff.add_argument("session", type=_session_address, metavar="SESSION")
+
+    recent = session_subparsers.add_parser("recent", help="List rendered recent ChatGPT sessions.")
+    recent.add_argument("--thread", metavar="SURF_THREAD")
+
+    abandon = subparsers.add_parser("abandon", help="Stop if needed and release one retained page.")
+    abandon.add_argument("session", nargs="?", type=_session_address, metavar="SESSION")
+    abandon.add_argument("--thread", metavar="SURF_THREAD")
+
+    subparsers.add_parser("login", help="Prepare an unfocused page for manual ChatGPT login.")
     return parser
 
 
-def main(argv: list[str] | None = None, *, stdin: IO[str] | None = None, stdout: IO[str] | None = None, stderr: IO[str] | None = None) -> int:
-    stdin = stdin or sys.stdin
-    stdout = stdout or sys.stdout
-    stderr = stderr or sys.stderr
-    parser = build_parser()
-    try:
-        args = parser.parse_args(argv)
-    except KeyboardInterrupt:
-        print("surf-chatgpt: interrupted", file=stderr)
-        return 130
-    except SkillError as exc:
-        _emit_error(exc, "json", stdout)
-        return exc.exit_code
-
-    if args.command is None:
-        parser.print_help(stderr)
-        return 2
+def main(
+    argv: list[str] | None = None,
+    *,
+    stdin: IO[str] | None = None,
+    stdout: IO[str] | None = None,
+    stderr: IO[str] | None = None,
+    lifecycle: SessionLifecycle | None = None,
+) -> int:
+    input_stream = sys.stdin if stdin is None else stdin
+    output_stream = sys.stdout if stdout is None else stdout
+    # Non-help invocations intentionally never write diagnostics to stderr.
+    _ = stderr
 
     try:
-        if args.command == "ask":
-            result = _handle_ask(args, stdin)
-            _emit(result, args.format, stdout)
-            return 0
-        if args.command == "model":
-            if args.model_command is None:
-                raise SkillError("invalid_args", "model requires a subcommand: select", exit_code=2)
-            result = _handle_model(args)
-            _emit(result, args.format, stdout)
-            return 0
-        if args.command == "session":
-            if args.session_command is None:
-                raise SkillError("invalid_args", "session requires a subcommand: current or search", exit_code=2)
-            result = _handle_session(args)
-            _emit(result, args.format, stdout)
-            return 0
-        if args.command == "login":
-            result = _handle_login()
-            _emit(result, args.format, stdout)
-            return 0
+        with _catch_process_signals():
+            try:
+                args = build_parser().parse_args(argv)
+                with _discard_python_diagnostics():
+                    outcome = execute_command(args, input_stream, lifecycle)
+            except _CaughtSignal:
+                raise
+            except PublicError as error:
+                outcome = _error_outcome(error)
+            except Exception:
+                outcome = CommandOutcome.failure(PublicError(PublicErrorType.INTERNAL_ERROR))
+
+            if not _emit_and_flush(outcome, output_stream):
+                return ProcessExitCode.OPERATIONAL_FAILURE
+    except _CaughtSignal as caught:
+        if caught.output_committed:
+            return outcome.exit_code
+        outcome = _interruption_outcome(caught.signal_number)
+        if not _emit_and_flush(outcome, output_stream):
+            return ProcessExitCode.OPERATIONAL_FAILURE
+        return outcome.exit_code
     except KeyboardInterrupt:
-        fmt = getattr(args, "format", "json")
-        _emit_error(SkillError("interrupted", "interrupted", hint="", exit_code=130), fmt, stdout)
-        return 130
-    except SkillError as exc:
-        fmt = getattr(args, "format", "json")
-        _emit_error(exc, fmt, stdout)
-        return exc.exit_code
-    return 2
+        outcome = _interruption_outcome(signal.SIGINT)
+        if not _emit_and_flush(outcome, output_stream):
+            return ProcessExitCode.OPERATIONAL_FAILURE
+        return outcome.exit_code
+
+    with _discard_python_diagnostics():
+        _run_cleanup(outcome)
+    return outcome.exit_code
 
 
-def _handle_ask(args: argparse.Namespace, stdin: IO[str]) -> dict[str, Any]:
-    _validate_ask_args(args)
-    user_prompt = args.prompt if args.prompt is not None else stdin.read()
-    if not user_prompt.strip():
-        raise SkillError("empty_prompt", "prompt is empty")
-
-    session_policy = _session_policy(args)
-    model_choice = normalize_model_choice(args.model, args.thinking)
-    options = AskOptions(
-        session_policy=session_policy,
-        session_url=_normalize_session_url(args.session) if args.session else None,
-        thread=args.thread,
-        keep_open=args.keep_open,
-        model_query=model_choice.model_query,
-        thinking_query=model_choice.thinking_query,
-        requested_model=args.model,
-        requested_thinking=args.thinking,
-        timeout=args.timeout,
-        start_new=args.new or _keep_open_implies_new(args),
-        allow_logged_out=args.allow_logged_out,
-        pace=args.pace,
-    )
-    return ask_chatgpt(user_prompt, options)
-
-
-def _handle_model(args: argparse.Namespace) -> dict[str, Any]:
-    if args.model_command != "select":
-        raise SkillError("invalid_args", "unknown model command", exit_code=2)
-    if not args.model and not args.thinking:
-        raise SkillError("invalid_args", "model select requires --model or --thinking", exit_code=2)
-    model_choice = normalize_model_choice(args.model, args.thinking)
-    return select_chatgpt_model(
-        ModelSelectOptions(
-            model_query=model_choice.model_query,
-            thinking_query=model_choice.thinking_query,
-            requested_model=args.model,
-            requested_thinking=args.thinking,
-            thread=args.thread,
-        )
+def _add_wait_argument(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--wait",
+        nargs="?",
+        type=_positive_seconds,
+        const=DEFAULT_OBSERVATION_TIMEOUT_SECONDS,
+        metavar="SECONDS",
     )
 
 
-def _session_policy(args: argparse.Namespace) -> str:
-    if args.ephemeral:
-        return "ephemeral"
-    if args.thread:
-        return "thread"
-    if args.current:
-        return "current"
-    if args.new or _keep_open_implies_new(args):
-        return "new"
-    if args.session:
-        return "session"
-    return "ephemeral"
-
-
-def _keep_open_implies_new(args: argparse.Namespace) -> bool:
-    return bool(args.keep_open and not (args.session or args.current or args.new or args.thread))
-
-
-def _validate_ask_args(args: argparse.Namespace) -> None:
-    explicit_session = bool(args.session or args.current or args.new or args.thread or args.keep_open)
-    if args.ephemeral and explicit_session:
-        raise SkillError("invalid_args", "--ephemeral cannot be combined with --session, --thread, --new, --current, or --keep-open")
-    session_modes = [bool(args.session), bool(args.current), bool(args.new), bool(args.thread)]
-    if sum(session_modes) > 1:
-        raise SkillError("invalid_args", "choose only one of --session, --thread, --new, or --current")
-    if args.thread is not None and not args.thread.strip():
-        raise SkillError("invalid_args", "--thread cannot be empty")
-    if args.timeout <= 0:
-        raise SkillError("invalid_args", "--timeout must be positive")
-    if args.allow_logged_out and (args.model or args.thinking):
-        raise SkillError("invalid_args", "--allow-logged-out cannot be combined with --model or --thinking")
-
-
-def _normalize_session_url(value: str) -> str:
-    raw = value.strip()
-    if not raw:
-        raise SkillError("invalid_args", "--session cannot be empty")
-    if raw.startswith("http://") or raw.startswith("https://"):
-        _validate_chatgpt_url(raw)
-        return raw
-    if "/" in raw or raw.startswith("."):
-        raise SkillError("invalid_args", "--session must be a ChatGPT conversation id or chatgpt.com URL")
-    return f"https://chatgpt.com/c/{raw}"
-
-
-def _handle_session(args: argparse.Namespace) -> dict[str, Any]:
-    if args.session_command == "current":
-        return _current_session_result(args.thread)
-    if args.session_command == "search":
-        return search_web_sessions(args.query, limit=args.limit)
-    raise SkillError("invalid_args", "unknown session command")
-
-
-def _handle_login() -> dict[str, Any]:
-    runner = SurfRunner()
-    runner.run_text(["open", CHATGPT_URL], timeout=30, thread=LOGIN_THREAD)
-    runner.run_text(["focus"], timeout=10, thread=LOGIN_THREAD)
-    return {
-        "ok": True,
-        "source": SOURCE_LABEL,
-        "action": "login_opened",
-        "url": CHATGPT_URL,
-        "message": "Log in to ChatGPT in the opened Surf Agent browser window, then retry surf-chatgpt.",
-    }
-
-
-def _current_session_result(thread: str) -> dict[str, Any]:
-    clean_thread = thread.strip()
-    if not clean_thread:
-        raise SkillError("invalid_args", "--thread cannot be empty", exit_code=2)
-    runner = SurfRunner()
-    url = runner.eval_code(clean_thread, "() => location.href", timeout=10)
-    if not isinstance(url, str) or not _is_chatgpt_url(url):
-        return {
-            "ok": True,
-            "source": SOURCE_LABEL,
-            "session": None,
-            "warning": "surf-agent thread is not on ChatGPT",
-            "thread": clean_thread,
-        }
-    title = runner.eval_code(clean_thread, "() => document.title", timeout=5)
-    session_id = _conversation_id_from_url(url)
-    if session_id is None:
-        return {
-            "ok": True,
-            "source": SOURCE_LABEL,
-            "session": None,
-            "warning": "surf-agent thread is not a conversation URL",
-            "active_url": url,
-            "title": title if isinstance(title, str) else None,
-            "thread": clean_thread,
-        }
-
-    return {
-        "ok": True,
-        "source": SOURCE_LABEL,
-        "session": {
-            "id": session_id,
-            "url": url,
-            "title": title if isinstance(title, str) else None,
-            "thread": clean_thread,
-            "thread_id": clean_thread,
-        },
-    }
-
-
-def _validate_chatgpt_url(url: str | None) -> None:
-    if not url or not _is_chatgpt_url(url):
-        raise SkillError("invalid_args", "session URL must be a chatgpt.com URL")
-
-
-def _is_chatgpt_url(url: str) -> bool:
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return False
-    return parsed.scheme in {"http", "https"} and parsed.hostname in {"chatgpt.com", "www.chatgpt.com"}
-
-
-def _conversation_id_from_url(url: str) -> str | None:
-    try:
-        parsed = urlparse(url)
-    except ValueError:
-        return None
-    if parsed.hostname not in {"chatgpt.com", "www.chatgpt.com"}:
-        return None
-    parts = [part for part in parsed.path.split("/") if part]
-    if len(parts) >= 2 and parts[0] == "c" and parts[1]:
-        return parts[1]
-    return None
-
-
-def _emit(result: dict[str, Any], fmt: str, stdout: IO[str]) -> None:
-    if fmt == "json":
-        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")), file=stdout)
-        return
-    if result.get("ok") is False:
-        _emit_error_dict(result, stdout)
-        return
-    if "answer" in result:
-        session = result.get("session") or {}
-        thread_suffix = f" | thread={session.get('thread')}" if session.get("thread") is not None else ""
-        print(f"external ChatGPT via surf-agent | session={session.get('policy')}{thread_suffix}", file=stdout)
-        print("---", file=stdout)
-        print(result.get("answer", ""), file=stdout)
-        return
-    if result.get("verified") is True:
-        selected_model = result.get("selected_model") or "-"
-        selected_thinking = result.get("selected_thinking") or "-"
-        active_picker = result.get("active_picker") or "-"
-        session = result.get("session") or {}
-        thread_suffix = f"\tthread={session.get('thread')}" if session.get("thread") else ""
-        print(f"verified\tmodel={selected_model}\tthinking={selected_thinking}\tpicker={active_picker}{thread_suffix}", file=stdout)
-        return
-    if "sessions" in result:
-        sessions = result.get("sessions") or []
-        if not sessions:
-            print(result.get("warning", "no matching ChatGPT sessions found"), file=stdout)
-        for item in sessions:
-            print(f"{item.get('id')}\t{item.get('title') or '-'}\t{item.get('url')}", file=stdout)
-        return
-    if "session" in result:
-        session = result.get("session")
-        if session:
-            print(f"{session.get('id')}\t{session.get('title') or '-'}\t{session.get('url')}", file=stdout)
+def _expand_bare_wait(argv: list[str]) -> list[str]:
+    expanded: list[str] = []
+    options_ended = False
+    for argument in argv:
+        if argument == "--":
+            options_ended = True
+        if argument == "--wait" and not options_ended:
+            expanded.append(f"--wait={DEFAULT_OBSERVATION_TIMEOUT_SECONDS:g}")
         else:
-            print(result.get("warning", "no active ChatGPT conversation"), file=stdout)
+            expanded.append(argument)
+    return expanded
+
+
+def _positive_seconds(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("wait must be a positive number") from error
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("wait must be a positive number")
+    return seconds
+
+
+def _session_address(value: str) -> SessionAddress:
+    try:
+        return SessionAddress.parse(value)
+    except InvalidSessionAddress as error:
+        raise argparse.ArgumentTypeError("invalid session address") from error
+
+
+def _error_outcome(error: PublicError) -> CommandOutcome:
+    return CommandOutcome.failure(
+        error,
+        exit_code=exit_code_for_error_type(error.type),
+    )
+
+
+def _interruption_outcome(signal_number: signal.Signals) -> CommandOutcome:
+    return CommandOutcome.failure(
+        PublicError(PublicErrorType.INTERRUPTED),
+        exit_code=_SIGNAL_EXIT_CODES[signal_number],
+    )
+
+
+def _emit_and_flush(outcome: CommandOutcome, stdout: IO[str]) -> bool:
+    checkpoint = _output_checkpoint(stdout)
+    output_started = False
+    output_committed = False
+    try:
+        serialized = json.dumps(
+            outcome.to_public_json(),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        output_guard = (
+            _defer_process_signals()
+            if checkpoint is None
+            else contextlib.nullcontext()
+        )
+        with output_guard:
+            output_started = True
+            stdout.write(f"{serialized}\n")
+            stdout.flush()
+            output_committed = True
+    except _CaughtSignal as caught:
+        if output_committed:
+            caught.output_committed = True
+        elif output_started:
+            caught.output_committed = not _rollback_output(stdout, checkpoint)
+        raise
+    except Exception:
+        return False
+    return True
+
+
+def _output_checkpoint(stdout: IO[str]) -> int | None:
+    try:
+        return stdout.tell()
+    except (AttributeError, OSError):
+        return None
+
+
+def _rollback_output(stdout: IO[str], checkpoint: int | None) -> bool:
+    if checkpoint is None:
+        return False
+    try:
+        stdout.seek(checkpoint)
+        stdout.truncate()
+    except (AttributeError, OSError):
+        return False
+    return True
+
+
+@contextlib.contextmanager
+def _defer_process_signals() -> Iterator[None]:
+    if threading.current_thread() is not threading.main_thread():
+        yield
         return
-    if result.get("action") == "login_opened":
-        print(result.get("message", "Log in to ChatGPT in the opened browser, then retry."), file=stdout)
+
+    deferred_signals = {signal.SIGINT, signal.SIGTERM}
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, deferred_signals)
+    try:
+        yield
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+def _run_cleanup(outcome: CommandOutcome) -> None:
+    cleanup = outcome.post_output_cleanup
+    if cleanup is None:
         return
-    print(json.dumps(result, ensure_ascii=False), file=stdout)
+    try:
+        cleanup()
+    except Exception:
+        pass
 
 
-def _emit_error(exc: SkillError, fmt: str, stdout: IO[str]) -> None:
-    result = {"ok": False, "source": SOURCE_LABEL, "error": exc.to_dict()}
-    if fmt == "json":
-        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")), file=stdout)
-    else:
-        _emit_error_dict(result, stdout)
+@contextlib.contextmanager
+def _discard_python_diagnostics() -> Iterator[None]:
+    with (
+        contextlib.redirect_stdout(_DiscardingTextStream()),
+        contextlib.redirect_stderr(_DiscardingTextStream()),
+    ):
+        yield
 
 
-def _emit_error_dict(result: dict[str, Any], stdout: IO[str]) -> None:
-    error = result.get("error") or {}
-    print(f"external ChatGPT via surf-agent error: {error.get('type', 'unknown')}", file=stdout)
-    print(error.get("message", "unknown error"), file=stdout)
-    if error.get("hint"):
-        print(f"hint: {error['hint']}", file=stdout)
+@contextlib.contextmanager
+def _catch_process_signals() -> Iterator[None]:
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    caught_signals = (signal.SIGINT, signal.SIGTERM)
+    previous_handlers = {
+        signal_number: signal.getsignal(signal_number)
+        for signal_number in caught_signals
+    }
+
+    def raise_caught_signal(signal_number: int, frame: FrameType | None) -> None:
+        raise _CaughtSignal(signal_number)
+
+    try:
+        for signal_number in caught_signals:
+            signal.signal(signal_number, raise_caught_signal)
+        yield
+    finally:
+        for signal_number, previous_handler in previous_handlers.items():
+            signal.signal(signal_number, previous_handler)
 
 
 if __name__ == "__main__":
