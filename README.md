@@ -26,6 +26,13 @@ uv tool install \
 
 `surf-chatgpt` depends on the latest available `surf-agent`.
 
+## Browser backends
+
+Patchright is Surf's default backend and the only backend supported by
+`surf-chatgpt`. AXI remains available only for generic `surf-agent` browser work;
+`surf-chatgpt` rejects AXI before starting or inspecting a browser. Camoufox is not
+supported.
+
 ## Develop
 
 ```bash

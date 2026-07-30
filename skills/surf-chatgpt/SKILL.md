@@ -41,6 +41,22 @@ surf-chatgpt login
 
 Every non-help invocation emits one compact JSON object. Parse failures and empty prompts exit `2`; operational failures exit `1`; valid domain outcomes exit `0`.
 
+Patchright is Surf's default backend and the only backend supported by
+`surf-chatgpt`. AXI is available only for generic Surf browser work and is rejected
+by `surf-chatgpt` before browser activity. Camoufox is not supported.
+
+## Resumable workflow
+
+Use this sequence. Do not keep a caller blocked unless waiting is useful.
+
+1. Submit once with plain `ask` and save `session.id`.
+2. Optionally wait during submission with `ask --wait`.
+3. Otherwise inspect later with `session status` or retrieve with `session result`.
+4. Send follow-ups with `ask --session ID`; never reconstruct a conversation from a Surf thread.
+5. If identity is lost, try `session current` on the preserved thread, then `session recent` and explicitly choose one candidate.
+6. Use `session handoff` only when the user must inspect the browser.
+7. Explicitly `abandon` retained or active pages when they are no longer needed.
+
 ## Submit and observe
 
 Plain `ask` submits once and returns after ChatGPT assigns durable session identity:
@@ -62,6 +78,12 @@ surf-chatgpt ask --wait 'Review this design.'
 surf-chatgpt session result abc123 --wait=300
 ```
 
+A completed `ask --wait` returns the assigned session and result together:
+
+```json
+{"ok":true,"session":{"id":"abc123"},"attempt":{"state":"completed"},"result":{"text":"Answer","partial":false}}
+```
+
 A timeout is a successful observation outcome; it does not stop generation:
 
 ```json
@@ -73,6 +95,14 @@ Use status for metadata-only classification and result for explicit response ret
 ```bash
 surf-chatgpt session status abc123
 surf-chatgpt session result abc123
+```
+
+```json
+{"ok":true,"session":{"id":"abc123"},"attempt":{"state":"generating"}}
+```
+
+```json
+{"ok":true,"session":{"id":"abc123"},"attempt":{"state":"completed"},"result":{"text":"Answer","partial":false}}
 ```
 
 Observation is read-only, repeatable, and non-consuming. A one-shot result while
@@ -95,6 +125,10 @@ Address follow-ups by durable session identity:
 surf-chatgpt ask --session abc123 'Check one more constraint.'
 ```
 
+```json
+{"ok":true,"session":{"id":"abc123"}}
+```
+
 Separate callers may reuse the same ID. A live exact deterministic binding is reused;
 after a browser-bridge restart, Surf adopts one restored exact-URL page or creates a
 dedicated unfocused page at that canonical session URL. Ambiguous exact matches fail
@@ -102,7 +136,44 @@ without adopting or changing any page.
 
 `--thread` is only for an exact preserved pre-session page returned after login or challenge intervention. It is not a conversation address.
 
-Use `session current --thread THREAD` to discover whether a preserved pre-session page has acquired a durable session ID. Use `session recent` only when session metadata is lost; explicitly select a returned candidate before running another session command.
+Use `session current --thread THREAD` to discover whether a preserved pre-session page has acquired a durable session ID:
+
+```bash
+surf-chatgpt session current --thread surf-chatgpt-submit-safe123
+```
+
+```json
+{"ok":true,"session":{"id":"abc123"}}
+```
+
+If no ID is assigned yet, the exact output is:
+
+```json
+{"ok":true,"session":null,"observation":{"outcome":"not_ready"}}
+```
+
+Use `session recent` only when session metadata is lost:
+
+```bash
+surf-chatgpt session recent
+```
+
+```json
+{"ok":true,"sessions":[{"id":"abc123","title":"Visible title"}]}
+```
+
+Discovery reads only the rendered Chat history → Chats section. It returns at most
+ten unique canonical conversations in displayed order. Pinned, Projects, archived,
+duplicate, and out-of-section links are excluded. An affirmed empty Chats section
+returns `{"ok":true,"sessions":[]}`. Missing or ambiguous Chats UI fails without
+candidates:
+
+```json
+{"ok":false,"error":{"type":"ui_changed","message":"The required ChatGPT interface could not be identified.","hint":"Update surf-chatgpt for the current ChatGPT interface before retrying."}}
+```
+
+Discovery never selects, claims, binds, opens, or recovers a candidate. Explicitly
+choose an ID, then run `session status`, `session result`, or `session handoff`.
 
 ## Human intervention
 
@@ -138,6 +209,25 @@ Use proactive login when needed:
 surf-chatgpt login
 ```
 
+```json
+{"ok":true,"handoff":{"action":"complete_login","thread":"surf-chatgpt-login"}}
+```
+
+`login` creates or reuses an unfocused protected page. Wait for the user to complete
+the action. For a discovery login or challenge gate, retry only the exact returned
+discovery thread after the user confirms completion:
+
+```json
+{"ok":false,"error":{"type":"human_intervention_required","message":"The browser requires user intervention.","hint":"Complete the requested browser action manually before retrying."},"handoff":{"action":"complete_login","thread":"surf-chatgpt-discovery-safe123"}}
+```
+
+```bash
+surf-chatgpt session recent --thread surf-chatgpt-discovery-safe123
+```
+
+Do not retry that thread automatically. A successful retry closes the discovery page
+only after its JSON has been flushed.
+
 ## Retention and abandonment
 
 Generating and human-blocked pages remain protected. `--retain` explicitly protects
@@ -146,6 +236,14 @@ a page during terminal observation. Release it only through explicit abandonment
 ```bash
 surf-chatgpt abandon abc123
 surf-chatgpt abandon --thread surf-chatgpt-login
+```
+
+```json
+{"ok":true,"session":{"id":"abc123"},"attempt":{"state":"stopped"}}
+```
+
+```json
+{"ok":true,"thread":"surf-chatgpt-login"}
 ```
 
 Abandonment is the only automatic path allowed to stop an active response attempt.

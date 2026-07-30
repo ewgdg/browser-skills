@@ -11,6 +11,8 @@ from surf_agent.owned_pages import (
     AllocateOwnedPage,
     ClassifyOwnedPageAttempt,
     CloseTerminalOwnedPage,
+    CloseOwnedDiscoveryPage,
+    DiscoverOwnedPageSessions,
     ExtractOwnedPageResult,
     InspectOwnedPage,
     ObserveOwnedPageAssignment,
@@ -30,6 +32,9 @@ from surf_agent.owned_pages import (
     OwnedPageProtection,
     OwnedPageProgram,
     OwnedPagePromptSubmission,
+    OwnedPageRecentSession,
+    OwnedPageRecentSessions,
+    OwnedPageRecentSessionsState,
     OwnedPageRef,
     OwnedPageRetainedPage,
     OwnedPageRetentionReason,
@@ -175,6 +180,192 @@ def test_patchright_owned_allocation_uses_the_typed_bridge_transport() -> None:
     ]
 
 
+def test_patchright_recent_discovery_uses_a_narrow_title_bearing_transport() -> None:
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "surf-chatgpt-discovery-safe",
+                "page_token": 7,
+                "url": "https://chatgpt.com/",
+            },
+            "metadata": {
+                "state": "sessions",
+                "sessions": [
+                    {"id": "first", "title": "First visible title"},
+                    {"id": "second", "title": "Second visible title"},
+                ],
+            },
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+    request = DiscoverOwnedPageSessions(
+        owner="surf-chatgpt",
+        thread="surf-chatgpt-discovery-safe",
+        expected_page_token=7,
+        allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+        expected_protection=None,
+        program=OwnedPageProgram("() => ({state: 'sessions', sessions: []})"),
+    )
+
+    discovery = bridge.discover_sessions(request)
+
+    assert discovery == OwnedPageRecentSessions(
+        page=OwnedPageRef(
+            thread="surf-chatgpt-discovery-safe",
+            page_token=7,
+            exact_url="https://chatgpt.com/",
+        ),
+        state=OwnedPageRecentSessionsState.SESSIONS,
+        sessions=(
+            OwnedPageRecentSession(id="first", title="First visible title"),
+            OwnedPageRecentSession(id="second", title="Second visible title"),
+        ),
+    )
+    assert client.calls == [
+        (
+            "owned-discover-sessions",
+            {
+                "owner": "surf-chatgpt",
+                "thread": "surf-chatgpt-discovery-safe",
+                "expected_page_token": 7,
+                "allowed_scope": "chatgpt_pre_session",
+                "expected_protection": None,
+                "program": request.program.source,
+            },
+        )
+    ]
+
+
+def test_patchright_discovery_close_uses_the_captured_page_guards() -> None:
+    client = ScriptedClient({"ok": True})
+    bridge = PatchrightOwnedPageBridge(client)
+    request = CloseOwnedDiscoveryPage(
+        owner="surf-chatgpt",
+        thread="surf-chatgpt-discovery-safe",
+        expected_page_token=7,
+        allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+        expected_protection=None,
+    )
+
+    bridge.close_discovery(request)
+
+    assert client.calls == [
+        (
+            "owned-close-discovery",
+            {
+                "owner": "surf-chatgpt",
+                "thread": "surf-chatgpt-discovery-safe",
+                "expected_page_token": 7,
+                "allowed_scope": "chatgpt_pre_session",
+                "expected_protection": None,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        {"state": "ui_changed", "sessions": []},
+        {
+            "state": "sessions",
+            "sessions": [{"id": "abc", "title": "Visible", "text": "CANARY"}],
+        },
+        {
+            "state": "sessions",
+            "sessions": [
+                {"id": "duplicate", "title": "First"},
+                {"id": "duplicate", "title": "Second"},
+            ],
+        },
+        {
+            "state": "sessions",
+            "sessions": [{"id": "abc?private=CANARY", "title": "Visible"}],
+        },
+        {
+            "state": "sessions",
+            "sessions": [
+                {"id": f"session-{index}", "title": f"Title {index}"}
+                for index in range(11)
+            ],
+        },
+    ],
+)
+def test_recent_discovery_rejects_unbounded_or_content_bearing_bridge_metadata(
+    metadata: dict[str, object],
+) -> None:
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "surf-chatgpt-discovery-safe",
+                "page_token": 7,
+                "url": "https://chatgpt.com/",
+            },
+            "metadata": metadata,
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+    request = DiscoverOwnedPageSessions(
+        owner="surf-chatgpt",
+        thread="surf-chatgpt-discovery-safe",
+        expected_page_token=7,
+        allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+        expected_protection=None,
+        program=OwnedPageProgram("discover-rendered-chats"),
+    )
+
+    with pytest.raises(ValueError) as caught:
+        bridge.discover_sessions(request)
+
+    assert "CANARY" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "page",
+    [
+        {
+            "thread": "surf-chatgpt-discovery-replaced",
+            "page_token": 7,
+            "url": "https://chatgpt.com/",
+        },
+        {
+            "thread": "surf-chatgpt-discovery-safe",
+            "page_token": 8,
+            "url": "https://chatgpt.com/",
+        },
+        {
+            "thread": "surf-chatgpt-discovery-safe",
+            "page_token": 7,
+            "url": "https://chatgpt.com/c/replaced",
+        },
+    ],
+)
+def test_recent_discovery_rejects_a_bridge_result_for_a_different_page(
+    page: dict[str, object],
+) -> None:
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": page,
+            "metadata": {"state": "sessions", "sessions": []},
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+    request = DiscoverOwnedPageSessions(
+        owner="surf-chatgpt",
+        thread="surf-chatgpt-discovery-safe",
+        expected_page_token=7,
+        allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+        expected_protection=None,
+        program=OwnedPageProgram("discover-rendered-chats"),
+    )
+
+    with pytest.raises(ValueError):
+        bridge.discover_sessions(request)
+
+
 def test_patchright_capacity_failure_decodes_only_bounded_recovery_metadata() -> None:
     client = ScriptedClient(
         {
@@ -258,9 +449,7 @@ def test_patchright_abandonment_uses_one_typed_guarded_transaction() -> None:
 
     outcome = bridge.abandon(request)
 
-    assert outcome == OwnedPageAbandonment(
-        attempt_state=OwnedPageAttemptState.STOPPED
-    )
+    assert outcome == OwnedPageAbandonment(attempt_state=OwnedPageAttemptState.STOPPED)
     assert client.calls == [
         (
             "owned-abandon",
@@ -460,7 +649,9 @@ def test_patchright_inspection_addresses_only_the_live_thread_without_starting_a
     ]
 
 
-def test_patchright_attempt_classification_uses_guarded_metadata_only_transport() -> None:
+def test_patchright_attempt_classification_uses_guarded_metadata_only_transport() -> (
+    None
+):
     client = ScriptedClient(
         {
             "ok": True,
@@ -546,7 +737,9 @@ def test_patchright_explicit_result_transport_allows_terminal_response_text() ->
     assert client.calls[0][0] == "owned-extract-result"
 
 
-def test_patchright_terminal_close_transport_carries_all_guards_and_no_content() -> None:
+def test_patchright_terminal_close_transport_carries_all_guards_and_no_content() -> (
+    None
+):
     client = ScriptedClient({"ok": True})
     bridge = PatchrightOwnedPageBridge(client)
     request = CloseTerminalOwnedPage(
@@ -975,9 +1168,7 @@ def test_patchright_assignment_rejects_browser_metadata_beyond_session_identity(
 
 
 def test_patchright_submission_marker_conflict_has_a_distinct_typed_error() -> None:
-    client = ScriptedClient(
-        {"ok": False, "error": "submission_already_attempted"}
-    )
+    client = ScriptedClient({"ok": False, "error": "submission_already_attempted"})
     bridge = PatchrightOwnedPageBridge(client)
 
     with pytest.raises(OwnedPageSubmissionAlreadyAttempted):

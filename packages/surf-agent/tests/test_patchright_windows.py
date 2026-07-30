@@ -561,8 +561,7 @@ def test_allocation_sweep_preserves_human_changed_and_inaccessible_pages(
         for page in (human_page, changed_page, inaccessible_page)
     )
     assert all(
-        page.closed is False
-        for page in (human_page, changed_page, inaccessible_page)
+        page.closed is False for page in (human_page, changed_page, inaccessible_page)
     )
 
 
@@ -934,6 +933,165 @@ def test_owned_explicit_result_extraction_allows_text_only_for_terminal_results(
         "text": "Answer",
     }
     assert page.evaluate_calls == [program]
+
+
+def test_owned_recent_discovery_returns_only_bounded_session_titles_without_mutation(
+    tmp_path: Path,
+) -> None:
+    program = "discover-rendered-chats"
+    page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {
+            program: {
+                "state": "sessions",
+                "sessions": [
+                    {"id": "first", "title": "First visible title"},
+                    {"id": "second", "title": "Second visible title"},
+                ],
+            }
+        },
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-discovery-safe"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-discover-sessions",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-discovery-safe",
+            "expected_page_token": 8,
+            "allowed_scope": "chatgpt_pre_session",
+            "expected_protection": None,
+            "program": program,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {
+        "state": "sessions",
+        "sessions": [
+            {"id": "first", "title": "First visible title"},
+            {"id": "second", "title": "Second visible title"},
+        ],
+    }
+    assert page.evaluate_calls == [program]
+    assert page.goto_calls == []
+    assert page.closed is False
+
+
+def test_owned_recent_discovery_rejects_content_bearing_candidate_metadata(
+    tmp_path: Path,
+) -> None:
+    program = "discover-rendered-chats"
+    page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {
+            program: {
+                "state": "sessions",
+                "sessions": [
+                    {
+                        "id": "first",
+                        "title": "Visible title",
+                        "response": "CANARY-private-response",
+                    }
+                ],
+            }
+        },
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-discovery-safe"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-discover-sessions",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-discovery-safe",
+            "expected_page_token": 8,
+            "allowed_scope": "chatgpt_pre_session",
+            "expected_protection": None,
+            "program": program,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "inspection_failed"}
+    assert "CANARY" not in raw
+    assert page.closed is False
+
+
+def test_owned_discovery_close_releases_only_the_exact_unprotected_page(
+    tmp_path: Path,
+) -> None:
+    page = FakePage("https://chatgpt.com/")
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-discovery-safe"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-close-discovery",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-discovery-safe",
+            "expected_page_token": 8,
+            "allowed_scope": "chatgpt_pre_session",
+            "expected_protection": None,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": True}
+    assert page.evaluate_calls == []
+    assert page.goto_calls == []
+    assert page.closed is True
+    assert "surf-chatgpt-discovery-safe" not in runtime.pages
+
+
+@pytest.mark.parametrize(
+    ("page_token", "url", "protection", "expected_protection"),
+    [
+        (9, "https://chatgpt.com/", None, None),
+        (8, "https://chatgpt.com/c/abc123", None, None),
+        (8, "https://chatgpt.com/", "human_intervention", None),
+    ],
+)
+def test_owned_discovery_close_preserves_pages_when_any_guard_changes(
+    page_token: int,
+    url: str,
+    protection: str | None,
+    expected_protection: str | None,
+    tmp_path: Path,
+) -> None:
+    page = FakePage(url)
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-discovery-safe"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+        protection=protection,
+    )
+
+    raw = runtime.call(
+        "owned-close-discovery",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-discovery-safe",
+            "expected_page_token": page_token,
+            "allowed_scope": "chatgpt_pre_session",
+            "expected_protection": expected_protection,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "ownership_conflict"}
+    assert page.closed is False
+    assert "surf-chatgpt-discovery-safe" in runtime.pages
 
 
 def test_owned_terminal_close_reclassifies_and_closes_one_exact_unprotected_page(

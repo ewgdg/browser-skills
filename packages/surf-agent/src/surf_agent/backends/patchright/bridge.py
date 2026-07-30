@@ -199,6 +199,10 @@ class PatchrightRuntime:
             return await self.owned_pages.classify_attempt(args)
         if name == "owned-extract-result":
             return await self.owned_pages.extract_result(args)
+        if name == "owned-discover-sessions":
+            return await self.owned_pages.discover_sessions(args)
+        if name == "owned-close-discovery":
+            return await self.owned_pages.close_discovery(args)
         if name == "owned-close-terminal":
             return await self.owned_pages.close_terminal(args)
         if name == "owned-abandon":

@@ -4,12 +4,14 @@ import json
 from typing import Any, Protocol
 
 from ...owned_pages import (
+    MAX_RECENT_SESSIONS,
     OwnedPageAssignmentState,
     OwnedPageAttemptState,
     OwnedPageBridgeErrorCode,
     OwnedPageInspectionState,
     OwnedPagePreparationState,
     OwnedPageProtection,
+    OwnedPageRecentSessionsState,
     OwnedPageScope,
     OwnedPageSelectionDimension,
     OwnedPageSubmissionState,
@@ -348,6 +350,35 @@ class PatchrightOwnedPageOperations:
         except Exception:
             return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
         return self._metadata_result(thread, slot, decoded)
+
+    async def discover_sessions(self, args: dict[str, Any]) -> str:
+        guarded = self._submission_slot(args)
+        if isinstance(guarded, str):
+            return guarded
+        slot, thread = guarded
+        program = self._required_argument(args, "program")
+        try:
+            metadata = await self._runtime._maybe_await(slot.page.evaluate(program))
+            decoded = self._decode_recent_sessions_metadata(metadata)
+        except Exception:
+            return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        return self._metadata_result(thread, slot, decoded)
+
+    async def close_discovery(self, args: dict[str, Any]) -> str:
+        # A successful explicit retry may still carry human-gate protection. Match
+        # that exact live metadata immediately before closing the captured page.
+        guarded = self._submission_slot(args)
+        if isinstance(guarded, str):
+            return guarded
+        slot, thread = guarded
+        try:
+            await self._runtime._maybe_await(slot.page.close())
+            if self._runtime._page_is_open(slot.page):
+                raise RuntimeError("owned discovery page remained open")
+        except Exception:
+            return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        self._runtime._discard_owned_page_binding(thread)
+        return json.dumps({"ok": True}, separators=(",", ":"))
 
     async def close_terminal(self, args: dict[str, Any]) -> str:
         guarded = self._observation_slot(args)
@@ -719,6 +750,51 @@ class PatchrightOwnedPageOperations:
         if includes_text and not isinstance(fields["text"], str):
             raise RuntimeError("invalid owned-page result metadata")
         return {key: fields[key] for key in expected_keys}
+
+    def _decode_recent_sessions_metadata(
+        self,
+        metadata: object,
+    ) -> dict[str, object]:
+        fields = _require_string_keyed_object(
+            metadata,
+            "invalid owned-page recent-session metadata",
+        )
+        try:
+            state = OwnedPageRecentSessionsState(fields.get("state"))
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("invalid owned-page recent-session metadata") from error
+        if state is not OwnedPageRecentSessionsState.SESSIONS:
+            if set(fields) != {"state"}:
+                raise RuntimeError("invalid owned-page recent-session metadata")
+            return {"state": state.value}
+        candidates = fields.get("sessions")
+        if set(fields) != {"state", "sessions"} or not isinstance(candidates, list):
+            raise RuntimeError("invalid owned-page recent-session metadata")
+        if len(candidates) > MAX_RECENT_SESSIONS:
+            raise RuntimeError("invalid owned-page recent-session metadata")
+        decoded_sessions: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            item = _require_string_keyed_object(
+                candidate,
+                "invalid owned-page recent-session metadata",
+            )
+            session_id = item.get("id")
+            title = item.get("title")
+            if (
+                set(item) != {"id", "title"}
+                or not isinstance(session_id, str)
+                or not owned_page_url_is_canonical_session(
+                    owned_page_canonical_session_url(session_id)
+                )
+                or session_id in seen
+                or not isinstance(title, str)
+                or not title
+            ):
+                raise RuntimeError("invalid owned-page recent-session metadata")
+            seen.add(session_id)
+            decoded_sessions.append({"id": session_id, "title": title})
+        return {"state": state.value, "sessions": decoded_sessions}
 
     def _decode_submission_metadata(self, metadata: object) -> dict[str, object]:
         fields = _require_string_keyed_object(

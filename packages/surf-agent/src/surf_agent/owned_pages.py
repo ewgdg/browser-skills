@@ -76,6 +76,13 @@ class OwnedPageAssignmentState(StrEnum):
     UI_CHANGED = "ui_changed"
 
 
+class OwnedPageRecentSessionsState(StrEnum):
+    SESSIONS = "sessions"
+    LOGIN_REQUIRED = "login_required"
+    CHALLENGE = "challenge"
+    UI_CHANGED = "ui_changed"
+
+
 class OwnedPageAttemptState(StrEnum):
     GENERATING = "generating"
     COMPLETED = "completed"
@@ -94,6 +101,7 @@ REQUIRED_OWNED_PAGE_CAPABILITIES = frozenset(OwnedPageCapability)
 CHATGPT_HOSTNAME = "chatgpt.com"
 CHATGPT_PRE_SESSION_PATHS = frozenset({"", "/", "/auth/login", "/auth/login/"})
 CHATGPT_SESSION_PATH_PATTERN = re.compile(r"^/c/[A-Za-z0-9_-]+$")
+MAX_RECENT_SESSIONS = 10
 
 
 def owned_page_canonical_session_url(session_id: str) -> str:
@@ -238,6 +246,25 @@ class CloseTerminalOwnedPage(GuardedOwnedPageProgram):
 
 
 @dataclass(frozen=True)
+class DiscoverOwnedPageSessions:
+    owner: str
+    thread: str
+    expected_page_token: int
+    allowed_scope: OwnedPageScope
+    expected_protection: OwnedPageProtection | None
+    program: OwnedPageProgram
+
+
+@dataclass(frozen=True)
+class CloseOwnedDiscoveryPage:
+    owner: str
+    thread: str
+    expected_page_token: int
+    allowed_scope: OwnedPageScope
+    expected_protection: OwnedPageProtection | None
+
+
+@dataclass(frozen=True)
 class AbandonOwnedPage:
     owner: str
     thread: str
@@ -337,6 +364,37 @@ class OwnedPageAttemptResult:
 
 
 @dataclass(frozen=True)
+class OwnedPageRecentSession:
+    id: str
+    title: str
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.id, str) or not CHATGPT_SESSION_PATH_PATTERN.fullmatch(
+            f"/c/{self.id}"
+        ):
+            raise ValueError("Recent sessions require a canonical session identity.")
+        if not isinstance(self.title, str) or not self.title:
+            raise ValueError("Recent sessions require a visible title.")
+
+
+@dataclass(frozen=True)
+class OwnedPageRecentSessions:
+    page: OwnedPageRef
+    state: OwnedPageRecentSessionsState
+    sessions: tuple[OwnedPageRecentSession, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.state, OwnedPageRecentSessionsState):
+            raise TypeError("Recent-session discovery requires an allow-listed state.")
+        if self.state is not OwnedPageRecentSessionsState.SESSIONS and self.sessions:
+            raise ValueError("Human gates and UI failures cannot expose candidates.")
+        if len(self.sessions) > MAX_RECENT_SESSIONS or len(
+            {item.id for item in self.sessions}
+        ) != len(self.sessions):
+            raise ValueError("Recent-session candidates must be bounded and unique.")
+
+
+@dataclass(frozen=True)
 class OwnedPageAbandonment:
     attempt_state: OwnedPageAttemptState | None
 
@@ -422,6 +480,12 @@ class OwnedPageBridge(Protocol):
     ) -> OwnedPageAttemptResult: ...
 
     def close_terminal(self, request: CloseTerminalOwnedPage) -> None: ...
+
+    def discover_sessions(
+        self, request: DiscoverOwnedPageSessions
+    ) -> OwnedPageRecentSessions: ...
+
+    def close_discovery(self, request: CloseOwnedDiscoveryPage) -> None: ...
 
     def abandon(self, request: AbandonOwnedPage) -> OwnedPageAbandonment: ...
 
@@ -641,6 +705,39 @@ class PatchrightOwnedPageBridge:
             raise OwnedPageNotFound
         _decode_operation_outcome(raw)
 
+    def discover_sessions(
+        self, request: DiscoverOwnedPageSessions
+    ) -> OwnedPageRecentSessions:
+        payload: dict[str, object] = {
+            **_guard_payload(request),
+            "program": request.program.source,
+        }
+        raw = self._client.call_tool_if_running("owned-discover-sessions", payload)
+        if raw is None:
+            raise OwnedPageNotFound
+        discovery = _decode_recent_sessions(raw)
+        if (
+            discovery.page.thread != request.thread
+            or discovery.page.page_token != request.expected_page_token
+            or not owned_page_url_is_in_scope(
+                discovery.page.exact_url,
+                request.allowed_scope,
+            )
+        ):
+            raise ValueError(
+                "Owned-page bridge returned recent sessions for a different page."
+            )
+        return discovery
+
+    def close_discovery(self, request: CloseOwnedDiscoveryPage) -> None:
+        raw = self._client.call_tool_if_running(
+            "owned-close-discovery",
+            _guard_payload(request),
+        )
+        if raw is None:
+            raise OwnedPageNotFound
+        _decode_operation_outcome(raw)
+
     def abandon(self, request: AbandonOwnedPage) -> OwnedPageAbandonment:
         payload: dict[str, object] = {
             "owner": request.owner,
@@ -720,6 +817,16 @@ class UnsupportedOwnedPageBridge:
         raise UnsupportedOwnedPageCapability
 
     def close_terminal(self, request: CloseTerminalOwnedPage) -> None:
+        _ = request
+        raise UnsupportedOwnedPageCapability
+
+    def discover_sessions(
+        self, request: DiscoverOwnedPageSessions
+    ) -> OwnedPageRecentSessions:
+        _ = request
+        raise UnsupportedOwnedPageCapability
+
+    def close_discovery(self, request: CloseOwnedDiscoveryPage) -> None:
         _ = request
         raise UnsupportedOwnedPageCapability
 
@@ -905,10 +1012,60 @@ def _decode_inspection(raw: str) -> OwnedPageInspection:
     return OwnedPageInspection(page=_decode_page_ref(page_only), state=state)
 
 
+def _decode_recent_sessions(raw: str) -> OwnedPageRecentSessions:
+    page, metadata = _decode_guarded_metadata(raw)
+    try:
+        state = OwnedPageRecentSessionsState(metadata.get("state"))
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "Owned-page bridge returned invalid recent-session metadata."
+        ) from error
+    if state is not OwnedPageRecentSessionsState.SESSIONS:
+        if set(metadata) != {"state"}:
+            raise ValueError(
+                "Owned-page bridge returned invalid recent-session metadata."
+            )
+        return OwnedPageRecentSessions(page=page, state=state)
+    if set(metadata) != {"state", "sessions"} or not isinstance(
+        metadata["sessions"], list
+    ):
+        raise ValueError("Owned-page bridge returned invalid recent-session metadata.")
+    sessions: list[OwnedPageRecentSession] = []
+    for item in metadata["sessions"]:
+        fields = _require_string_keyed_object(
+            item,
+            "Owned-page bridge returned invalid recent-session metadata.",
+        )
+        if set(fields) != {"id", "title"}:
+            raise ValueError(
+                "Owned-page bridge returned invalid recent-session metadata."
+            )
+        session_id = fields["id"]
+        title = fields["title"]
+        if not isinstance(session_id, str) or not isinstance(title, str):
+            raise ValueError(
+                "Owned-page bridge returned invalid recent-session metadata."
+            )
+        try:
+            sessions.append(OwnedPageRecentSession(id=session_id, title=title))
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Owned-page bridge returned invalid recent-session metadata."
+            ) from error
+    try:
+        return OwnedPageRecentSessions(page=page, state=state, sessions=tuple(sessions))
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "Owned-page bridge returned invalid recent-session metadata."
+        ) from error
+
+
 def _guard_payload(
     request: PrepareOwnedPageSubmission
     | SubmitOwnedPagePrompt
     | ObserveOwnedPageAssignment
+    | DiscoverOwnedPageSessions
+    | CloseOwnedDiscoveryPage
     | GuardedOwnedPageProgram,
 ) -> dict[str, object]:
     return {

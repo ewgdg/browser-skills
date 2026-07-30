@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 import time
 from collections.abc import Callable
 from typing import Protocol
@@ -10,6 +11,8 @@ from surf_agent.owned_pages import (
     OwnedPageAttemptState,
     OwnedPageInspectionState,
     OwnedPageProtection,
+    OwnedPageRef,
+    OwnedPageRecentSessionsState,
     ResolvedOwnedPage,
     create_owned_page_bridge,
 )
@@ -39,6 +42,7 @@ from .surf_pages import (
 
 
 OBSERVATION_POLL_INTERVAL_SECONDS = 0.25
+DISCOVERY_THREAD_PREFIX = "surf-chatgpt-discovery-"
 
 
 class SessionLifecycle(Protocol):
@@ -68,6 +72,7 @@ class OwnedPageSessionLifecycle:
         bridge: OwnedPageBridge,
         *,
         submission_thread_factory: Callable[[], str] | None = None,
+        discovery_thread_factory: Callable[[], str] | None = None,
         monotonic: Callable[[], float] | None = None,
         sleeper: Callable[[float], None] | None = None,
         phase_observer: Callable[[SubmissionPhase], None] | None = None,
@@ -75,6 +80,9 @@ class OwnedPageSessionLifecycle:
         self._pages = ChatGptOwnedPages(bridge)
         self._monotonic = monotonic or time.monotonic
         self._sleeper = sleeper or time.sleep
+        self._discovery_thread_factory = (
+            discovery_thread_factory or _new_discovery_thread
+        )
         self._submission = SubmissionLifecycle(
             self._pages,
             submission_thread_factory=submission_thread_factory,
@@ -263,11 +271,117 @@ class OwnedPageSessionLifecycle:
         return CommandOutcome.success(fields)
 
     def recent(self, request: RecentSessionsRequest) -> CommandOutcome:
-        return self._pending_operation(request)
+        expected_protection: OwnedPageProtection | None = None
+        temporary_page: OwnedPageRef | None = None
+        try:
+            if request.thread is None:
+                page = self._pages.allocate_discovery(self._discovery_thread_factory())
+                temporary_page = page
+            else:
+                if not request.thread.startswith(DISCOVERY_THREAD_PREFIX):
+                    raise PublicError(PublicErrorType.THREAD_NOT_FOUND)
+                inspection = self._pages.inspect_thread(request.thread)
+                if inspection.state not in {
+                    OwnedPageInspectionState.PRE_SESSION,
+                    OwnedPageInspectionState.HUMAN_GATE,
+                }:
+                    raise PublicError(PublicErrorType.INSPECTION_FAILED)
+                page = inspection.page
+                expected_protection = OwnedPageProtection.HUMAN_INTERVENTION
+            discovery = self._pages.discover_sessions(
+                page,
+                expected_protection=expected_protection,
+            )
+        except RetainedPageCapacityExceeded as error:
+            return self._capacity_failure(error)
+        except BridgeUnavailable:
+            return CommandOutcome.failure(
+                PublicError(PublicErrorType.BROWSER_UNAVAILABLE),
+                post_output_cleanup=self._discovery_cleanup(temporary_page, None),
+            )
+        except ValueError:
+            return CommandOutcome.failure(
+                PublicError(PublicErrorType.INSPECTION_FAILED),
+                post_output_cleanup=self._discovery_cleanup(temporary_page, None),
+            )
+        except PublicError as error:
+            return CommandOutcome.failure(
+                error,
+                post_output_cleanup=self._discovery_cleanup(temporary_page, None),
+            )
 
-    def _pending_operation(self, request: object) -> CommandOutcome:
-        _ = request
-        raise PublicError(PublicErrorType.UNSUPPORTED_BROWSER_CAPABILITY)
+        if discovery.state in {
+            OwnedPageRecentSessionsState.LOGIN_REQUIRED,
+            OwnedPageRecentSessionsState.CHALLENGE,
+        }:
+            if expected_protection is None:
+                try:
+                    self._pages.protect_submission(
+                        discovery.page,
+                        expected_protection=None,
+                        protection=OwnedPageProtection.HUMAN_INTERVENTION,
+                    )
+                except BridgeUnavailable:
+                    return CommandOutcome.failure(
+                        PublicError(PublicErrorType.BROWSER_UNAVAILABLE)
+                    )
+                except ValueError:
+                    return CommandOutcome.failure(
+                        PublicError(PublicErrorType.INSPECTION_FAILED)
+                    )
+                except PublicError as error:
+                    return CommandOutcome.failure(error)
+            action = (
+                "complete_login"
+                if discovery.state is OwnedPageRecentSessionsState.LOGIN_REQUIRED
+                else "complete_challenge"
+            )
+            return CommandOutcome.failure(
+                PublicError(PublicErrorType.HUMAN_INTERVENTION_REQUIRED),
+                public_fields={
+                    "handoff": {
+                        "action": action,
+                        "thread": discovery.page.thread,
+                    }
+                },
+            )
+
+        cleanup = self._discovery_cleanup(
+            discovery.page,
+            expected_protection,
+        )
+
+        if discovery.state is OwnedPageRecentSessionsState.UI_CHANGED:
+            return CommandOutcome.failure(
+                PublicError(PublicErrorType.UI_CHANGED),
+                post_output_cleanup=cleanup,
+            )
+        if discovery.state is not OwnedPageRecentSessionsState.SESSIONS:
+            return CommandOutcome.failure(
+                PublicError(PublicErrorType.INSPECTION_FAILED),
+                post_output_cleanup=cleanup,
+            )
+        return CommandOutcome.success(
+            {
+                "sessions": [
+                    {"id": session.id, "title": session.title}
+                    for session in discovery.sessions
+                ]
+            },
+            post_output_cleanup=cleanup,
+        )
+
+    def _discovery_cleanup(
+        self,
+        page: OwnedPageRef | None,
+        expected_protection: OwnedPageProtection | None,
+    ) -> Callable[[], None] | None:
+        if page is None:
+            return None
+        return lambda: self._pages.close_discovery(
+            page,
+            expected_protection=expected_protection,
+        )
 
     def _resolve_observation_page(
         self,
@@ -399,3 +513,7 @@ class OwnedPageSessionLifecycle:
 
 def create_session_lifecycle() -> SessionLifecycle:
     return OwnedPageSessionLifecycle(create_owned_page_bridge())
+
+
+def _new_discovery_thread() -> str:
+    return f"{DISCOVERY_THREAD_PREFIX}{secrets.token_urlsafe(9)}"

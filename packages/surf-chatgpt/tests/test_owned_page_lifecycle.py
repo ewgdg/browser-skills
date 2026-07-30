@@ -11,8 +11,10 @@ from surf_agent.owned_pages import (
     AbandonOwnedPage,
     AllocateOwnedPage,
     ClassifyOwnedPageAttempt,
+    CloseOwnedDiscoveryPage,
     CloseTerminalOwnedPage,
     ExtractOwnedPageResult,
+    DiscoverOwnedPageSessions,
     InspectOwnedPage,
     OwnedPageCapabilities,
     OwnedPageAbandonment,
@@ -29,6 +31,9 @@ from surf_agent.owned_pages import (
     OwnedPageNotFound,
     OwnedPageOwnershipConflict,
     OwnedPageProtection,
+    OwnedPageRecentSession,
+    OwnedPageRecentSessions,
+    OwnedPageRecentSessionsState,
     OwnedPageRef,
     OwnedPageRetainedPage,
     OwnedPageRetentionReason,
@@ -59,6 +64,11 @@ class InMemoryOwnedPageBridge:
         self.pages: dict[str, MemoryPage] = {}
         self.calls: list[tuple[str, object]] = []
         self.next_page_token = 700
+        self.discovery_state = OwnedPageRecentSessionsState.SESSIONS
+        self.discovery_sessions = (
+            OwnedPageRecentSession("first", "First visible title"),
+            OwnedPageRecentSession("second", "Second visible title"),
+        )
 
     def capabilities(self) -> OwnedPageCapabilities:
         return OwnedPageCapabilities.complete()
@@ -146,9 +156,7 @@ class InMemoryOwnedPageBridge:
         page = self.pages[request.thread]
         return OwnedPageAttemptMetadata(page.reference, page.attempt_state)
 
-    def extract_result(
-        self, request: ExtractOwnedPageResult
-    ) -> OwnedPageAttemptResult:
+    def extract_result(self, request: ExtractOwnedPageResult) -> OwnedPageAttemptResult:
         self.calls.append(("extract_result", request))
         page = self.pages[request.thread]
         text = (
@@ -171,18 +179,51 @@ class InMemoryOwnedPageBridge:
             raise OwnedPageOwnershipConflict
         del self.pages[request.thread]
 
+    def discover_sessions(
+        self,
+        request: DiscoverOwnedPageSessions,
+    ) -> OwnedPageRecentSessions:
+        self.calls.append(("discover_sessions", request))
+        page = self.pages[request.thread]
+        if (
+            page.owner != request.owner
+            or page.reference.page_token != request.expected_page_token
+            or page.protection is not request.expected_protection
+            or not owned_page_url_is_in_scope(
+                page.reference.exact_url,
+                request.allowed_scope,
+            )
+        ):
+            raise OwnedPageOwnershipConflict
+        return OwnedPageRecentSessions(
+            page=page.reference,
+            state=self.discovery_state,
+            sessions=(
+                self.discovery_sessions
+                if self.discovery_state is OwnedPageRecentSessionsState.SESSIONS
+                else ()
+            ),
+        )
+
+    def close_discovery(self, request: CloseOwnedDiscoveryPage) -> None:
+        self.calls.append(("close_discovery", request))
+        page = self.pages[request.thread]
+        if (
+            page.reference.page_token != request.expected_page_token
+            or page.protection is not request.expected_protection
+        ):
+            raise OwnedPageOwnershipConflict
+        del self.pages[request.thread]
+
     def abandon(self, request: AbandonOwnedPage) -> OwnedPageAbandonment:
         self.calls.append(("abandon", request))
         try:
             page = self.pages[request.thread]
         except KeyError as error:
             raise OwnedPageNotFound from error
-        if (
-            page.owner != request.owner
-            or (
-                request.expected_exact_url is not None
-                and page.reference.exact_url != request.expected_exact_url
-            )
+        if page.owner != request.owner or (
+            request.expected_exact_url is not None
+            and page.reference.exact_url != request.expected_exact_url
         ):
             raise OwnedPageOwnershipConflict
         if page.attempt_state is OwnedPageAttemptState.GENERATING:
@@ -297,6 +338,179 @@ def test_eleventh_scripted_allocation_returns_bounded_capacity_json() -> None:
     assert "page_token" not in json.dumps(payload)
     assert stderr == ""
     assert [operation for operation, _ in bridge.calls] == ["allocate"]
+
+
+def test_session_recent_allocates_discovers_and_releases_one_temporary_page() -> None:
+    bridge = InMemoryOwnedPageBridge()
+
+    code, payload, stderr = invoke(["session", "recent"], bridge)
+
+    assert code == 0
+    assert payload == {
+        "ok": True,
+        "sessions": [
+            {"id": "first", "title": "First visible title"},
+            {"id": "second", "title": "Second visible title"},
+        ],
+    }
+    assert stderr == ""
+    assert bridge.pages == {}
+    assert [operation for operation, _ in bridge.calls] == [
+        "allocate",
+        "discover_sessions",
+        "close_discovery",
+    ]
+    allocation = bridge.calls[0][1]
+    assert isinstance(allocation, AllocateOwnedPage)
+    assert allocation.thread.startswith("surf-chatgpt-discovery-")
+    assert allocation.protection is None
+
+
+def test_session_recent_affirms_empty_chats_and_fails_closed_for_changed_ui() -> None:
+    empty_bridge = InMemoryOwnedPageBridge()
+    empty_bridge.discovery_sessions = ()
+    changed_bridge = InMemoryOwnedPageBridge()
+    changed_bridge.discovery_state = OwnedPageRecentSessionsState.UI_CHANGED
+
+    empty = invoke(["session", "recent"], empty_bridge)
+    changed = invoke(["session", "recent"], changed_bridge)
+
+    assert empty == (0, {"ok": True, "sessions": []}, "")
+    assert changed[0] == 1
+    assert changed[1]["error"]["type"] == "ui_changed"
+    assert "sessions" not in changed[1]
+    assert changed[2] == ""
+    assert empty_bridge.pages == {}
+    assert changed_bridge.pages == {}
+
+
+@pytest.mark.parametrize(
+    ("state", "action"),
+    [
+        (OwnedPageRecentSessionsState.LOGIN_REQUIRED, "complete_login"),
+        (OwnedPageRecentSessionsState.CHALLENGE, "complete_challenge"),
+    ],
+)
+def test_session_recent_preserves_a_human_gate_and_reuses_only_its_exact_thread(
+    state: OwnedPageRecentSessionsState,
+    action: str,
+) -> None:
+    bridge = InMemoryOwnedPageBridge()
+    bridge.discovery_state = state
+
+    gated = invoke(["session", "recent"], bridge)
+
+    assert gated[0] == 1
+    assert gated[1]["error"]["type"] == "human_intervention_required"
+    handoff = gated[1]["handoff"]
+    assert handoff["action"] == action
+    thread = handoff["thread"]
+    assert thread.startswith("surf-chatgpt-discovery-")
+    assert bridge.pages[thread].protection is OwnedPageProtection.HUMAN_INTERVENTION
+    assert [operation for operation, _ in bridge.calls] == [
+        "allocate",
+        "discover_sessions",
+        "protect",
+    ]
+
+    bridge.discovery_state = OwnedPageRecentSessionsState.SESSIONS
+    bridge.pages[thread].inspection_state = OwnedPageInspectionState.PRE_SESSION
+    resumed = invoke(["session", "recent", "--thread", thread], bridge)
+
+    assert resumed[0] == 0
+    assert resumed[1]["sessions"][0] == {
+        "id": "first",
+        "title": "First visible title",
+    }
+    assert bridge.pages == {}
+    assert [operation for operation, _ in bridge.calls[3:]] == [
+        "inspect",
+        "discover_sessions",
+        "close_discovery",
+    ]
+
+
+def test_session_recent_rejects_non_discovery_threads_without_browser_work() -> None:
+    bridge = InMemoryOwnedPageBridge()
+
+    code, payload, stderr = invoke(
+        ["session", "recent", "--thread", "surf-chatgpt-login"],
+        bridge,
+    )
+
+    assert code == 1
+    assert payload["error"]["type"] == "thread_not_found"
+    assert stderr == ""
+    assert bridge.calls == []
+
+
+def test_session_recent_rejects_an_unprotected_discovery_named_page() -> None:
+    bridge = InMemoryOwnedPageBridge()
+    thread = "surf-chatgpt-discovery-unprotected"
+    bridge.pages[thread] = MemoryPage(
+        owner="surf-chatgpt",
+        reference=OwnedPageRef(thread, 701, "https://chatgpt.com/"),
+        protection=None,
+        inspection_state=OwnedPageInspectionState.PRE_SESSION,
+    )
+
+    code, payload, stderr = invoke(
+        ["session", "recent", "--thread", thread],
+        bridge,
+    )
+
+    assert code == 1
+    assert payload["error"]["type"] == "ownership_conflict"
+    assert stderr == ""
+    assert thread in bridge.pages
+    assert [operation for operation, _ in bridge.calls] == [
+        "inspect",
+        "discover_sessions",
+    ]
+
+
+class InvalidDiscoveryProtectionBridge(InMemoryOwnedPageBridge):
+    def protect(self, request: ProtectOwnedPage) -> None:
+        self.calls.append(("protect", request))
+        raise ValueError("CANARY-content-bearing-protection-response")
+
+
+def test_session_recent_projects_invalid_gate_protection_without_private_data() -> None:
+    bridge = InvalidDiscoveryProtectionBridge()
+    bridge.discovery_state = OwnedPageRecentSessionsState.LOGIN_REQUIRED
+
+    code, payload, stderr = invoke(["session", "recent"], bridge)
+
+    assert code == 1
+    assert payload["error"]["type"] == "inspection_failed"
+    assert "CANARY" not in json.dumps(payload)
+    assert stderr == ""
+    assert len(bridge.pages) == 1
+
+
+class FailedRecentInspectionBridge(InMemoryOwnedPageBridge):
+    def discover_sessions(
+        self,
+        request: DiscoverOwnedPageSessions,
+    ) -> OwnedPageRecentSessions:
+        self.calls.append(("discover_sessions", request))
+        raise OwnedPageInspectionFailed
+
+
+def test_session_recent_flushes_inspection_failure_before_temporary_cleanup() -> None:
+    bridge = FailedRecentInspectionBridge()
+
+    code, payload, stderr = invoke(["session", "recent"], bridge)
+
+    assert code == 1
+    assert payload["error"]["type"] == "inspection_failed"
+    assert stderr == ""
+    assert bridge.pages == {}
+    assert [operation for operation, _ in bridge.calls] == [
+        "allocate",
+        "discover_sessions",
+        "close_discovery",
+    ]
 
 
 def test_session_current_reads_only_the_exact_owned_thread_for_not_ready_or_durable_identity() -> (
@@ -480,7 +694,9 @@ def test_abandon_missing_session_uses_durable_session_error_semantics() -> None:
     assert payload["session"] == {"id": "abc123"}
 
 
-def test_session_status_affirms_generating_without_extracting_response_content() -> None:
+def test_session_status_affirms_generating_without_extracting_response_content() -> (
+    None
+):
     bridge = InMemoryOwnedPageBridge()
 
     code, payload, stderr = invoke(["session", "status", "abc123"], bridge)
@@ -542,7 +758,9 @@ def test_session_status_closes_only_after_affirming_a_terminal_attempt(
     ]
 
 
-def test_session_result_reports_generating_as_repeatable_not_ready_without_text() -> None:
+def test_session_result_reports_generating_as_repeatable_not_ready_without_text() -> (
+    None
+):
     bridge = InMemoryOwnedPageBridge()
 
     first = invoke(["session", "result", "abc123"], bridge)
@@ -657,10 +875,10 @@ class SequencedAttemptBridge(InMemoryOwnedPageBridge):
         super().__init__()
         self.attempts = attempts
 
-    def extract_result(
-        self, request: ExtractOwnedPageResult
-    ) -> OwnedPageAttemptResult:
-        state, text = self.attempts.pop(0) if len(self.attempts) > 1 else self.attempts[0]
+    def extract_result(self, request: ExtractOwnedPageResult) -> OwnedPageAttemptResult:
+        state, text = (
+            self.attempts.pop(0) if len(self.attempts) > 1 else self.attempts[0]
+        )
         page = self.pages[request.thread]
         page.attempt_state = state
         page.result_text = text
@@ -678,7 +896,9 @@ class DeterministicClock:
         self.now += duration
 
 
-def test_wait_reuses_result_observation_until_terminal_without_generation_actions() -> None:
+def test_wait_reuses_result_observation_until_terminal_without_generation_actions() -> (
+    None
+):
     bridge = SequencedAttemptBridge(
         [
             (OwnedPageAttemptState.GENERATING, ""),
@@ -752,9 +972,7 @@ class FailingAttemptInspectionBridge(InMemoryOwnedPageBridge):
         self.calls.append(("classify_attempt", request))
         raise OwnedPageInspectionFailed
 
-    def extract_result(
-        self, request: ExtractOwnedPageResult
-    ) -> OwnedPageAttemptResult:
+    def extract_result(self, request: ExtractOwnedPageResult) -> OwnedPageAttemptResult:
         self.calls.append(("extract_result", request))
         raise OwnedPageInspectionFailed
 
@@ -808,6 +1026,43 @@ class PagePresentAtFlush(io.StringIO):
     def flush(self) -> None:
         self.flush_observed_page = self.thread in self.bridge.pages
         super().flush()
+
+
+class FailingDiscoveryCloseBridge(InMemoryOwnedPageBridge):
+    def close_discovery(self, request: CloseOwnedDiscoveryPage) -> None:
+        self.calls.append(("close_discovery", request))
+        raise BridgeUnavailable("CANARY-private-discovery-close-failure")
+
+
+def test_recent_json_flushes_before_cleanup_and_survives_close_failure() -> None:
+    bridge = FailingDiscoveryCloseBridge()
+    thread = "surf-chatgpt-discovery-safe"
+    output = PagePresentAtFlush(bridge, thread)
+
+    code = cli.main(
+        ["session", "recent"],
+        stdout=output,
+        stderr=io.StringIO(),
+        lifecycle=OwnedPageSessionLifecycle(
+            bridge,
+            discovery_thread_factory=lambda: thread,
+        ),
+    )
+    payload = json.loads(output.getvalue())
+
+    assert code == 0
+    assert payload["sessions"][0] == {
+        "id": "first",
+        "title": "First visible title",
+    }
+    assert "CANARY" not in json.dumps(payload)
+    assert output.flush_observed_page is True
+    assert thread in bridge.pages
+    assert [operation for operation, _ in bridge.calls] == [
+        "allocate",
+        "discover_sessions",
+        "close_discovery",
+    ]
 
 
 def test_terminal_json_flushes_before_cleanup_and_survives_close_failure() -> None:

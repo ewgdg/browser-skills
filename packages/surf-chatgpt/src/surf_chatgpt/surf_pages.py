@@ -8,6 +8,8 @@ from surf_agent.owned_pages import (
     AllocateOwnedPage,
     ClassifyOwnedPageAttempt,
     CloseTerminalOwnedPage,
+    CloseOwnedDiscoveryPage,
+    DiscoverOwnedPageSessions,
     ExtractOwnedPageResult,
     InspectOwnedPage,
     ObserveOwnedPageAssignment,
@@ -28,6 +30,7 @@ from surf_agent.owned_pages import (
     OwnedPageOwnershipConflict,
     OwnedPageProgram,
     OwnedPageProtection,
+    OwnedPageRecentSessions,
     OwnedPageRef,
     OwnedPageRetainedPage,
     OwnedPageSelectionDimension,
@@ -49,6 +52,7 @@ from .contracts import JsonObject, JsonValue, Pace
 from .dom.attempt import classify_latest_attempt_source, extract_latest_result_source
 from .dom.cleanup import classify_retained_page_source, request_stop_source
 from .dom.readiness import CURRENT_SESSION_CLASSIFIER
+from .dom.recent import discover_recent_sessions_source
 from .dom.submission import (
     observe_session_assignment_source,
     prepare_submission_source,
@@ -151,6 +155,62 @@ class ChatGptOwnedPages:
                     expected_protection=protection,
                     protection=protection,
                     policy=self._allocation_policy(),
+                )
+            )
+        )
+
+    def allocate_discovery(
+        self,
+        thread: str,
+    ) -> OwnedPageRef:
+        self._require_capabilities()
+        return self._run(
+            lambda: self._bridge.allocate(
+                AllocateOwnedPage(
+                    owner=SURF_CHATGPT_OWNER,
+                    thread=thread,
+                    url=CHATGPT_HOME_URL,
+                    allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+                    policy=self._allocation_policy(),
+                )
+            )
+        )
+
+    def discover_sessions(
+        self,
+        page: OwnedPageRef,
+        *,
+        expected_protection: OwnedPageProtection | None,
+    ) -> OwnedPageRecentSessions:
+        self._require_capabilities()
+        return self._run(
+            lambda: self._bridge.discover_sessions(
+                DiscoverOwnedPageSessions(
+                    owner=SURF_CHATGPT_OWNER,
+                    thread=page.thread,
+                    expected_page_token=page.page_token,
+                    allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+                    expected_protection=expected_protection,
+                    program=OwnedPageProgram(discover_recent_sessions_source()),
+                )
+            )
+        )
+
+    def close_discovery(
+        self,
+        page: OwnedPageRef,
+        *,
+        expected_protection: OwnedPageProtection | None,
+    ) -> None:
+        self._require_capabilities()
+        self._run(
+            lambda: self._bridge.close_discovery(
+                CloseOwnedDiscoveryPage(
+                    owner=SURF_CHATGPT_OWNER,
+                    thread=page.thread,
+                    expected_page_token=page.page_token,
+                    allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+                    expected_protection=expected_protection,
                 )
             )
         )
