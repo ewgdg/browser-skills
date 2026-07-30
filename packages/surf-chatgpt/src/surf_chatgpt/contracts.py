@@ -226,10 +226,14 @@ class CommandOutcome:
         error: PublicError,
         *,
         exit_code: ProcessExitCode | int = ProcessExitCode.OPERATIONAL_FAILURE,
+        public_fields: Mapping[str, JsonValue] | None = None,
         post_output_cleanup: PostOutputCleanup | None = None,
     ) -> CommandOutcome:
+        fields = dict(public_fields or {})
+        if {"ok", "error"} & fields.keys():
+            raise ValueError("Failure fields must not replace public discriminators.")
         return cls(
-            {"ok": False, "error": error.to_public_json()},
+            {"ok": False, "error": error.to_public_json(), **fields},
             exit_code=exit_code,
             post_output_cleanup=post_output_cleanup,
         )

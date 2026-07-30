@@ -88,20 +88,30 @@ def runtime_with_pages(tmp_path: Path, pages: dict[str, tuple[Page, int]]) -> Pa
 
 def test_call_tool_if_running_returns_none_when_initially_unhealthy(tmp_path: Path) -> None:
     client = local_client(tmp_path)
+    dispatched: list[bool] = []
 
     with (
         patch.object(client, "_health_ok", return_value=False),
         patch.object(client, "_ensure_running") as ensure_running,
         patch("surf_agent.backends.local_bridge.urllib.request.urlopen") as urlopen,
     ):
-        assert client.call_tool_if_running("close-matching", {"pattern": "*"}) is None
+        assert (
+            client.call_tool_if_running(
+                "close-matching",
+                {"pattern": "*"},
+                on_request_may_have_been_dispatched=lambda: dispatched.append(True),
+            )
+            is None
+        )
 
+    assert dispatched == []
     ensure_running.assert_not_called()
     urlopen.assert_not_called()
 
 
 def test_call_tool_if_running_returns_none_when_bridge_disappears_without_starting(tmp_path: Path) -> None:
     client = local_client(tmp_path)
+    dispatched: list[bool] = []
 
     with (
         patch.object(client, "_health_ok", return_value=True),
@@ -112,8 +122,16 @@ def test_call_tool_if_running_returns_none_when_bridge_disappears_without_starti
             side_effect=urllib.error.URLError(ConnectionRefusedError("connection refused")),
         ),
     ):
-        assert client.call_tool_if_running("close-matching", {"pattern": "*"}) is None
+        assert (
+            client.call_tool_if_running(
+                "close-matching",
+                {"pattern": "*"},
+                on_request_may_have_been_dispatched=lambda: dispatched.append(True),
+            )
+            is None
+        )
 
+    assert dispatched == [True]
     ensure_running.assert_not_called()
     popen.assert_not_called()
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from types import SimpleNamespace
 
 import pytest
@@ -8,19 +9,32 @@ import pytest
 from surf_agent.owned_pages import (
     AllocateOwnedPage,
     InspectOwnedPage,
+    ObserveOwnedPageAssignment,
+    OwnedPageAssignmentObservation,
+    OwnedPageAssignmentState,
     OwnedPageClassifier,
     OwnedPageInspectionState,
     OwnedPageNotFound,
     OwnedPageProtection,
+    OwnedPageProgram,
+    OwnedPagePromptSubmission,
     OwnedPageRef,
     OwnedPageScope,
+    OwnedPageSelection,
+    OwnedPageSelectionDimension,
+    OwnedPageSubmissionPreparation,
+    OwnedPageSubmissionAlreadyAttempted,
+    OwnedPagePreparationState,
+    OwnedPageSubmissionState,
     OwnedPageCapabilities,
     PatchrightOwnedPageBridge,
     ProtectOwnedPage,
+    PrepareOwnedPageSubmission,
     RebindOwnedPage,
     REQUIRED_OWNED_PAGE_CAPABILITIES,
     UnsupportedOwnedPageCapability,
     UnsupportedOwnedPageBridge,
+    SubmitOwnedPagePrompt,
     create_owned_page_bridge,
 )
 
@@ -82,8 +96,16 @@ class ScriptedClient:
         self.calls.append((name, args))
         return json.dumps(self.result)
 
-    def call_tool_if_running(self, name: str, args: object = None) -> str:
+    def call_tool_if_running(
+        self,
+        name: str,
+        args: object = None,
+        *,
+        on_request_may_have_been_dispatched: Callable[[], None] | None = None,
+    ) -> str:
         self.calls.append((name, args))
+        if on_request_may_have_been_dispatched is not None:
+            on_request_may_have_been_dispatched()
         return json.dumps(self.result)
 
 
@@ -186,7 +208,14 @@ def test_patchright_inspection_addresses_only_the_live_thread_without_starting_a
 
 
 class StoppedBridgeClient(NoBrowserCallsClient):
-    def call_tool_if_running(self, name: str, args: object = None) -> None:
+    def call_tool_if_running(
+        self,
+        name: str,
+        args: object = None,
+        *,
+        on_request_may_have_been_dispatched: Callable[[], None] | None = None,
+    ) -> None:
+        _ = on_request_may_have_been_dispatched
         self.calls.append((name, args))
         return None
 
@@ -218,6 +247,26 @@ def test_patchright_inspection_of_a_stopped_bridge_is_thread_not_found_without_s
             },
         )
     ]
+
+
+def test_patchright_submission_preparation_does_not_restart_a_stopped_bridge() -> None:
+    client = StoppedBridgeClient()
+    bridge = PatchrightOwnedPageBridge(client)
+
+    with pytest.raises(OwnedPageNotFound):
+        bridge.prepare_submission(
+            PrepareOwnedPageSubmission(
+                owner="surf-chatgpt",
+                thread="temporary",
+                expected_page_token=11,
+                allowed_scope=OwnedPageScope.CHATGPT,
+                expected_protection=None,
+                program=OwnedPageProgram("() => ({state: 'ready', selection: {}})"),
+                requested_selection_dimensions=frozenset(),
+            )
+        )
+
+    assert client.calls[0][0] == "owned-prepare-submission"
 
 
 def test_patchright_rebind_sends_all_identity_guards_through_one_bridge_call() -> None:
@@ -292,3 +341,278 @@ def test_patchright_protection_update_carries_live_identity_and_metadata_guards(
             },
         )
     ]
+
+
+def test_patchright_submission_preparation_uses_typed_wire_and_decodes_requested_selection() -> (
+    None
+):
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "temporary",
+                "page_token": 11,
+                "url": "https://chatgpt.com/",
+            },
+            "metadata": {
+                "state": "ready",
+                "selection": {"model": "GPT-5.6", "thinking": "Pro"},
+            },
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+    program = OwnedPageProgram("() => ({state: 'ready', selection: {}})")
+
+    outcome = bridge.prepare_submission(
+        PrepareOwnedPageSubmission(
+            owner="surf-chatgpt",
+            thread="temporary",
+            expected_page_token=11,
+            allowed_scope=OwnedPageScope.CHATGPT,
+            expected_protection=None,
+            program=program,
+            requested_selection_dimensions=frozenset(
+                {
+                    OwnedPageSelectionDimension.MODEL,
+                    OwnedPageSelectionDimension.THINKING,
+                }
+            ),
+        )
+    )
+
+    assert outcome == OwnedPageSubmissionPreparation(
+        page=OwnedPageRef("temporary", 11, "https://chatgpt.com/"),
+        state=OwnedPagePreparationState.READY,
+        selection=(
+            OwnedPageSelection(OwnedPageSelectionDimension.MODEL, "GPT-5.6"),
+            OwnedPageSelection(OwnedPageSelectionDimension.THINKING, "Pro"),
+        ),
+    )
+    assert client.calls == [
+        (
+            "owned-prepare-submission",
+            {
+                "owner": "surf-chatgpt",
+                "thread": "temporary",
+                "expected_page_token": 11,
+                "allowed_scope": "chatgpt",
+                "expected_protection": None,
+                "program": program.source,
+                "requested_selection_dimensions": ["model", "thinking"],
+            },
+        )
+    ]
+
+
+def test_patchright_prompt_submission_sends_readiness_and_mutation_programs_in_one_call() -> (
+    None
+):
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "temporary",
+                "page_token": 11,
+                "url": "https://chatgpt.com/",
+            },
+            "metadata": {"state": "submitted"},
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+    readiness = OwnedPageProgram("() => ({state: 'ready', selection: {}})")
+    submission = OwnedPageProgram("() => ({state: 'submitted'})")
+    dispatches: list[bool] = []
+
+    outcome = bridge.submit_prompt(
+        SubmitOwnedPagePrompt(
+            owner="surf-chatgpt",
+            thread="temporary",
+            expected_page_token=11,
+            allowed_scope=OwnedPageScope.CHATGPT,
+            expected_protection=None,
+            readiness_program=readiness,
+            submission_program=submission,
+        ),
+        on_send_may_have_occurred=lambda: dispatches.append(True),
+    )
+
+    assert outcome == OwnedPagePromptSubmission(
+        page=OwnedPageRef("temporary", 11, "https://chatgpt.com/"),
+        state=OwnedPageSubmissionState.SUBMITTED,
+    )
+    assert dispatches == [True]
+    assert client.calls == [
+        (
+            "owned-submit-prompt",
+            {
+                "owner": "surf-chatgpt",
+                "thread": "temporary",
+                "expected_page_token": 11,
+                "allowed_scope": "chatgpt",
+                "expected_protection": None,
+                "readiness_program": readiness.source,
+                "submission_program": submission.source,
+            },
+        )
+    ]
+
+
+def test_patchright_assignment_observation_decodes_only_the_session_identity() -> None:
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "temporary",
+                "page_token": 11,
+                "url": "https://chatgpt.com/c/abc123",
+            },
+            "metadata": {"state": "session", "session_id": "abc123"},
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+    program = OwnedPageProgram("() => ({state: 'session', session_id: 'abc123'})")
+
+    outcome = bridge.observe_assignment(
+        ObserveOwnedPageAssignment(
+            owner="surf-chatgpt",
+            thread="temporary",
+            expected_page_token=11,
+            allowed_scope=OwnedPageScope.CHATGPT,
+            expected_protection=None,
+            program=program,
+        )
+    )
+
+    assert outcome == OwnedPageAssignmentObservation(
+        page=OwnedPageRef("temporary", 11, "https://chatgpt.com/c/abc123"),
+        state=OwnedPageAssignmentState.SESSION,
+        session_id="abc123",
+    )
+    assert client.calls == [
+        (
+            "owned-observe-assignment",
+            {
+                "owner": "surf-chatgpt",
+                "thread": "temporary",
+                "expected_page_token": 11,
+                "allowed_scope": "chatgpt",
+                "expected_protection": None,
+                "program": program.source,
+            },
+        )
+    ]
+
+
+def test_patchright_assignment_observation_preserves_identity_during_gate() -> None:
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "temporary",
+                "page_token": 11,
+                "url": "https://chatgpt.com/c/abc123",
+            },
+            "metadata": {"state": "challenge", "session_id": "abc123"},
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+
+    outcome = bridge.observe_assignment(
+        ObserveOwnedPageAssignment(
+            owner="surf-chatgpt",
+            thread="temporary",
+            expected_page_token=11,
+            allowed_scope=OwnedPageScope.CHATGPT,
+            expected_protection=None,
+            program=OwnedPageProgram("() => ({state: 'challenge'})"),
+        )
+    )
+
+    assert outcome.state is OwnedPageAssignmentState.CHALLENGE
+    assert outcome.session_id == "abc123"
+
+
+def test_patchright_preparation_rejects_unrequested_browser_metadata() -> None:
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "temporary",
+                "page_token": 11,
+                "url": "https://chatgpt.com/",
+            },
+            "metadata": {
+                "state": "ready",
+                "selection": {"model": "GPT-5.6", "private_dom": "secret"},
+            },
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+
+    with pytest.raises(ValueError, match="invalid preparation metadata"):
+        bridge.prepare_submission(
+            PrepareOwnedPageSubmission(
+                owner="surf-chatgpt",
+                thread="temporary",
+                expected_page_token=11,
+                allowed_scope=OwnedPageScope.CHATGPT,
+                expected_protection=None,
+                program=OwnedPageProgram("() => ({state: 'ready'})"),
+                requested_selection_dimensions=frozenset(
+                    {OwnedPageSelectionDimension.MODEL}
+                ),
+            )
+        )
+
+
+def test_patchright_assignment_rejects_browser_metadata_beyond_session_identity() -> (
+    None
+):
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "temporary",
+                "page_token": 11,
+                "url": "https://chatgpt.com/c/abc123",
+            },
+            "metadata": {
+                "state": "session",
+                "session_id": "abc123",
+                "private_dom": "secret",
+            },
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+
+    with pytest.raises(ValueError, match="invalid assignment metadata"):
+        bridge.observe_assignment(
+            ObserveOwnedPageAssignment(
+                owner="surf-chatgpt",
+                thread="temporary",
+                expected_page_token=11,
+                allowed_scope=OwnedPageScope.CHATGPT,
+                expected_protection=None,
+                program=OwnedPageProgram("() => ({state: 'not_ready'})"),
+            )
+        )
+
+
+def test_patchright_submission_marker_conflict_has_a_distinct_typed_error() -> None:
+    client = ScriptedClient(
+        {"ok": False, "error": "submission_already_attempted"}
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+
+    with pytest.raises(OwnedPageSubmissionAlreadyAttempted):
+        bridge.prepare_submission(
+            PrepareOwnedPageSubmission(
+                owner="surf-chatgpt",
+                thread="temporary",
+                expected_page_token=11,
+                allowed_scope=OwnedPageScope.CHATGPT,
+                expected_protection=None,
+                program=OwnedPageProgram("() => ({state: 'ready'})"),
+                requested_selection_dimensions=frozenset(),
+            )
+        )

@@ -26,6 +26,9 @@ class PageSlot:
     page_token: int
     owner: str | None = None
     protection: OwnedPageProtection | None = None
+    # This is an irreversible uncertainty barrier, not a claim that ChatGPT
+    # accepted the prompt. It prevents a lost caller response from causing resend.
+    send_may_have_occurred: bool = False
 
 
 class BridgeRequestHandler(BaseHTTPRequestHandler):

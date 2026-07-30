@@ -187,6 +187,12 @@ class PatchrightRuntime:
             return self.owned_pages.protect(args)
         if name == "owned-allocate":
             return await self.owned_pages.allocate(args)
+        if name == "owned-prepare-submission":
+            return await self.owned_pages.prepare_submission(args)
+        if name == "owned-submit-prompt":
+            return await self.owned_pages.submit_prompt(args)
+        if name == "owned-observe-assignment":
+            return await self.owned_pages.observe_assignment(args)
         if name == "scroll" and str(args.get("direction") or "down") not in {"up", "down", "top", "bottom"}:
             raise RuntimeError("scroll requires direction: up, down, top, or bottom")
         await self._start_async()

@@ -5,7 +5,7 @@ import json
 from surf_agent.owned_pages import OwnedPageClassifier, OwnedPageInspectionState
 
 
-_CHALLENGE_SURFACE_SELECTORS = (
+CHALLENGE_SURFACE_SELECTORS = (
     'iframe[src*="challenges.cloudflare.com"]',
     'iframe[src*="hcaptcha.com"]',
     'iframe[src*="recaptcha"]',
@@ -19,7 +19,7 @@ _CHALLENGE_SURFACE_SELECTORS = (
     ".h-captcha",
     ".g-recaptcha",
 )
-_PROMPT_SELECTORS = (
+COMPOSER_SELECTORS = (
     "#prompt-textarea",
     '[data-testid="composer-textarea"]',
     'textarea[name="prompt-textarea"]',
@@ -46,7 +46,7 @@ CURRENT_SESSION_CLASSIFIER = OwnedPageClassifier(
   if (/^\/c\/[A-Za-z0-9_-]+$/.test(location.pathname)) {{
     return {{state: {_STATE_VALUES[OwnedPageInspectionState.SESSION]}}};
   }}
-  const challengeSelectors = {json.dumps(_CHALLENGE_SURFACE_SELECTORS)};
+  const challengeSelectors = {json.dumps(CHALLENGE_SURFACE_SELECTORS)};
   if (challengeSelectors.some((selector) =>
     Array.from(document.querySelectorAll(selector)).some(isVisible)
   )) {{
@@ -55,7 +55,7 @@ CURRENT_SESSION_CLASSIFIER = OwnedPageClassifier(
   if (location.pathname === '/auth/login' || location.pathname === '/auth/login/') {{
     return {{state: {_STATE_VALUES[OwnedPageInspectionState.PRE_SESSION]}}};
   }}
-  const promptSelectors = {json.dumps(_PROMPT_SELECTORS)};
+  const promptSelectors = {json.dumps(COMPOSER_SELECTORS)};
   if (promptSelectors.some((selector) =>
     Array.from(document.querySelectorAll(selector)).some(isVisible)
   )) {{

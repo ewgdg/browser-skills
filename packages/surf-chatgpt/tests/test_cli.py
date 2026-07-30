@@ -21,6 +21,7 @@ from surf_chatgpt.contracts import (
     ObservationMode,
     ObservationRequest,
     Pace,
+    ProcessExitCode,
     RecentSessionsRequest,
 )
 from surf_chatgpt.errors import PublicError, PublicErrorType
@@ -41,6 +42,15 @@ class RecordingLifecycle:
 
     def ask(self, request: AskRequest) -> CommandOutcome:
         return self._record("ask", request)
+
+    def interruption_outcome(
+        self,
+        exit_code: ProcessExitCode,
+    ) -> CommandOutcome:
+        return CommandOutcome.failure(
+            PublicError(PublicErrorType.INTERRUPTED),
+            exit_code=exit_code,
+        )
 
     def observe(self, request: ObservationRequest) -> CommandOutcome:
         return self._record("observe", request)

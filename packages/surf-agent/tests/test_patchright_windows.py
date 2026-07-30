@@ -5,10 +5,22 @@ from types import SimpleNamespace
 import json
 
 import pytest
+from patchright.sync_api import Browser, sync_playwright
 
 from surf_agent.backends.bridge_common import PageSlot
 from surf_agent.backends.patchright import bridge
 from surf_agent.backends.patchright.bridge import PatchrightRuntime
+from surf_agent.backends.patchright.owned_pages import PatchrightOwnedPageOperations
+
+
+@pytest.fixture
+def headless_chrome() -> Browser:
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(channel="chrome", headless=True)
+        try:
+            yield browser
+        finally:
+            browser.close()
 
 
 class FakePage:
@@ -114,6 +126,22 @@ class FakeContext:
 
     def new_cdp_session(self, page: FakePage) -> FakeSession:
         return FakeSession(self, page)
+
+
+class ProgrammedPage(FakePage):
+    def __init__(self, url: str, results: dict[str, object]) -> None:
+        super().__init__(url)
+        self.results = results
+        self.before_evaluate = None
+
+    def evaluate(self, source: str) -> object:
+        self.evaluate_calls.append(source)
+        if self.before_evaluate is not None:
+            self.before_evaluate(source)
+        result = self.results[source]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
 def test_owned_allocation_creates_a_background_window_without_touching_unrelated_pages(
@@ -433,6 +461,487 @@ def test_owned_rebind_atomically_moves_the_same_live_page_without_browser_mutati
     assert runtime.browser_or_context is None
 
 
+def test_owned_rebind_preserves_live_dom_and_in_flight_page_activity(
+    headless_chrome: Browser,
+) -> None:
+    context = headless_chrome.new_context()
+    page = context.new_page()
+    page.route(
+        "https://chatgpt.com/c/abc123",
+        lambda route: route.fulfill(
+            status=200,
+            body='<main id="dom-canary">preserved</main>',
+            content_type="text/html",
+        ),
+    )
+    page.goto("https://chatgpt.com/c/abc123")
+    page.evaluate(
+        """() => {
+          window.inFlightActivity = new Promise((resolve) => {
+            window.completeActivity = resolve;
+          }).then((result) => { window.activityResult = result; });
+        }"""
+    )
+    # Construct only the synchronous registry host. Patchright's sync API already
+    # owns this thread's event loop, so a second asyncio Runner would deadlock it.
+    runtime = object.__new__(PatchrightRuntime)
+    runtime.pages = {}
+    runtime.owned_pages = PatchrightOwnedPageOperations(runtime)
+    slot = PageSlot(page=page, page_token=6, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+
+    try:
+        runtime.owned_pages.rebind(
+            {
+                "owner": "surf-chatgpt",
+                "source_thread": "temporary",
+                "destination_thread": "surf-chatgpt-session-abc123",
+                "expected_page_token": 6,
+                "expected_exact_url": "https://chatgpt.com/c/abc123",
+                "allowed_scope": "chatgpt",
+                "expected_protection": None,
+            }
+        )
+        activity_result = page.evaluate(
+            """async () => {
+              window.completeActivity('continued');
+              await window.inFlightActivity;
+              return window.activityResult;
+            }"""
+        )
+
+        rebound = runtime.pages["surf-chatgpt-session-abc123"]
+        assert rebound is slot
+        assert rebound.page is page
+        assert page.url == "https://chatgpt.com/c/abc123"
+        assert page.locator("#dom-canary").text_content() == "preserved"
+        assert activity_result == "continued"
+    finally:
+        context.close()
+
+
+def test_owned_rebind_replay_returns_the_same_destination_page_without_mutation(
+    tmp_path: Path,
+) -> None:
+    page = FakePage("https://chatgpt.com/c/abc123", target_id="chatgpt-target")
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(
+        page=page,
+        page_token=6,
+        owner="surf-chatgpt",
+        protection="explicitly_retained",
+        send_may_have_occurred=True,
+    )
+    runtime.pages["temporary"] = slot
+    request = {
+        "owner": "surf-chatgpt",
+        "source_thread": "temporary",
+        "destination_thread": "surf-chatgpt-session-abc123",
+        "expected_page_token": 6,
+        "expected_exact_url": "https://chatgpt.com/c/abc123",
+        "allowed_scope": "chatgpt",
+        "expected_protection": "explicitly_retained",
+    }
+
+    first = runtime.call("owned-rebind", request)
+    replay = runtime.call("owned-rebind", request)
+
+    assert json.loads(replay) == json.loads(first)
+    assert runtime.pages == {"surf-chatgpt-session-abc123": slot}
+    assert slot.send_may_have_occurred is True
+    assert page.closed is False
+    assert page.goto_calls == []
+
+
+def test_owned_submission_preparation_returns_only_requested_picker_labels(
+    tmp_path: Path,
+) -> None:
+    program = "() => ({state: 'ready', selection: {model: 'GPT-5.6'}})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {program: {"state": "ready", "selection": {"model": "GPT-5.6"}}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=12, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+
+    raw = runtime.call(
+        "owned-prepare-submission",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+            "requested_selection_dimensions": ["model"],
+        },
+    )
+
+    assert json.loads(raw) == {
+        "ok": True,
+        "page": {
+            "thread": "temporary",
+            "page_token": 12,
+            "url": "https://chatgpt.com/",
+        },
+        "metadata": {
+            "state": "ready",
+            "selection": {"model": "GPT-5.6"},
+        },
+    }
+    assert slot.send_may_have_occurred is False
+    assert page.evaluate_calls == [program]
+
+
+def test_owned_prompt_submission_sets_irreversible_marker_before_prompt_mutation(
+    tmp_path: Path,
+) -> None:
+    readiness_program = "() => ({state: 'ready', selection: {}})"
+    submission_program = "() => ({state: 'submitted'})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {
+            readiness_program: {"state": "ready", "selection": {}},
+            submission_program: {"state": "submitted"},
+        },
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=12, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+    marker_at_evaluation: dict[str, bool] = {}
+    page.before_evaluate = lambda source: marker_at_evaluation.setdefault(
+        source, slot.send_may_have_occurred
+    )
+
+    raw = runtime.call(
+        "owned-submit-prompt",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "readiness_program": readiness_program,
+            "submission_program": submission_program,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {"state": "submitted"}
+    assert marker_at_evaluation == {
+        readiness_program: False,
+        submission_program: True,
+    }
+    assert slot.send_may_have_occurred is True
+
+
+def test_owned_prompt_submission_does_not_mark_or_mutate_when_readiness_is_lost(
+    tmp_path: Path,
+) -> None:
+    readiness_program = "() => ({state: 'challenge'})"
+    submission_program = "() => ({state: 'submitted'})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {
+            readiness_program: {"state": "challenge"},
+            submission_program: {"state": "submitted"},
+        },
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=12, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+
+    raw = runtime.call(
+        "owned-submit-prompt",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "readiness_program": readiness_program,
+            "submission_program": submission_program,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {"state": "challenge"}
+    assert slot.send_may_have_occurred is False
+    assert page.evaluate_calls == [readiness_program]
+
+
+def test_owned_submission_retry_is_rejected_without_running_browser_code(
+    tmp_path: Path,
+) -> None:
+    program = "() => ({state: 'ready', selection: {}})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {program: {"state": "ready", "selection": {}}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(
+        page=page,
+        page_token=12,
+        owner="surf-chatgpt",
+        send_may_have_occurred=True,
+    )
+    runtime.pages["temporary"] = slot
+    common = {
+        "owner": "surf-chatgpt",
+        "thread": "temporary",
+        "expected_page_token": 12,
+        "allowed_scope": "chatgpt",
+        "expected_protection": None,
+    }
+
+    preparation = runtime.call(
+        "owned-prepare-submission",
+        {
+            **common,
+            "program": program,
+            "requested_selection_dimensions": [],
+        },
+    )
+    submission = runtime.call(
+        "owned-submit-prompt",
+        {
+            **common,
+            "readiness_program": program,
+            "submission_program": "() => ({state: 'submitted'})",
+        },
+    )
+
+    assert json.loads(preparation) == {
+        "ok": False,
+        "error": "submission_already_attempted",
+    }
+    assert json.loads(submission) == {
+        "ok": False,
+        "error": "submission_already_attempted",
+    }
+    assert slot.send_may_have_occurred is True
+    assert page.evaluate_calls == []
+
+
+def test_owned_submission_failure_never_clears_marker_or_exposes_browser_details(
+    tmp_path: Path,
+) -> None:
+    readiness_program = "() => ({state: 'ready', selection: {}})"
+    submission_program = "private prompt program"
+    page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {
+            readiness_program: {"state": "ready", "selection": {}},
+            submission_program: RuntimeError("private DOM details"),
+        },
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=12, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+
+    raw = runtime.call(
+        "owned-submit-prompt",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "readiness_program": readiness_program,
+            "submission_program": submission_program,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "inspection_failed"}
+    assert "private" not in raw
+    assert slot.send_may_have_occurred is True
+
+
+def test_owned_post_marker_gate_is_returned_without_clearing_submission_barrier(
+    tmp_path: Path,
+) -> None:
+    readiness_program = "() => ({state: 'ready', selection: {}})"
+    submission_program = "() => ({state: 'ui_changed'})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {
+            readiness_program: {"state": "ready", "selection": {}},
+            submission_program: {"state": "ui_changed"},
+        },
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=12, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+
+    raw = runtime.call(
+        "owned-submit-prompt",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "readiness_program": readiness_program,
+            "submission_program": submission_program,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {"state": "ui_changed"}
+    assert slot.send_may_have_occurred is True
+
+
+@pytest.mark.parametrize(
+    ("operation", "args", "program"),
+    [
+        (
+            "owned-prepare-submission",
+            {"requested_selection_dimensions": []},
+            "prepare",
+        ),
+        ("owned-observe-assignment", {}, "observe"),
+    ],
+)
+def test_owned_submission_operations_reject_non_allow_listed_browser_metadata(
+    operation: str,
+    args: dict[str, object],
+    program: str,
+    tmp_path: Path,
+) -> None:
+    page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {program: {"state": "ui_changed", "private_dom": "secret"}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["temporary"] = PageSlot(
+        page=page,
+        page_token=12,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        operation,
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+            **args,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "inspection_failed"}
+    assert "private" not in raw
+
+
+def test_owned_assignment_observation_returns_only_allow_listed_session_identity(
+    tmp_path: Path,
+) -> None:
+    program = "() => ({state: 'session', session_id: 'abc123'})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {program: {"state": "session", "session_id": "abc123"}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(
+        page=page,
+        page_token=12,
+        owner="surf-chatgpt",
+        send_may_have_occurred=True,
+    )
+    runtime.pages["temporary"] = slot
+
+    raw = runtime.call(
+        "owned-observe-assignment",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {
+        "state": "session",
+        "session_id": "abc123",
+    }
+    assert slot.send_may_have_occurred is True
+    assert page.closed is False
+    assert page.goto_calls == []
+
+
+def test_owned_assignment_gate_preserves_only_allow_listed_session_identity(
+    tmp_path: Path,
+) -> None:
+    program = "() => ({state: 'challenge', session_id: 'abc123'})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {program: {"state": "challenge", "session_id": "abc123"}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["temporary"] = PageSlot(
+        page=page,
+        page_token=12,
+        owner="surf-chatgpt",
+        send_may_have_occurred=True,
+    )
+
+    raw = runtime.call(
+        "owned-observe-assignment",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {
+        "state": "challenge",
+        "session_id": "abc123",
+    }
+
+
+@pytest.mark.parametrize(
+    ("expected_page_token", "expected_exact_url"),
+    [
+        (5, "https://chatgpt.com/c/abc123"),
+        (6, "https://chatgpt.com/c/different"),
+    ],
+)
+def test_owned_rebind_rejects_stale_identity_guards_without_mutation(
+    expected_page_token: int,
+    expected_exact_url: str,
+    tmp_path: Path,
+) -> None:
+    page = FakePage("https://chatgpt.com/c/abc123", target_id="chatgpt-target")
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=6, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+
+    raw = runtime.call(
+        "owned-rebind",
+        {
+            "owner": "surf-chatgpt",
+            "source_thread": "temporary",
+            "destination_thread": "surf-chatgpt-session-abc123",
+            "expected_page_token": expected_page_token,
+            "expected_exact_url": expected_exact_url,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "ownership_conflict"}
+    assert runtime.pages == {"temporary": slot}
+    assert page.closed is False
+    assert page.goto_calls == []
+
+
 @pytest.mark.parametrize(
     ("url", "protection", "expected_protection"),
     [
@@ -518,6 +1027,72 @@ def test_owned_rebind_conflict_leaves_both_bindings_unchanged(tmp_path: Path) ->
     assert destination_page.closed is False
 
 
+def test_owned_rebind_competing_sources_never_duplicate_or_replace_destination(
+    tmp_path: Path,
+) -> None:
+    winning_page = FakePage("https://chatgpt.com/c/abc123")
+    losing_page = FakePage("https://chatgpt.com/c/abc123")
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    winning_slot = PageSlot(page=winning_page, page_token=6, owner="surf-chatgpt")
+    losing_slot = PageSlot(page=losing_page, page_token=7, owner="surf-chatgpt")
+    runtime.pages.update({"first": winning_slot, "second": losing_slot})
+
+    common = {
+        "owner": "surf-chatgpt",
+        "destination_thread": "surf-chatgpt-session-abc123",
+        "expected_exact_url": "https://chatgpt.com/c/abc123",
+        "allowed_scope": "chatgpt",
+        "expected_protection": None,
+    }
+    winner = runtime.call(
+        "owned-rebind",
+        {**common, "source_thread": "first", "expected_page_token": 6},
+    )
+    loser = runtime.call(
+        "owned-rebind",
+        {**common, "source_thread": "second", "expected_page_token": 7},
+    )
+
+    assert json.loads(winner)["ok"] is True
+    assert json.loads(loser) == {"ok": False, "error": "ownership_conflict"}
+    assert runtime.pages == {
+        "second": losing_slot,
+        "surf-chatgpt-session-abc123": winning_slot,
+    }
+    assert len({id(slot) for slot in runtime.pages.values()}) == 2
+
+
+def test_owned_rebind_competing_destinations_move_source_exactly_once(
+    tmp_path: Path,
+) -> None:
+    page = FakePage("https://chatgpt.com/c/abc123")
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=6, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+    common = {
+        "owner": "surf-chatgpt",
+        "source_thread": "temporary",
+        "expected_page_token": 6,
+        "expected_exact_url": "https://chatgpt.com/c/abc123",
+        "allowed_scope": "chatgpt",
+        "expected_protection": None,
+    }
+
+    winner = runtime.call(
+        "owned-rebind",
+        {**common, "destination_thread": "surf-chatgpt-session-abc123"},
+    )
+    loser = runtime.call(
+        "owned-rebind",
+        {**common, "destination_thread": "surf-chatgpt-session-other"},
+    )
+
+    assert json.loads(winner)["ok"] is True
+    assert json.loads(loser) == {"ok": False, "error": "ownership_conflict"}
+    assert runtime.pages == {"surf-chatgpt-session-abc123": slot}
+    assert sum(bound is slot for bound in runtime.pages.values()) == 1
+
+
 def test_owned_protection_update_revalidates_live_identity_and_current_metadata(
     tmp_path: Path,
 ) -> None:
@@ -573,6 +1148,7 @@ def test_owner_and_protection_metadata_never_leave_bridge_memory(
         page_token=8,
         owner="surf-chatgpt",
         protection="human_intervention",
+        send_may_have_occurred=True,
     )
 
     state = json.loads(runtime.call("state", {"thread": "surf-chatgpt-login"}))
@@ -582,6 +1158,8 @@ def test_owner_and_protection_metadata_never_leave_bridge_memory(
     assert "protection" not in state
     assert all("owner" not in row for row in listing["pages"])
     assert all("protection" not in row for row in listing["pages"])
+    assert "send_may_have_occurred" not in state
+    assert all("send_may_have_occurred" not in row for row in listing["pages"])
 
     runtime._run(runtime._stop_async())
     assert runtime.pages == {}

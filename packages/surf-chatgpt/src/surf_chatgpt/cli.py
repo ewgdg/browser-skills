@@ -21,7 +21,7 @@ from .contracts import (
 )
 from .errors import PublicError, PublicErrorType
 from .session_address import InvalidSessionAddress, SessionAddress
-from .session_lifecycle import SessionLifecycle
+from .session_lifecycle import SessionLifecycle, create_session_lifecycle
 
 
 _SIGNAL_EXIT_CODES = {
@@ -52,7 +52,7 @@ class JsonArgumentParser(argparse.ArgumentParser):
         return parsed
 
 
-class _CaughtSignal(Exception):
+class _CaughtSignal(BaseException):
     def __init__(self, signal_number: int) -> None:
         self.signal_number = signal.Signals(signal_number)
         self.output_committed = False
@@ -132,13 +132,16 @@ def main(
     output_stream = sys.stdout if stdout is None else stdout
     # Non-help invocations intentionally never write diagnostics to stderr.
     _ = stderr
+    active_lifecycle = lifecycle
 
     try:
         with _catch_process_signals():
             try:
                 args = build_parser().parse_args(argv)
+                if active_lifecycle is None:
+                    active_lifecycle = create_session_lifecycle()
                 with _discard_python_diagnostics():
-                    outcome = execute_command(args, input_stream, lifecycle)
+                    outcome = execute_command(args, input_stream, active_lifecycle)
             except _CaughtSignal:
                 raise
             except PublicError as error:
@@ -151,12 +154,12 @@ def main(
     except _CaughtSignal as caught:
         if caught.output_committed:
             return outcome.exit_code
-        outcome = _interruption_outcome(caught.signal_number)
+        outcome = _interruption_outcome(caught.signal_number, active_lifecycle)
         if not _emit_and_flush(outcome, output_stream):
             return ProcessExitCode.OPERATIONAL_FAILURE
         return outcome.exit_code
     except KeyboardInterrupt:
-        outcome = _interruption_outcome(signal.SIGINT)
+        outcome = _interruption_outcome(signal.SIGINT, active_lifecycle)
         if not _emit_and_flush(outcome, output_stream):
             return ProcessExitCode.OPERATIONAL_FAILURE
         return outcome.exit_code
@@ -213,10 +216,16 @@ def _error_outcome(error: PublicError) -> CommandOutcome:
     )
 
 
-def _interruption_outcome(signal_number: signal.Signals) -> CommandOutcome:
+def _interruption_outcome(
+    signal_number: signal.Signals,
+    lifecycle: SessionLifecycle | None = None,
+) -> CommandOutcome:
+    exit_code = _SIGNAL_EXIT_CODES[signal_number]
+    if lifecycle is not None:
+        return lifecycle.interruption_outcome(exit_code)
     return CommandOutcome.failure(
         PublicError(PublicErrorType.INTERRUPTED),
-        exit_code=_SIGNAL_EXIT_CODES[signal_number],
+        exit_code=exit_code,
     )
 
 

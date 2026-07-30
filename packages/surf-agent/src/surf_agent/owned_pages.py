@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
@@ -39,6 +40,36 @@ class OwnedPageBridgeErrorCode(StrEnum):
     THREAD_NOT_FOUND = "thread_not_found"
     OWNERSHIP_CONFLICT = "ownership_conflict"
     INSPECTION_FAILED = "inspection_failed"
+    SUBMISSION_ALREADY_ATTEMPTED = "submission_already_attempted"
+
+
+class OwnedPageSelectionDimension(StrEnum):
+    MODEL = "model"
+    THINKING = "thinking"
+
+
+class OwnedPagePreparationState(StrEnum):
+    READY = "ready"
+    LOGIN_REQUIRED = "login_required"
+    CHALLENGE = "challenge"
+    MODEL_UNAVAILABLE = "model_unavailable"
+    UI_CHANGED = "ui_changed"
+
+
+class OwnedPageSubmissionState(StrEnum):
+    SUBMITTED = "submitted"
+    LOGIN_REQUIRED = "login_required"
+    CHALLENGE = "challenge"
+    MODEL_UNAVAILABLE = "model_unavailable"
+    UI_CHANGED = "ui_changed"
+
+
+class OwnedPageAssignmentState(StrEnum):
+    SESSION = "session"
+    NOT_READY = "not_ready"
+    LOGIN_REQUIRED = "login_required"
+    CHALLENGE = "challenge"
+    UI_CHANGED = "ui_changed"
 
 
 REQUIRED_OWNED_PAGE_CAPABILITIES = frozenset(OwnedPageCapability)
@@ -88,6 +119,53 @@ class OwnedPageClassifier:
 
 
 @dataclass(frozen=True)
+class OwnedPageProgram:
+    source: str
+
+    def __post_init__(self) -> None:
+        if not self.source.strip():
+            raise ValueError("Owned-page programs require browser-side source.")
+
+
+@dataclass(frozen=True)
+class OwnedPageSelection:
+    dimension: OwnedPageSelectionDimension
+    label: str
+
+
+@dataclass(frozen=True)
+class PrepareOwnedPageSubmission:
+    owner: str
+    thread: str
+    expected_page_token: int
+    allowed_scope: OwnedPageScope
+    expected_protection: OwnedPageProtection | None
+    program: OwnedPageProgram
+    requested_selection_dimensions: frozenset[OwnedPageSelectionDimension]
+
+
+@dataclass(frozen=True)
+class SubmitOwnedPagePrompt:
+    owner: str
+    thread: str
+    expected_page_token: int
+    allowed_scope: OwnedPageScope
+    expected_protection: OwnedPageProtection | None
+    readiness_program: OwnedPageProgram
+    submission_program: OwnedPageProgram
+
+
+@dataclass(frozen=True)
+class ObserveOwnedPageAssignment:
+    owner: str
+    thread: str
+    expected_page_token: int
+    allowed_scope: OwnedPageScope
+    expected_protection: OwnedPageProtection | None
+    program: OwnedPageProgram
+
+
+@dataclass(frozen=True)
 class RebindOwnedPage:
     owner: str
     source_thread: str
@@ -121,6 +199,26 @@ class OwnedPageInspection:
     state: OwnedPageInspectionState
 
 
+@dataclass(frozen=True)
+class OwnedPageSubmissionPreparation:
+    page: OwnedPageRef
+    state: OwnedPagePreparationState
+    selection: tuple[OwnedPageSelection, ...] = ()
+
+
+@dataclass(frozen=True)
+class OwnedPagePromptSubmission:
+    page: OwnedPageRef
+    state: OwnedPageSubmissionState
+
+
+@dataclass(frozen=True)
+class OwnedPageAssignmentObservation:
+    page: OwnedPageRef
+    state: OwnedPageAssignmentState
+    session_id: str | None = None
+
+
 class OwnedPageBridge(Protocol):
     def capabilities(self) -> OwnedPageCapabilities: ...
 
@@ -132,12 +230,31 @@ class OwnedPageBridge(Protocol):
 
     def protect(self, request: ProtectOwnedPage) -> None: ...
 
+    def prepare_submission(
+        self, request: PrepareOwnedPageSubmission
+    ) -> OwnedPageSubmissionPreparation: ...
+
+    def submit_prompt(
+        self,
+        request: SubmitOwnedPagePrompt,
+        *,
+        on_send_may_have_occurred: Callable[[], None],
+    ) -> OwnedPagePromptSubmission: ...
+
+    def observe_assignment(
+        self, request: ObserveOwnedPageAssignment
+    ) -> OwnedPageAssignmentObservation: ...
+
 
 class OwnedPageBridgeClient(Protocol):
     def call_tool(self, name: str, args: dict[str, object] | None = None) -> str: ...
 
     def call_tool_if_running(
-        self, name: str, args: dict[str, object] | None = None
+        self,
+        name: str,
+        args: dict[str, object] | None = None,
+        *,
+        on_request_may_have_been_dispatched: Callable[[], None] | None = None,
     ) -> str | None: ...
 
 
@@ -162,6 +279,10 @@ class OwnedPageOwnershipConflict(Exception):
 
 
 class OwnedPageInspectionFailed(Exception):
+    pass
+
+
+class OwnedPageSubmissionAlreadyAttempted(Exception):
     pass
 
 
@@ -218,6 +339,56 @@ class PatchrightOwnedPageBridge:
         }
         _decode_operation_outcome(self._client.call_tool("owned-protect", payload))
 
+    def prepare_submission(
+        self, request: PrepareOwnedPageSubmission
+    ) -> OwnedPageSubmissionPreparation:
+        payload: dict[str, object] = {
+            **_guard_payload(request),
+            "program": request.program.source,
+            "requested_selection_dimensions": sorted(
+                dimension.value
+                for dimension in request.requested_selection_dimensions
+            ),
+        }
+        raw = self._client.call_tool_if_running("owned-prepare-submission", payload)
+        if raw is None:
+            raise OwnedPageNotFound
+        return _decode_submission_preparation(
+            raw, request.requested_selection_dimensions
+        )
+
+    def submit_prompt(
+        self,
+        request: SubmitOwnedPagePrompt,
+        *,
+        on_send_may_have_occurred: Callable[[], None],
+    ) -> OwnedPagePromptSubmission:
+        payload: dict[str, object] = {
+            **_guard_payload(request),
+            "readiness_program": request.readiness_program.source,
+            "submission_program": request.submission_program.source,
+        }
+        raw = self._client.call_tool_if_running(
+            "owned-submit-prompt",
+            payload,
+            on_request_may_have_been_dispatched=on_send_may_have_occurred,
+        )
+        if raw is None:
+            raise OwnedPageNotFound
+        return _decode_prompt_submission(raw)
+
+    def observe_assignment(
+        self, request: ObserveOwnedPageAssignment
+    ) -> OwnedPageAssignmentObservation:
+        payload: dict[str, object] = {
+            **_guard_payload(request),
+            "program": request.program.source,
+        }
+        raw = self._client.call_tool_if_running("owned-observe-assignment", payload)
+        if raw is None:
+            raise OwnedPageNotFound
+        return _decode_assignment_observation(raw)
+
 
 class UnsupportedOwnedPageBridge:
     def capabilities(self) -> OwnedPageCapabilities:
@@ -236,6 +407,27 @@ class UnsupportedOwnedPageBridge:
         raise UnsupportedOwnedPageCapability
 
     def protect(self, request: ProtectOwnedPage) -> None:
+        _ = request
+        raise UnsupportedOwnedPageCapability
+
+    def prepare_submission(
+        self, request: PrepareOwnedPageSubmission
+    ) -> OwnedPageSubmissionPreparation:
+        _ = request
+        raise UnsupportedOwnedPageCapability
+
+    def submit_prompt(
+        self,
+        request: SubmitOwnedPagePrompt,
+        *,
+        on_send_may_have_occurred: Callable[[], None],
+    ) -> OwnedPagePromptSubmission:
+        _ = request, on_send_may_have_occurred
+        raise UnsupportedOwnedPageCapability
+
+    def observe_assignment(
+        self, request: ObserveOwnedPageAssignment
+    ) -> OwnedPageAssignmentObservation:
         _ = request
         raise UnsupportedOwnedPageCapability
 
@@ -277,6 +469,8 @@ def _raise_owned_page_error(error: object) -> None:
         raise OwnedPageOwnershipConflict
     if error == OwnedPageBridgeErrorCode.INSPECTION_FAILED:
         raise OwnedPageInspectionFailed
+    if error == OwnedPageBridgeErrorCode.SUBMISSION_ALREADY_ATTEMPTED:
+        raise OwnedPageSubmissionAlreadyAttempted
     raise ValueError("Owned-page bridge returned an invalid error outcome.")
 
 
@@ -308,6 +502,118 @@ def _decode_inspection(raw: str) -> OwnedPageInspection:
         ) from error
     page_only = json.dumps({"ok": True, "page": decoded["page"]}, separators=(",", ":"))
     return OwnedPageInspection(page=_decode_page_ref(page_only), state=state)
+
+
+def _guard_payload(
+    request: PrepareOwnedPageSubmission
+    | SubmitOwnedPagePrompt
+    | ObserveOwnedPageAssignment,
+) -> dict[str, object]:
+    return {
+        "owner": request.owner,
+        "thread": request.thread,
+        "expected_page_token": request.expected_page_token,
+        "allowed_scope": request.allowed_scope.value,
+        "expected_protection": _protection_wire_value(request.expected_protection),
+    }
+
+
+def _decode_guarded_metadata(raw: str) -> tuple[OwnedPageRef, dict[str, object]]:
+    decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError("Owned-page bridge returned an invalid guarded outcome.")
+    if decoded.get("ok") is False:
+        _raise_owned_page_error(decoded.get("error"))
+    if set(decoded) != {"ok", "page", "metadata"} or decoded.get("ok") is not True:
+        raise ValueError("Owned-page bridge returned an invalid guarded outcome.")
+    metadata = _require_string_keyed_object(
+        decoded["metadata"],
+        "Owned-page bridge returned invalid guarded metadata.",
+    )
+    page_only = json.dumps({"ok": True, "page": decoded["page"]}, separators=(",", ":"))
+    return _decode_page_ref(page_only), metadata
+
+
+def _decode_submission_preparation(
+    raw: str,
+    requested_dimensions: frozenset[OwnedPageSelectionDimension],
+) -> OwnedPageSubmissionPreparation:
+    page, metadata = _decode_guarded_metadata(raw)
+    try:
+        state = OwnedPagePreparationState(metadata.get("state"))
+    except (TypeError, ValueError) as error:
+        raise ValueError("Owned-page bridge returned invalid preparation metadata.") from error
+    if state is not OwnedPagePreparationState.READY:
+        if set(metadata) != {"state"}:
+            raise ValueError("Owned-page bridge returned invalid preparation metadata.")
+        return OwnedPageSubmissionPreparation(page=page, state=state)
+    if set(metadata) != {"state", "selection"}:
+        raise ValueError("Owned-page bridge returned invalid preparation metadata.")
+    selection = _require_string_keyed_object(
+        metadata["selection"],
+        "Owned-page bridge returned invalid preparation metadata.",
+    )
+    expected_keys = {dimension.value for dimension in requested_dimensions}
+    if set(selection) != expected_keys:
+        raise ValueError("Owned-page bridge returned invalid preparation metadata.")
+    decoded_selection: list[OwnedPageSelection] = []
+    for dimension in sorted(requested_dimensions, key=lambda item: item.value):
+        label = selection[dimension.value]
+        if not isinstance(label, str) or not label:
+            raise ValueError("Owned-page bridge returned invalid preparation metadata.")
+        decoded_selection.append(OwnedPageSelection(dimension=dimension, label=label))
+    return OwnedPageSubmissionPreparation(
+        page=page,
+        state=state,
+        selection=tuple(decoded_selection),
+    )
+
+
+def _require_string_keyed_object(value: object, message: str) -> dict[str, object]:
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str) for key in value
+    ):
+        raise ValueError(message)
+    return {key: item for key, item in value.items() if isinstance(key, str)}
+
+
+def _decode_prompt_submission(raw: str) -> OwnedPagePromptSubmission:
+    page, metadata = _decode_guarded_metadata(raw)
+    if set(metadata) != {"state"}:
+        raise ValueError("Owned-page bridge returned invalid submission metadata.")
+    try:
+        state = OwnedPageSubmissionState(metadata["state"])
+    except (TypeError, ValueError) as error:
+        raise ValueError("Owned-page bridge returned invalid submission metadata.") from error
+    return OwnedPagePromptSubmission(page=page, state=state)
+
+
+def _decode_assignment_observation(raw: str) -> OwnedPageAssignmentObservation:
+    page, metadata = _decode_guarded_metadata(raw)
+    try:
+        state = OwnedPageAssignmentState(metadata.get("state"))
+    except (TypeError, ValueError) as error:
+        raise ValueError("Owned-page bridge returned invalid assignment metadata.") from error
+    allows_session_identity = state in {
+        OwnedPageAssignmentState.SESSION,
+        OwnedPageAssignmentState.LOGIN_REQUIRED,
+        OwnedPageAssignmentState.CHALLENGE,
+    }
+    has_session_identity = set(metadata) == {"state", "session_id"}
+    if state is OwnedPageAssignmentState.SESSION and not has_session_identity:
+        raise ValueError("Owned-page bridge returned invalid assignment metadata.")
+    if not has_session_identity:
+        if set(metadata) != {"state"}:
+            raise ValueError("Owned-page bridge returned invalid assignment metadata.")
+        return OwnedPageAssignmentObservation(page, state)
+    session_id = metadata["session_id"]
+    if (
+        not allows_session_identity
+        or not isinstance(session_id, str)
+        or not CHATGPT_SESSION_PATH_PATTERN.fullmatch(f"/c/{session_id}")
+    ):
+        raise ValueError("Owned-page bridge returned invalid assignment metadata.")
+    return OwnedPageAssignmentObservation(page, state, session_id)
 
 
 def _protection_wire_value(

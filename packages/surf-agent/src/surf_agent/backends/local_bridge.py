@@ -45,9 +45,19 @@ class LocalBridgeClient:
         assert isinstance(output, str)
         return output
 
-    def call_tool_if_running(self, name: str, args: dict[str, Any] | None = None) -> str | None:
+    def call_tool_if_running(
+        self,
+        name: str,
+        args: dict[str, Any] | None = None,
+        *,
+        on_request_may_have_been_dispatched: Callable[[], None] | None = None,
+    ) -> str | None:
         if not self._health_ok():
             return None
+        # Once the health check succeeds, a transport failure cannot prove
+        # whether the irreversible bridge request reached the browser runtime.
+        if on_request_may_have_been_dispatched is not None:
+            on_request_may_have_been_dispatched()
         return self._call_tool(name, args, return_none_on_connection_failure=True)
 
     def _call_tool(
