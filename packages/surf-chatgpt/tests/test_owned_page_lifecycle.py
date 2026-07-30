@@ -569,12 +569,12 @@ def test_session_handoff_resolves_and_retains_only_the_durable_session() -> None
             "session": {"id": "abc123"},
             "handoff": {
                 "action": "inspect_browser",
-                "thread": "surf-chatgpt-session-abc123",
+                "thread": "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090",
             },
         },
         "",
     )
-    page = bridge.pages["surf-chatgpt-session-abc123"]
+    page = bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"]
     assert page.reference.exact_url == "https://chatgpt.com/c/abc123"
     assert page.protection is OwnedPageProtection.EXPLICITLY_RETAINED
     assert [operation for operation, _ in bridge.calls] == ["resolve", "protect"]
@@ -586,7 +586,7 @@ def test_session_handoff_resolves_and_retains_only_the_durable_session() -> None
 
 def test_abandon_generating_session_stops_once_then_releases_the_page() -> None:
     bridge = InMemoryOwnedPageBridge()
-    thread = "surf-chatgpt-session-abc123"
+    thread = "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
     bridge.pages[thread] = MemoryPage(
         owner="surf-chatgpt",
         reference=OwnedPageRef(thread, 701, "https://chatgpt.com/c/abc123"),
@@ -616,13 +616,14 @@ def test_abandon_generating_session_stops_once_then_releases_the_page() -> None:
         OwnedPageAttemptState.COMPLETED,
         OwnedPageAttemptState.STOPPED,
         OwnedPageAttemptState.FAILED,
+        OwnedPageAttemptState.RATE_LIMITED,
     ],
 )
 def test_abandon_terminal_session_closes_directly(
     attempt_state: OwnedPageAttemptState,
 ) -> None:
     bridge = InMemoryOwnedPageBridge()
-    thread = "surf-chatgpt-session-abc123"
+    thread = "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
     bridge.pages[thread] = MemoryPage(
         owner="surf-chatgpt",
         reference=OwnedPageRef(thread, 701, "https://chatgpt.com/c/abc123"),
@@ -667,7 +668,7 @@ class FailedAbandonmentBridge(InMemoryOwnedPageBridge):
 
 def test_failed_abandonment_preserves_the_addressed_page_and_identity() -> None:
     bridge = FailedAbandonmentBridge()
-    thread = "surf-chatgpt-session-abc123"
+    thread = "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
     bridge.pages[thread] = MemoryPage(
         owner="surf-chatgpt",
         reference=OwnedPageRef(thread, 701, "https://chatgpt.com/c/abc123"),
@@ -722,6 +723,7 @@ def test_session_status_affirms_generating_without_extracting_response_content()
         (OwnedPageAttemptState.COMPLETED, {}),
         (OwnedPageAttemptState.STOPPED, {}),
         (OwnedPageAttemptState.FAILED, {"result": None}),
+        (OwnedPageAttemptState.RATE_LIMITED, {"result": None}),
     ],
 )
 def test_session_status_closes_only_after_affirming_a_terminal_attempt(
@@ -729,7 +731,7 @@ def test_session_status_closes_only_after_affirming_a_terminal_attempt(
     extra_fields: dict[str, object],
 ) -> None:
     bridge = InMemoryOwnedPageBridge()
-    thread = "surf-chatgpt-session-abc123"
+    thread = "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
     bridge.pages[thread] = MemoryPage(
         owner="surf-chatgpt",
         reference=OwnedPageRef(thread, 701, "https://chatgpt.com/c/abc123"),
@@ -801,6 +803,7 @@ def test_session_result_reports_generating_as_repeatable_not_ready_without_text(
             {"text": "Partial answer", "partial": True},
         ),
         (OwnedPageAttemptState.FAILED, "CANARY-stale-fragment", None),
+        (OwnedPageAttemptState.RATE_LIMITED, "CANARY-stale-fragment", None),
     ],
 )
 def test_session_result_returns_terminal_schema_then_guardedly_closes(
@@ -809,7 +812,7 @@ def test_session_result_returns_terminal_schema_then_guardedly_closes(
     expected_result: object,
 ) -> None:
     bridge = InMemoryOwnedPageBridge()
-    thread = "surf-chatgpt-session-abc123"
+    thread = "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
     bridge.pages[thread] = MemoryPage(
         owner="surf-chatgpt",
         reference=OwnedPageRef(thread, 701, "https://chatgpt.com/c/abc123"),
@@ -842,7 +845,7 @@ def test_session_result_returns_terminal_schema_then_guardedly_closes(
 
 def test_retain_protects_terminal_result_before_observation_and_skips_cleanup() -> None:
     bridge = InMemoryOwnedPageBridge()
-    thread = "surf-chatgpt-session-abc123"
+    thread = "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
     bridge.pages[thread] = MemoryPage(
         owner="surf-chatgpt",
         reference=OwnedPageRef(thread, 701, "https://chatgpt.com/c/abc123"),
@@ -958,7 +961,7 @@ def test_wait_timeout_is_a_successful_observation_not_attempt_failure() -> None:
     )
     assert "CANARY" not in json.dumps(payload)
     assert clock.now == 0.5
-    assert "surf-chatgpt-session-abc123" in bridge.pages
+    assert "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090" in bridge.pages
     assert {operation for operation, _ in bridge.calls} == {
         "resolve",
         "extract_result",
@@ -1067,7 +1070,7 @@ def test_recent_json_flushes_before_cleanup_and_survives_close_failure() -> None
 
 def test_terminal_json_flushes_before_cleanup_and_survives_close_failure() -> None:
     bridge = FailingTerminalCloseBridge()
-    thread = "surf-chatgpt-session-abc123"
+    thread = "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
     bridge.pages[thread] = MemoryPage(
         owner="surf-chatgpt",
         reference=OwnedPageRef(thread, 701, "https://chatgpt.com/c/abc123"),
@@ -1100,7 +1103,7 @@ def test_terminal_json_flushes_before_cleanup_and_survives_close_failure() -> No
 
 def test_session_handoff_reuses_existing_retained_protection_idempotently() -> None:
     bridge = InMemoryOwnedPageBridge()
-    thread = "surf-chatgpt-session-abc123"
+    thread = "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
     bridge.pages[thread] = MemoryPage(
         owner="surf-chatgpt",
         reference=OwnedPageRef(

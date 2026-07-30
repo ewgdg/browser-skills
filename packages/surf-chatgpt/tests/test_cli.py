@@ -153,7 +153,7 @@ def test_ask_normalizes_addressing_and_all_specified_options_before_dispatch() -
     assert request.session.id == "ABC_123-x"
     assert request.session.to_public_json() == {"id": "ABC_123-x"}
     assert request.session.canonical_url == "https://chatgpt.com/c/ABC_123-x"
-    assert request.session.thread == "surf-chatgpt-session-ABC_123-x"
+    assert request.session.thread == "surf-chatgpt-session-32fd83fa009bdf31e0f149bae4603063ce6c6f7f5e36bed23555af4ec5254036"
     assert request.model == "latest"
     assert request.thinking == "pro"
     assert request.wait_timeout_seconds == 12.5
@@ -308,7 +308,7 @@ def test_missing_empty_or_ambiguous_required_input_exits_2(argv: list[str]) -> N
 @pytest.mark.parametrize(
     "reference",
     [
-        "abc.def",
+        "abc%def",
         "http://chatgpt.com/c/abc",
         "https://www.chatgpt.com/c/abc",
         "https://chatgpt.com/c/abc?model=pro",

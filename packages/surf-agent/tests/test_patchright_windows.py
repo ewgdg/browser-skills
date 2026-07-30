@@ -43,6 +43,7 @@ class FakePage:
         self.closed = False
         self.goto_calls: list[str] = []
         self.evaluate_calls: list[str] = []
+        self.wait_timeout_calls: list[int] = []
 
     def is_closed(self) -> bool:
         return self.closed
@@ -60,6 +61,9 @@ class FakePage:
         if state is None:
             state = "session" if "/c/" in self.url else "pre_session"
         return {"state": state}
+
+    def wait_for_timeout(self, timeout: int) -> None:
+        self.wait_timeout_calls.append(timeout)
 
 
 class FakeSession:
@@ -139,15 +143,74 @@ class ProgrammedPage(FakePage):
         super().__init__(url)
         self.results = results
         self.before_evaluate = None
+        self.fill_calls: list[tuple[str, str]] = []
+        self.click_calls: list[str] = []
+        self.press_calls: list[tuple[str, str]] = []
+        self.keyboard_type_calls: list[str] = []
+        self.keyboard_press_calls: list[str] = []
+        self.keyboard = ProgrammedKeyboard(self)
 
-    def evaluate(self, source: str) -> object:
+    def evaluate(self, source: str, *arguments: object) -> object:
         self.evaluate_calls.append(source)
+        if arguments:
+            assert len(arguments) == 1
+            request = arguments[0]
+            assert isinstance(request, dict)
+            assert set(request) == {"expected", "selectors"}
+            assert "selectNodeContents" in source
+            return "exact"
         if self.before_evaluate is not None:
             self.before_evaluate(source)
         result = self.results[source]
         if isinstance(result, Exception):
             raise result
         return result
+
+    def locator(self, selector: str) -> "ProgrammedLocator":
+        return ProgrammedLocator(self, selector)
+
+
+class ProgrammedLocator:
+    def __init__(self, page: ProgrammedPage, selector: str) -> None:
+        self.page = page
+        self.selector = selector
+
+    def count(self) -> int:
+        return 1
+
+    def nth(self, index: int) -> "ProgrammedLocator":
+        assert index == 0
+        return self
+
+    def is_visible(self) -> bool:
+        return True
+
+    def fill(self, value: str, *, force: bool = False) -> None:
+        assert force is True
+        self.page.fill_calls.append((self.selector, value))
+
+    def evaluate(self, source: str) -> bool:
+        assert source == (
+            "(node) => { node.focus(); return document.activeElement === node; }"
+        )
+        return True
+
+    def click(self, *, force: bool = False) -> None:
+        self.page.click_calls.append(f"{self.selector}:{force}")
+
+    def press(self, key: str) -> None:
+        self.page.press_calls.append((self.selector, key))
+
+
+class ProgrammedKeyboard:
+    def __init__(self, page: ProgrammedPage) -> None:
+        self.page = page
+
+    def insert_text(self, value: str) -> None:
+        self.page.keyboard_type_calls.append(value)
+
+    def press(self, key: str) -> None:
+        self.page.keyboard_press_calls.append(key)
 
 
 class SequencedProgrammedPage(FakePage):
@@ -900,6 +963,44 @@ def test_owned_attempt_classification_returns_only_allow_listed_state(
     assert page.closed is False
 
 
+def test_owned_attempt_classification_retries_browser_evaluation_interruption(
+    tmp_path: Path,
+) -> None:
+    program = "classify hydrated attempt"
+    page = SequencedProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {
+            program: [
+                RuntimeError("private browser hydration interruption"),
+                {"state": "generating"},
+            ]
+        },
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-classify-attempt",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_page_token": 8,
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {"state": "generating"}
+    assert page.evaluate_calls == [program, program]
+    assert page.wait_timeout_calls == [100]
+
+
 def test_owned_explicit_result_extraction_allows_text_only_for_terminal_results(
     tmp_path: Path,
 ) -> None:
@@ -1397,6 +1498,7 @@ def test_owned_abandonment_stops_inspecting_after_stop_changes_page_scope(
         ("completed", "completed"),
         ("stopped", "stopped"),
         ("failed", "failed"),
+        ("rate_limited", "rate_limited"),
         ("human_intervention", None),
     ],
 )
@@ -1772,6 +1874,9 @@ def test_owned_prompt_submission_sets_irreversible_marker_before_prompt_mutation
             "expected_page_token": 12,
             "allowed_scope": "chatgpt",
             "expected_protection": None,
+            "prompt": "private prompt",
+            "composer_selectors": ["#prompt-textarea"],
+            "send_selectors": ['[data-testid="send-button"]'],
             "readiness_program": readiness_program,
             "submission_program": submission_program,
         },
@@ -1782,6 +1887,126 @@ def test_owned_prompt_submission_sets_irreversible_marker_before_prompt_mutation
         readiness_program: False,
         submission_program: True,
     }
+    assert slot.send_may_have_occurred is True
+
+
+def test_owned_prompt_submission_types_into_the_visible_controlled_editor_before_send(
+    tmp_path: Path,
+) -> None:
+    prompt = "private controlled-editor prompt"
+    readiness_program = "() => ({state: 'ready', selection: {}})"
+    submission_program = "() => ({state: 'submitted'})"
+
+    class FillableLocator:
+        def __init__(self, page: "FillablePage", selector: str) -> None:
+            self.page = page
+            self.selector = selector
+
+        def count(self) -> int:
+            return 1
+
+        def nth(self, index: int) -> "FillableLocator":
+            assert index == 0
+            return self
+
+        def is_visible(self) -> bool:
+            return True
+
+        def evaluate(self, source: str) -> bool:
+            assert self.selector == "#prompt-textarea"
+            assert source == (
+                "(node) => { node.focus(); return document.activeElement === node; }"
+            )
+            self.page.composer_focused = True
+            self.page.composer_focus_calls += 1
+            return True
+
+        def click(self, *, force: bool = False) -> None:
+            assert self.selector == '[data-testid="send-button"]'
+            assert force is False
+            self.page.native_clicks.append(self.selector)
+
+    class FillableKeyboard:
+        def __init__(self, page: "FillablePage") -> None:
+            self.page = page
+
+        def insert_text(self, value: str) -> None:
+            assert self.page.composer_focused is True
+            self.page.insert_calls += 1
+            if self.page.selection_prepared:
+                self.page.typed_prompt = value
+                self.page.selection_prepared = False
+            else:
+                self.page.typed_prompt = "existing private draft" + value
+
+        def press(self, key: str) -> None:
+            raise AssertionError(f"unexpected keyboard dispatch: {key}")
+
+    class FillablePage(ProgrammedPage):
+        def __init__(self) -> None:
+            super().__init__(
+                "https://chatgpt.com/",
+                {
+                    readiness_program: {"state": "ready", "selection": {}},
+                    submission_program: {"state": "submitted"},
+                },
+            )
+            self.composer_focused = False
+            self.composer_focus_calls = 0
+            self.insert_calls = 0
+            self.selection_prepared = False
+            self.typed_prompt: str | None = None
+            self.native_clicks: list[str] = []
+            self.keyboard = FillableKeyboard(self)
+
+        def locator(self, selector: str) -> FillableLocator:
+            return FillableLocator(self, selector)
+
+        def evaluate(self, source: str, *arguments: object) -> object:
+            if source in self.results:
+                return super().evaluate(source)
+            assert arguments == (
+                {"expected": prompt, "selectors": ["#prompt-textarea"]},
+            )
+            assert "selectNodeContents" in source
+            assert self.typed_prompt is not None
+            assert self.typed_prompt.endswith(prompt)
+            self.selection_prepared = True
+            return "selected"
+
+    page = FillablePage()
+
+    def assert_prompt_filled_before_submission(source: str) -> None:
+        if source == submission_program:
+            assert page.typed_prompt == prompt
+
+    page.before_evaluate = assert_prompt_filled_before_submission
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=12, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+
+    raw = runtime.call(
+        "owned-submit-prompt",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "prompt": prompt,
+            "composer_selectors": ["#prompt-textarea"],
+            "send_selectors": ['[data-testid="send-button"]'],
+            "readiness_program": readiness_program,
+            "submission_program": submission_program,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {"state": "submitted"}
+    assert prompt not in raw
+    assert page.typed_prompt == prompt
+    assert page.composer_focus_calls == 1
+    assert page.insert_calls == 2
+    assert page.native_clicks == ['[data-testid="send-button"]']
     assert slot.send_may_have_occurred is True
 
 
@@ -1809,6 +2034,9 @@ def test_owned_prompt_submission_does_not_mark_or_mutate_when_readiness_is_lost(
             "expected_page_token": 12,
             "allowed_scope": "chatgpt",
             "expected_protection": None,
+            "prompt": "private prompt",
+            "composer_selectors": ["#prompt-textarea"],
+            "send_selectors": ['[data-testid="send-button"]'],
             "readiness_program": readiness_program,
             "submission_program": submission_program,
         },
@@ -1817,6 +2045,50 @@ def test_owned_prompt_submission_does_not_mark_or_mutate_when_readiness_is_lost(
     assert json.loads(raw)["metadata"] == {"state": "challenge"}
     assert slot.send_may_have_occurred is False
     assert page.evaluate_calls == [readiness_program]
+
+
+def test_owned_prompt_submission_reports_rate_limit_on_each_side_of_send_barrier(
+    tmp_path: Path,
+) -> None:
+    readiness_program = "prepare"
+    submission_program = "submit"
+    page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {
+            readiness_program: {"state": "rate_limited"},
+            submission_program: {"state": "rate_limited"},
+        },
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=12, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+    request = {
+        "owner": "surf-chatgpt",
+        "thread": "temporary",
+        "expected_page_token": 12,
+        "allowed_scope": "chatgpt",
+        "expected_protection": None,
+        "prompt": "private prompt",
+        "composer_selectors": ["#prompt-textarea"],
+        "send_selectors": ['[data-testid="send-button"]'],
+        "readiness_program": readiness_program,
+        "submission_program": submission_program,
+    }
+
+    before_send = runtime.call("owned-submit-prompt", request)
+
+    assert json.loads(before_send)["metadata"] == {"state": "rate_limited"}
+    assert slot.send_may_have_occurred is False
+    assert page.evaluate_calls == [readiness_program]
+
+    page.results[readiness_program] = {"state": "ready", "selection": {}}
+    page.evaluate_calls.clear()
+    after_send = runtime.call("owned-submit-prompt", request)
+
+    assert json.loads(after_send)["metadata"] == {"state": "rate_limited"}
+    assert slot.send_may_have_occurred is True
+    assert page.evaluate_calls[0] == readiness_program
+    assert page.evaluate_calls[-1] == submission_program
 
 
 def test_owned_submission_retry_is_rejected_without_running_browser_code(
@@ -1896,12 +2168,67 @@ def test_owned_submission_failure_never_clears_marker_or_exposes_browser_details
             "expected_page_token": 12,
             "allowed_scope": "chatgpt",
             "expected_protection": None,
+            "prompt": "private prompt",
+            "composer_selectors": ["#prompt-textarea"],
+            "send_selectors": ['[data-testid="send-button"]'],
             "readiness_program": readiness_program,
             "submission_program": submission_program,
         },
     )
 
     assert json.loads(raw) == {"ok": False, "error": "inspection_failed"}
+    assert "private" not in raw
+    assert slot.send_may_have_occurred is True
+
+
+def test_owned_submission_transient_navigation_continues_assignment_observation(
+    tmp_path: Path,
+) -> None:
+    readiness_program = "() => ({state: 'ready', selection: {}})"
+    submission_program = "click send"
+    private_dispatch_error = RuntimeError("private click failure after dispatch")
+
+    class NavigationLocator(ProgrammedLocator):
+        def click(self, *, force: bool = False) -> None:
+            assert self.selector == '[data-testid="send-button"]'
+            assert force is False
+            self.page.url = "about:blank"
+            raise private_dispatch_error
+
+    class NavigationPage(ProgrammedPage):
+        def locator(self, selector: str) -> ProgrammedLocator:
+            if selector == '[data-testid="send-button"]':
+                return NavigationLocator(self, selector)
+            return super().locator(selector)
+
+    page = NavigationPage(
+        "https://chatgpt.com/",
+        {
+            readiness_program: {"state": "ready", "selection": {}},
+            submission_program: {"state": "submitted"},
+        },
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=12, owner="surf-chatgpt")
+    runtime.pages["temporary"] = slot
+
+    raw = runtime.call(
+        "owned-submit-prompt",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "prompt": "private prompt",
+            "composer_selectors": ["#prompt-textarea"],
+            "send_selectors": ['[data-testid="send-button"]'],
+            "readiness_program": readiness_program,
+            "submission_program": submission_program,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {"state": "submitted"}
     assert "private" not in raw
     assert slot.send_may_have_occurred is True
 
@@ -1930,6 +2257,9 @@ def test_owned_post_marker_gate_is_returned_without_clearing_submission_barrier(
             "expected_page_token": 12,
             "allowed_scope": "chatgpt",
             "expected_protection": None,
+            "prompt": "private prompt",
+            "composer_selectors": ["#prompt-textarea"],
+            "send_selectors": ['[data-testid="send-button"]'],
             "readiness_program": readiness_program,
             "submission_program": submission_program,
         },
@@ -2027,13 +2357,81 @@ def test_owned_assignment_observation_can_complete_a_follow_up_submission_barrie
     assert page.goto_calls == []
 
 
-def test_owned_assignment_gate_preserves_only_allow_listed_session_identity(
+def test_owned_assignment_browser_interruption_is_retryable_after_revalidation(
     tmp_path: Path,
 ) -> None:
-    program = "() => ({state: 'challenge', session_id: 'abc123'})"
+    program = "observe assignment"
+    private_navigation_error = RuntimeError("private browser hydration interruption")
     page = ProgrammedPage(
         "https://chatgpt.com/c/abc123",
-        {program: {"state": "challenge", "session_id": "abc123"}},
+        {program: private_navigation_error},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(
+        page=page,
+        page_token=12,
+        owner="surf-chatgpt",
+        send_may_have_occurred=True,
+    )
+    runtime.pages["temporary"] = slot
+
+    raw = runtime.call(
+        "owned-observe-assignment",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+            "completion_exact_url": None,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {"state": "not_ready"}
+    assert "private" not in raw
+    assert slot.send_may_have_occurred is True
+
+
+def test_owned_assignment_waits_for_post_dispatch_transient_url(
+    tmp_path: Path,
+) -> None:
+    page = ProgrammedPage("about:blank", {})
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(
+        page=page,
+        page_token=12,
+        owner="surf-chatgpt",
+        send_may_have_occurred=True,
+    )
+    runtime.pages["temporary"] = slot
+
+    raw = runtime.call(
+        "owned-observe-assignment",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "temporary",
+            "expected_page_token": 12,
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": "must not run on a transient route",
+            "completion_exact_url": None,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {"state": "not_ready"}
+    assert page.evaluate_calls == []
+
+
+@pytest.mark.parametrize("state", ["challenge", "rate_limited"])
+def test_owned_assignment_gate_preserves_only_allow_listed_session_identity(
+    tmp_path: Path,
+    state: str,
+) -> None:
+    program = "observe assignment gate"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {program: {"state": state, "session_id": "abc123"}},
     )
     runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
     slot = PageSlot(
@@ -2058,7 +2456,7 @@ def test_owned_assignment_gate_preserves_only_allow_listed_session_identity(
     )
 
     assert json.loads(raw)["metadata"] == {
-        "state": "challenge",
+        "state": state,
         "session_id": "abc123",
     }
     assert slot.send_may_have_occurred is True

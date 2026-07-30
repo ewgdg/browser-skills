@@ -111,6 +111,7 @@ class AttemptState(StrEnum):
     COMPLETED = "completed"
     STOPPED = "stopped"
     FAILED = "failed"
+    RATE_LIMITED = "rate_limited"
 
 
 class ObservationOutcome(StrEnum):
@@ -356,7 +357,11 @@ def _validate_attempt_relationships(value: JsonObject) -> None:
         return
     result = value["result"]
     if result is None:
-        if state not in {AttemptState.GENERATING, AttemptState.FAILED}:
+        if state not in {
+            AttemptState.GENERATING,
+            AttemptState.FAILED,
+            AttemptState.RATE_LIMITED,
+        }:
             raise ValueError("Terminal answer states require their result text.")
         return
     result_object = _require_object(result, "result")

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from surf_agent.owned_pages import CHATGPT_SESSION_ID_PATTERN
+
 
 CANONICAL_SESSION_URL_PREFIX = "https://chatgpt.com/c/"
 SESSION_THREAD_PREFIX = "surf-chatgpt-session-"
-_SESSION_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+", flags=re.ASCII)
+_SESSION_ID_PATTERN = re.compile(CHATGPT_SESSION_ID_PATTERN, flags=re.ASCII)
 
 
 class InvalidSessionAddress(ValueError):
@@ -42,7 +45,8 @@ class SessionAddress:
 
     @property
     def thread(self) -> str:
-        return f"{SESSION_THREAD_PREFIX}{self.id}"
+        digest = hashlib.sha256(self.id.encode()).hexdigest()
+        return f"{SESSION_THREAD_PREFIX}{digest}"
 
     def to_public_json(self) -> dict[str, Any]:
         return {"id": self.id}

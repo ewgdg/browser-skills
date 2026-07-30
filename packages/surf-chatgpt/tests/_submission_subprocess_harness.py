@@ -15,7 +15,10 @@ from typing import Any
 
 SUBMISSION_THREAD = "surf-chatgpt-submit-subprocess"
 SESSION_ID = "abc123"
-SESSION_THREAD = f"surf-chatgpt-session-{SESSION_ID}"
+SESSION_THREAD = (
+    "surf-chatgpt-session-"
+    "6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
+)
 HOME_URL = "https://chatgpt.com/"
 SESSION_URL = f"https://chatgpt.com/c/{SESSION_ID}"
 PAGE_TOKEN = 900

@@ -162,7 +162,10 @@ class OwnedPageSessionLifecycle:
                     "session": request.session.to_public_json(),
                     "attempt": {"state": attempt.state.value},
                 }
-                if attempt.state is OwnedPageAttemptState.FAILED:
+                if attempt.state in {
+                    OwnedPageAttemptState.FAILED,
+                    OwnedPageAttemptState.RATE_LIMITED,
+                }:
                     fields["result"] = None
                 return CommandOutcome.success(
                     fields,

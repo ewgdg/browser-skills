@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import json
 
-from surf_agent.owned_pages import OwnedPageClassifier, OwnedPageInspectionState
+from surf_agent.owned_pages import (
+    CHATGPT_SESSION_ID_PATTERN,
+    OwnedPageClassifier,
+    OwnedPageInspectionState,
+)
 
 
 CHALLENGE_SURFACE_SELECTORS = (
@@ -20,10 +24,12 @@ CHALLENGE_SURFACE_SELECTORS = (
     ".g-recaptcha",
 )
 COMPOSER_SELECTORS = (
-    "#prompt-textarea",
-    '[data-testid="composer-textarea"]',
+    "textarea#prompt-textarea",
+    '#prompt-textarea[contenteditable="true"]',
+    '[data-testid="composer-textarea"] textarea',
+    '[data-testid="composer-textarea"][contenteditable="true"]',
     'textarea[name="prompt-textarea"]',
-    ".ProseMirror",
+    '.ProseMirror[contenteditable="true"]',
     '[contenteditable="true"][data-virtualkeyboard="true"]',
     '[contenteditable="true"]',
 )
@@ -43,7 +49,7 @@ CURRENT_SESSION_CLASSIFIER = OwnedPageClassifier(
       !node.closest('[hidden], [aria-hidden="true"], [inert]')
     );
   }};
-  if (/^\/c\/[A-Za-z0-9_-]+$/.test(location.pathname)) {{
+  if (/^\/c\/{CHATGPT_SESSION_ID_PATTERN}$/.test(location.pathname)) {{
     return {{state: {_STATE_VALUES[OwnedPageInspectionState.SESSION]}}};
   }}
   const challengeSelectors = {json.dumps(CHALLENGE_SURFACE_SELECTORS)};

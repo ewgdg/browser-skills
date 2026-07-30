@@ -110,9 +110,20 @@ generation is active returns `not_ready`; waiting returns `timed_out` only when 
 observer deadline expires. Neither outcome stops or changes the response attempt.
 
 Completed results use `{"text":"...","partial":false}`. An explicitly stopped
-response uses `partial:true`; a failed response has a null result. Only explicit
-`session result` commands extract response text. Status and terminal cleanup remain
-metadata-only.
+response uses `partial:true`; failed and rate-limited responses have a null result.
+Only explicit `session result` commands extract response text. Status and terminal
+cleanup remain metadata-only.
+
+An explicit visible ChatGPT request limit before send is an operational failure:
+
+```json
+{"ok":false,"error":{"type":"rate_limited","message":"ChatGPT is rate limiting requests.","hint":"Wait for the account limit to reset before submitting a new prompt."}}
+```
+
+If the limit appears after send may have occurred but before a durable session ID is
+known, the outcome remains `submission_outcome_indeterminate` with a `rate_limited`
+cause and preserved thread. Never retry that prompt automatically. Once a session is
+known, status and result report `{"attempt":{"state":"rate_limited"},"result":null}`.
 
 After terminal JSON is written and flushed, the unprotected page closes through a
 guarded best-effort cleanup. Use `--retain` when the terminal page must remain open.

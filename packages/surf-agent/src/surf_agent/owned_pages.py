@@ -54,6 +54,7 @@ class OwnedPageSelectionDimension(StrEnum):
 
 class OwnedPagePreparationState(StrEnum):
     READY = "ready"
+    RATE_LIMITED = "rate_limited"
     LOGIN_REQUIRED = "login_required"
     CHALLENGE = "challenge"
     MODEL_UNAVAILABLE = "model_unavailable"
@@ -62,6 +63,7 @@ class OwnedPagePreparationState(StrEnum):
 
 class OwnedPageSubmissionState(StrEnum):
     SUBMITTED = "submitted"
+    RATE_LIMITED = "rate_limited"
     LOGIN_REQUIRED = "login_required"
     CHALLENGE = "challenge"
     MODEL_UNAVAILABLE = "model_unavailable"
@@ -71,6 +73,7 @@ class OwnedPageSubmissionState(StrEnum):
 class OwnedPageAssignmentState(StrEnum):
     SESSION = "session"
     NOT_READY = "not_ready"
+    RATE_LIMITED = "rate_limited"
     LOGIN_REQUIRED = "login_required"
     CHALLENGE = "challenge"
     UI_CHANGED = "ui_changed"
@@ -88,6 +91,7 @@ class OwnedPageAttemptState(StrEnum):
     COMPLETED = "completed"
     STOPPED = "stopped"
     FAILED = "failed"
+    RATE_LIMITED = "rate_limited"
 
 
 class OwnedPageRetentionReason(StrEnum):
@@ -100,7 +104,13 @@ class OwnedPageRetentionReason(StrEnum):
 REQUIRED_OWNED_PAGE_CAPABILITIES = frozenset(OwnedPageCapability)
 CHATGPT_HOSTNAME = "chatgpt.com"
 CHATGPT_PRE_SESSION_PATHS = frozenset({"", "/", "/auth/login", "/auth/login/"})
-CHATGPT_SESSION_PATH_PATTERN = re.compile(r"^/c/[A-Za-z0-9_-]+$")
+CHATGPT_SESSION_ID_PATTERN = (
+    r"(?=[A-Za-z0-9._~-]*[A-Za-z0-9])[A-Za-z0-9._~-]+"
+)
+CHATGPT_SESSION_PATH_PATTERN = re.compile(
+    rf"^/c/{CHATGPT_SESSION_ID_PATTERN}$",
+    flags=re.ASCII,
+)
 MAX_RECENT_SESSIONS = 10
 
 
@@ -204,8 +214,29 @@ class SubmitOwnedPagePrompt:
     expected_page_token: int
     allowed_scope: OwnedPageScope
     expected_protection: OwnedPageProtection | None
+    prompt: str
+    composer_selectors: tuple[str, ...]
+    send_selectors: tuple[str, ...]
     readiness_program: OwnedPageProgram
     submission_program: OwnedPageProgram
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.prompt, str) or not self.prompt:
+            raise ValueError("Owned-page prompt submission requires prompt text.")
+        _validate_submission_selectors(self.composer_selectors, "composer")
+        _validate_submission_selectors(self.send_selectors, "send")
+
+
+def _validate_submission_selectors(value: object, control: str) -> None:
+    if (
+        not isinstance(value, tuple)
+        or not value
+        or any(not isinstance(selector, str) or not selector for selector in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError(
+            f"Owned-page prompt submission requires unique {control} selectors."
+        )
 
 
 @dataclass(frozen=True)
@@ -645,6 +676,9 @@ class PatchrightOwnedPageBridge:
     ) -> OwnedPagePromptSubmission:
         payload: dict[str, object] = {
             **_guard_payload(request),
+            "prompt": request.prompt,
+            "composer_selectors": list(request.composer_selectors),
+            "send_selectors": list(request.send_selectors),
             "readiness_program": request.readiness_program.source,
             "submission_program": request.submission_program.source,
         }
@@ -1164,6 +1198,7 @@ def _decode_assignment_observation(raw: str) -> OwnedPageAssignmentObservation:
         raise ValueError("Owned-page bridge returned invalid assignment metadata.") from error
     allows_session_identity = state in {
         OwnedPageAssignmentState.SESSION,
+        OwnedPageAssignmentState.RATE_LIMITED,
         OwnedPageAssignmentState.LOGIN_REQUIRED,
         OwnedPageAssignmentState.CHALLENGE,
     }

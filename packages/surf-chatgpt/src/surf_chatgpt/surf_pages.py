@@ -51,9 +51,10 @@ from surf_agent.errors import BridgeIdentityUnproven, BridgeUnavailable, SurfAge
 from .contracts import JsonObject, JsonValue, Pace
 from .dom.attempt import classify_latest_attempt_source, extract_latest_result_source
 from .dom.cleanup import classify_retained_page_source, request_stop_source
-from .dom.readiness import CURRENT_SESSION_CLASSIFIER
+from .dom.readiness import COMPOSER_SELECTORS, CURRENT_SESSION_CLASSIFIER
 from .dom.recent import discover_recent_sessions_source
 from .dom.submission import (
+    SEND_SELECTORS,
     observe_session_assignment_source,
     prepare_submission_source,
     send_submission_source,
@@ -202,6 +203,17 @@ class ChatGptOwnedPages:
         *,
         expected_protection: OwnedPageProtection | None,
     ) -> None:
+        self.close_pre_session(
+            page,
+            expected_protection=expected_protection,
+        )
+
+    def close_pre_session(
+        self,
+        page: OwnedPageRef,
+        *,
+        expected_protection: OwnedPageProtection | None,
+    ) -> None:
         self._require_capabilities()
         self._run(
             lambda: self._bridge.close_discovery(
@@ -287,6 +299,9 @@ class ChatGptOwnedPages:
                     expected_page_token=page.page_token,
                     allowed_scope=allowed_scope,
                     expected_protection=expected_protection,
+                    prompt=prompt,
+                    composer_selectors=COMPOSER_SELECTORS,
+                    send_selectors=SEND_SELECTORS,
                     readiness_program=OwnedPageProgram(
                         prepare_submission_source(
                             model_query=None,

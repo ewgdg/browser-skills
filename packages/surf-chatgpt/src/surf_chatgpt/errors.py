@@ -13,6 +13,7 @@ class PublicErrorType(StrEnum):
     BROWSER_UNAVAILABLE = "browser_unavailable"
     CAPACITY_EXCEEDED = "capacity_exceeded"
     HUMAN_INTERVENTION_REQUIRED = "human_intervention_required"
+    RATE_LIMITED = "rate_limited"
     SUBMISSION_OUTCOME_INDETERMINATE = "submission_outcome_indeterminate"
     SESSION_REBIND_FAILED = "session_rebind_failed"
     SESSION_NOT_FOUND = "session_not_found"
@@ -31,6 +32,7 @@ class PublicErrorCauseType(StrEnum):
     # The accepted specification defines no general cause vocabulary. Keep the
     # demonstrated bridge-disconnect cause closed until a lifecycle ticket needs more.
     BRIDGE_DISCONNECTED = "bridge_disconnected"
+    RATE_LIMITED = "rate_limited"
 
 
 class SubmissionPhase(StrEnum):
@@ -74,6 +76,10 @@ _PUBLIC_ERROR_DESCRIPTIONS: Final[dict[PublicErrorType, _PublicErrorDescription]
     PublicErrorType.HUMAN_INTERVENTION_REQUIRED: _PublicErrorDescription(
         "The browser requires user intervention.",
         "Complete the requested browser action manually before retrying.",
+    ),
+    PublicErrorType.RATE_LIMITED: _PublicErrorDescription(
+        "ChatGPT is rate limiting requests.",
+        "Wait for the account limit to reset before submitting a new prompt.",
     ),
     PublicErrorType.SUBMISSION_OUTCOME_INDETERMINATE: _PublicErrorDescription(
         "The prompt may have been sent, but no recoverable ChatGPT session ID was observed.",
@@ -124,6 +130,7 @@ _PUBLIC_ERROR_DESCRIPTIONS: Final[dict[PublicErrorType, _PublicErrorDescription]
 
 _PUBLIC_CAUSE_MESSAGES: Final[dict[PublicErrorCauseType, str]] = {
     PublicErrorCauseType.BRIDGE_DISCONNECTED: "The browser bridge connection ended.",
+    PublicErrorCauseType.RATE_LIMITED: "ChatGPT reported a request rate limit.",
 }
 
 

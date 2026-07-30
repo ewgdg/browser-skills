@@ -112,6 +112,80 @@ def test_discovery_supports_a_rendered_label_followed_by_its_chat_list(
     }
 
 
+def test_discovery_waits_for_initial_document_hydration(page: Page) -> None:
+    _set_history_fixture(page, '<main id="application"></main>')
+    page.evaluate(
+        """() => {
+          Object.defineProperty(document, 'readyState', {
+            value: 'interactive',
+            configurable: true,
+          });
+          setTimeout(() => {
+            document.querySelector('#application').innerHTML = `
+              <nav aria-label="Chat history">
+                <section aria-labelledby="chats-heading">
+                  <h2 id="chats-heading">Chats</h2>
+                  <ol><li><a href="/c/hydrated">Hydrated title</a></li></ol>
+                </section>
+              </nav>
+            `;
+          }, 50);
+        }"""
+    )
+
+    result = page.evaluate(discover_recent_sessions_source())
+
+    assert result == {
+        "state": "sessions",
+        "sessions": [{"id": "hydrated", "title": "Hydrated title"}],
+    }
+
+
+def test_discovery_supports_one_exclusive_ungrouped_chat_history_nav(
+    page: Page,
+) -> None:
+    _set_history_fixture(
+        page,
+        """
+        <nav aria-label="Chat history">
+          <ol>
+            <li><a href="/c/first">First visible title</a></li>
+            <li><a href="/c/second">Second visible title</a></li>
+          </ol>
+        </nav>
+        <a href="/settings">Settings</a>
+        """,
+    )
+
+    result = page.evaluate(discover_recent_sessions_source())
+
+    assert result == {
+        "state": "sessions",
+        "sessions": [
+            {"id": "first", "title": "First visible title"},
+            {"id": "second", "title": "Second visible title"},
+        ],
+    }
+
+
+def test_discovery_rejects_an_ungrouped_history_with_canonical_links_outside_it(
+    page: Page,
+) -> None:
+    _set_history_fixture(
+        page,
+        """
+        <nav aria-label="Chat history">
+          <a href="/c/inside">Inside title</a>
+        </nav>
+        <section><a href="/c/outside">Outside title</a></section>
+        """,
+    )
+
+    result = page.evaluate(discover_recent_sessions_source())
+
+    assert result == {"state": "ui_changed"}
+
+
 def test_discovery_bounds_unique_candidates_and_excludes_non_chat_links(
     page: Page,
 ) -> None:

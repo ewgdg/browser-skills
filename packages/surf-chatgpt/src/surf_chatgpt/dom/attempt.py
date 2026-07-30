@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from .readiness import CHALLENGE_SURFACE_SELECTORS
+from .rate_limit import rate_limit_helpers_source
 
 
 # The data-turn guard excludes nested error markers whose test IDs share the
@@ -79,9 +80,14 @@ def attempt_helpers_source() -> str:
     ))).filter(isVisible);
   }}
 
+  {rate_limit_helpers_source()}
+
   function classifyLatestAttempt() {{
     if (visibleMatches(document, {json.dumps(GATE_SELECTORS)}).length > 0) {{
       return {{state: 'unrecognized'}};
+    }}
+    if (hasVisibleRateLimit()) {{
+      return {{state: 'rate_limited', turn: null, message: null}};
     }}
     const turns = Array.from(document.querySelectorAll({json.dumps(TURN_SELECTOR)}));
     const turnIds = turns.map((turn) => turn.getAttribute('data-testid'));

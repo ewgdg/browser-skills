@@ -295,6 +295,14 @@ class SubmissionLifecycle:
             session = self._session_from_assignment(assignment.session_id, context)
             if isinstance(session, CommandOutcome):
                 return session
+            if assignment.state is OwnedPageAssignmentState.RATE_LIMITED:
+                if session is None:
+                    return self._after_send_state_outcome(
+                        assignment.state,
+                        context.page,
+                        context.protection,
+                    )
+                return self._finish_rate_limited_handshake(context, session)
             if assignment.state is OwnedPageAssignmentState.SESSION:
                 assert session is not None
                 return session
@@ -327,7 +335,9 @@ class SubmissionLifecycle:
         try:
             return self._pages.observe_assignment(
                 context.page,
-                allowed_scope=context.allowed_scope,
+                # Dispatch is the authorized transition from a pre-session route to
+                # the newly assigned canonical conversation on the same owned page.
+                allowed_scope=OwnedPageScope.CHATGPT,
                 expected_protection=context.protection,
                 completion_exact_url=context.completion_exact_url,
             )
@@ -392,6 +402,27 @@ class SubmissionLifecycle:
         self._transition(SubmissionPhase.HANDSHAKE_COMPLETE)
         return self._submission_success(session, selection)
 
+    def _finish_rate_limited_handshake(
+        self,
+        context: _SubmissionContext,
+        session: SessionAddress,
+    ) -> CommandOutcome:
+        self._progress.session = session
+        if not context.is_follow_up:
+            self._transition(SubmissionPhase.ID_KNOWN_REBIND_PENDING)
+            try:
+                self._pages.rebind_submission(
+                    context.page,
+                    session,
+                    expected_protection=context.protection,
+                )
+            except BridgeUnavailable:
+                return self._rebind_failure_outcome(bridge_disconnected=True)
+            except (PublicError, ValueError):
+                return self._rebind_failure_outcome()
+        self._transition(SubmissionPhase.HANDSHAKE_COMPLETE)
+        return self._known_session_failure(PublicErrorType.RATE_LIMITED)
+
     def _before_send_preparation_failure(
         self,
         state: OwnedPagePreparationState,
@@ -400,6 +431,25 @@ class SubmissionLifecycle:
     ) -> CommandOutcome:
         if state is OwnedPagePreparationState.MODEL_UNAVAILABLE:
             raise PublicError(PublicErrorType.MODEL_UNAVAILABLE)
+        if state is OwnedPagePreparationState.RATE_LIMITED:
+            public_fields = (
+                {"thread": page.thread}
+                if expected_protection is not None
+                else None
+            )
+            cleanup = (
+                None
+                if expected_protection is not None
+                else lambda: self._pages.close_pre_session(
+                    page,
+                    expected_protection=None,
+                )
+            )
+            return CommandOutcome.failure(
+                PublicError(PublicErrorType.RATE_LIMITED),
+                public_fields=public_fields,
+                post_output_cleanup=cleanup,
+            )
         if state is OwnedPagePreparationState.UI_CHANGED:
             raise PublicError(PublicErrorType.UI_CHANGED)
         action = _human_gate_action(state.value)
@@ -418,6 +468,13 @@ class SubmissionLifecycle:
         page: OwnedPageRef,
         expected_protection: OwnedPageProtection | None,
     ) -> CommandOutcome:
+        if (
+            state is OwnedPageSubmissionState.RATE_LIMITED
+            or state is OwnedPageAssignmentState.RATE_LIMITED
+        ):
+            if self._progress.session is not None:
+                return self._known_session_failure(PublicErrorType.RATE_LIMITED)
+            return self._indeterminate_outcome(rate_limited=True)
         action = _human_gate_action(state.value)
         if self._progress.session is not None:
             if action is None:
@@ -517,16 +574,22 @@ class SubmissionLifecycle:
         self,
         *,
         bridge_disconnected: bool = False,
+        rate_limited: bool = False,
         handoff_action: str | None = None,
         exit_code: ProcessExitCode = ProcessExitCode.OPERATIONAL_FAILURE,
     ) -> CommandOutcome:
         assert self._progress.thread is not None
+        cause_type = None
+        if bridge_disconnected:
+            cause_type = PublicErrorCauseType.BRIDGE_DISCONNECTED
+        elif rate_limited:
+            cause_type = PublicErrorCauseType.RATE_LIMITED
         cause = (
             PublicErrorCause(
-                PublicErrorCauseType.BRIDGE_DISCONNECTED,
+                cause_type,
                 SubmissionPhase.SEND_MAY_HAVE_OCCURRED_ID_UNKNOWN,
             )
-            if bridge_disconnected
+            if cause_type is not None
             else None
         )
         public_fields = {"thread": self._progress.thread}

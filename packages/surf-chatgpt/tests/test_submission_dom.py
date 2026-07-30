@@ -151,6 +151,10 @@ def _install_send_observer(page: Page, *, enable_on_input: bool = False) -> None
     )
 
 
+def _fill_prompt(page: Page, prompt: str) -> None:
+    page.locator("#prompt-textarea").fill(prompt)
+
+
 def _prepare(page: Page, *, allow_logged_out: bool = False) -> dict[str, object]:
     return page.evaluate(
         prepare_submission_source(
@@ -191,6 +195,37 @@ def test_prepare_reports_visible_challenge_without_dom_details(page: Page) -> No
     assert _prepare(page) == {"state": "challenge"}
 
 
+def test_prepare_reports_visible_rate_limit_without_dom_details(page: Page) -> None:
+    page.set_content(
+        _composer_fixture(
+            extra=(
+                '<div role="alert" style="width:20px;height:20px">'
+                "Too many requests. Please try again later."
+                "</div>"
+            )
+        )
+    )
+
+    assert _prepare(page) == {"state": "rate_limited"}
+
+
+def test_prepare_ignores_hidden_or_conversation_rate_limit_text(page: Page) -> None:
+    page.set_content(
+        _composer_fixture(
+            extra="""
+              <div role="alert" hidden>Too many requests</div>
+              <section data-testid="conversation-turn-1" data-turn="user">
+                <div data-message-author-role="user" data-message-id="user-1">
+                  Too many requests is the text of my question.
+                </div>
+              </section>
+            """
+        )
+    )
+
+    assert _prepare(page) == {"state": "ready", "selection": {}}
+
+
 def test_prepare_reports_visible_login_page(page: Page) -> None:
     _set_url_fixture(
         page,
@@ -220,6 +255,25 @@ def test_prepare_rejects_missing_visible_composer_or_send(page: Page) -> None:
     page.set_content(
         '<main><button aria-label="Open profile menu">Account</button></main>'
     )
+
+    assert _prepare(page) == {"state": "ui_changed"}
+
+
+def test_prepare_rejects_noneditable_prompt_wrapper(page: Page) -> None:
+    page.set_content(
+        """
+        <button aria-label="Open profile menu">Account</button>
+        <div id="prompt-textarea" style="width:20px;height:20px">Wrapper text</div>
+        <button data-testid="send-button" type="button">Send</button>
+        """
+    )
+
+    assert _prepare(page) == {"state": "ui_changed"}
+
+
+def test_prepare_rejects_nonempty_composer_before_submission(page: Page) -> None:
+    page.set_content(_composer_fixture())
+    page.locator("#prompt-textarea").fill("existing draft")
 
     assert _prepare(page) == {"state": "ui_changed"}
 
@@ -333,12 +387,13 @@ def test_prepare_safely_encodes_unavailable_query_without_leaking_it(
     assert page.evaluate("window.exfiltrated") is None
 
 
-def test_send_injects_positional_prompt_and_issues_one_click_sequence(
+def test_send_verifies_positional_prompt_without_synthetic_click(
     page: Page,
 ) -> None:
     canary_prompt = 'CANARY-secret-42 "; window.exfiltrated = true; // \\ newline\nend'
     page.set_content(_send_fixture())
     _install_send_observer(page)
+    _fill_prompt(page, canary_prompt)
 
     result = page.evaluate(
         send_submission_source(
@@ -350,20 +405,119 @@ def test_send_injects_positional_prompt_and_issues_one_click_sequence(
 
     assert result == {"state": "submitted"}
     assert "CANARY-secret-42" not in str(result)
-    assert page.evaluate("window.promptAtSend") == canary_prompt
     assert page.evaluate("window.exfiltrated") is None
-    assert page.evaluate("window.sendEventCounts") == {
-        "pointerdown": 1,
-        "mousedown": 1,
-        "pointerup": 1,
-        "mouseup": 1,
-        "click": 1,
-    }
+    assert page.evaluate("window.sendEventCounts") == {}
 
 
-def test_send_natural_pacing_waits_after_injection_before_click(page: Page) -> None:
+def test_send_accepts_contenteditable_state_filled_through_browser_primitive(
+    page: Page,
+) -> None:
+    page.set_content(
+        """
+        <button aria-label="Open profile menu">Account</button>
+        <form>
+          <div id="prompt-textarea" contenteditable="true"
+               style="width:20px;height:20px"></div>
+          <button data-testid="send-button" type="button" disabled>Send</button>
+        </form>
+        """
+    )
+    page.evaluate(
+        """() => {
+          const composer = document.querySelector('#prompt-textarea');
+          const send = document.querySelector('[data-testid="send-button"]');
+          composer.addEventListener('input', (event) => {
+            window.editorInputWasTrusted = event.isTrusted;
+            send.disabled = !event.isTrusted;
+          });
+          send.addEventListener('click', () => {
+            window.promptAtSend = composer.textContent;
+          });
+        }"""
+    )
+    _fill_prompt(page, "native editor prompt")
+
+    result = page.evaluate(
+        send_submission_source(
+            "native editor prompt",
+            allow_logged_out=False,
+            pace="none",
+        )
+    )
+
+    assert result == {"state": "submitted"}
+    assert page.evaluate("window.editorInputWasTrusted") is True
+    assert page.evaluate("window.promptAtSend") is None
+
+
+def test_send_waits_for_controlled_editor_to_enable_send(page: Page) -> None:
+    page.set_content(
+        """
+        <button aria-label="Open profile menu">Account</button>
+        <form>
+          <div id="prompt-textarea" contenteditable="true"
+               style="width:20px;height:20px"></div>
+          <button data-testid="send-button" type="button" disabled>Send</button>
+        </form>
+        """
+    )
+    page.evaluate(
+        """() => {
+          const composer = document.querySelector('#prompt-textarea');
+          const send = document.querySelector('[data-testid="send-button"]');
+          composer.addEventListener('input', () => {
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              send.disabled = false;
+            }));
+          });
+        }"""
+    )
+    _fill_prompt(page, "reconciled prompt")
+
+    result = page.evaluate(
+        send_submission_source(
+            "reconciled prompt",
+            allow_logged_out=False,
+            pace="none",
+        )
+    )
+
+    assert result == {"state": "submitted"}
+
+
+def test_send_waits_for_authenticated_surface_to_reconcile_after_fill(
+    page: Page,
+) -> None:
+    page.set_content(_send_fixture())
+    page.evaluate(
+        """() => {
+          const composer = document.querySelector('#prompt-textarea');
+          const account = document.querySelector('[aria-label="Open profile menu"]');
+          composer.addEventListener('input', () => {
+            account.remove();
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+              document.body.prepend(account);
+            }));
+          });
+        }"""
+    )
+    _fill_prompt(page, "reconciled authenticated prompt")
+
+    result = page.evaluate(
+        send_submission_source(
+            "reconciled authenticated prompt",
+            allow_logged_out=False,
+            pace="none",
+        )
+    )
+
+    assert result == {"state": "submitted"}
+
+
+def test_send_natural_pacing_waits_after_injection_before_dispatch(page: Page) -> None:
     page.set_content(_send_fixture(disabled=True))
     _install_send_observer(page, enable_on_input=True)
+    _fill_prompt(page, "paced prompt")
     page.evaluate(
         """() => { window.setTimeout = (callback, delay) => {
           window.sampledPaceDelay = delay;
@@ -385,12 +539,14 @@ def test_send_natural_pacing_waits_after_injection_before_click(page: Page) -> N
     assert NATURAL_PACING_PROFILE.minimum_seconds <= sampled_seconds
     assert sampled_seconds <= NATURAL_PACING_PROFILE.maximum_seconds
     events = page.evaluate("window.submissionEvents")
-    assert events.index("input") < events.index("pace") < events.index("click")
+    assert events.index("input") < events.index("pace")
+    assert "click" not in events
 
 
 def test_send_none_pacing_never_waits(page: Page) -> None:
     page.set_content(_send_fixture())
     _install_send_observer(page)
+    _fill_prompt(page, "immediate prompt")
     page.evaluate(
         """() => { window.setTimeout = () => {
           window.submissionEvents.push('unexpected-pace');
@@ -439,8 +595,33 @@ def test_send_reaffirms_visible_gate_before_injection(
     assert page.evaluate("window.sendEventCounts") == {}
 
 
+def test_send_reaffirms_visible_rate_limit_before_injection(page: Page) -> None:
+    page.set_content(
+        _send_fixture(
+            extra=(
+                '<div data-testid="request-error" role="alert" '
+                'style="width:20px;height:20px">Too many requests</div>'
+            )
+        )
+    )
+    _install_send_observer(page)
+
+    result = page.evaluate(
+        send_submission_source(
+            "must not be injected",
+            allow_logged_out=False,
+            pace="none",
+        )
+    )
+
+    assert result == {"state": "rate_limited"}
+    assert page.locator("#prompt-textarea").input_value() == ""
+    assert page.evaluate("window.sendEventCounts") == {}
+
+
 def test_send_allows_logged_out_composer_when_explicit(page: Page) -> None:
     page.set_content(_send_fixture(authenticated=False))
+    _fill_prompt(page, "anonymous prompt")
 
     result = page.evaluate(
         send_submission_source(
@@ -464,6 +645,7 @@ def test_send_allows_logged_out_composer_when_explicit(page: Page) -> None:
 def test_send_does_not_click_disabled_or_missing_send(page: Page, fixture: str) -> None:
     page.set_content(fixture)
     _install_send_observer(page)
+    _fill_prompt(page, "unsent prompt")
 
     result = page.evaluate(
         send_submission_source(
@@ -480,13 +662,13 @@ def test_send_does_not_click_disabled_or_missing_send(page: Page, fixture: str) 
 def test_assignment_returns_id_only_for_exact_canonical_session_url(page: Page) -> None:
     _set_url_fixture(
         page,
-        "https://chatgpt.com/c/Session_abc-123",
+        "https://chatgpt.com/c/Session.~abc-123",
         '<main data-message-author-role="assistant">CANARY terminal answer</main>',
     )
 
     result = page.evaluate(observe_session_assignment_source())
 
-    assert result == {"state": "session", "session_id": "Session_abc-123"}
+    assert result == {"state": "session", "session_id": "Session.~abc-123"}
     assert "CANARY" not in str(result)
     assert "chatgpt.com" not in str(result)
 
@@ -494,8 +676,6 @@ def test_assignment_returns_id_only_for_exact_canonical_session_url(page: Page) 
 @pytest.mark.parametrize(
     "url",
     [
-        "https://chatgpt.com/c/abc123?tracking=CANARY",
-        "https://chatgpt.com/c/abc123#CANARY",
         "https://chatgpt.com/share/abc123",
         "https://www.chatgpt.com/c/abc123",
     ],
@@ -509,12 +689,46 @@ def test_assignment_rejects_noncanonical_routes(page: Page, url: str) -> None:
     assert "CANARY" not in str(result)
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://chatgpt.com/?model=CANARY",
+        "https://chatgpt.com/c/abc123?tracking=CANARY",
+        "https://chatgpt.com/c/abc123#CANARY",
+    ],
+)
+def test_assignment_waits_without_exposing_identity_on_transitional_routes(
+    page: Page,
+    url: str,
+) -> None:
+    _set_url_fixture(page, url, _composer_fixture())
+
+    result = page.evaluate(observe_session_assignment_source())
+
+    assert result == {"state": "not_ready"}
+    assert "abc123" not in str(result)
+    assert "CANARY" not in str(result)
+
+
 def test_assignment_reports_not_ready_before_chatgpt_assigns_route(page: Page) -> None:
     _set_url_fixture(page, "https://chatgpt.com/", _composer_fixture())
 
     result = page.evaluate(observe_session_assignment_source())
 
     assert result == {"state": "not_ready"}
+
+
+def test_assignment_waits_without_exposing_provisional_web_identity(page: Page) -> None:
+    _set_url_fixture(
+        page,
+        "https://chatgpt.com/c/WEB:12345678-abcd-4321-9876-123456789abc",
+        _composer_fixture(),
+    )
+
+    result = page.evaluate(observe_session_assignment_source())
+
+    assert result == {"state": "not_ready"}
+    assert "WEB" not in str(result)
 
 
 def test_terminal_response_dom_does_not_manufacture_assignment(page: Page) -> None:
@@ -557,6 +771,32 @@ def test_assignment_reports_visible_post_send_challenge(page: Page) -> None:
     result = page.evaluate(observe_session_assignment_source())
 
     assert result == {"state": "challenge"}
+
+
+def test_assignment_reports_visible_post_send_rate_limit(page: Page) -> None:
+    _set_url_fixture(
+        page,
+        "https://chatgpt.com/",
+        '<div data-testid="request-error" role="alert">Too many requests</div>',
+    )
+
+    result = page.evaluate(observe_session_assignment_source())
+
+    assert result == {"state": "rate_limited"}
+
+
+def test_assignment_preserves_known_session_id_with_visible_rate_limit(
+    page: Page,
+) -> None:
+    _set_url_fixture(
+        page,
+        "https://chatgpt.com/c/abc123",
+        '<div data-testid="request-error" role="alert">Too many requests</div>',
+    )
+
+    result = page.evaluate(observe_session_assignment_source())
+
+    assert result == {"state": "rate_limited", "session_id": "abc123"}
 
 
 def test_assignment_preserves_known_session_id_when_a_challenge_is_visible(

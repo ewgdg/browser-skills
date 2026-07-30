@@ -81,6 +81,7 @@ class PatchrightRetainedPageOperations:
                 OwnedPageAttemptState.COMPLETED.value,
                 OwnedPageAttemptState.STOPPED.value,
                 OwnedPageAttemptState.FAILED.value,
+                OwnedPageAttemptState.RATE_LIMITED.value,
             }:
                 try:
                     await self._runtime._maybe_await(slot.page.close())
@@ -199,6 +200,7 @@ class PatchrightRetainedPageOperations:
             OwnedPageAttemptState.COMPLETED.value,
             OwnedPageAttemptState.STOPPED.value,
             OwnedPageAttemptState.FAILED.value,
+            OwnedPageAttemptState.RATE_LIMITED.value,
             "human_intervention",
         }:
             return self._error(OwnedPageBridgeErrorCode.ABANDONMENT_FAILED)

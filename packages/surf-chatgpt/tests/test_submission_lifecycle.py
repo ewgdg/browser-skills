@@ -13,6 +13,7 @@ from surf_agent.errors import BridgeUnavailable
 from surf_agent.owned_pages import (
     AllocateOwnedPage,
     ClassifyOwnedPageAttempt,
+    CloseOwnedDiscoveryPage,
     CloseTerminalOwnedPage,
     ExtractOwnedPageResult,
     InspectOwnedPage,
@@ -32,6 +33,7 @@ from surf_agent.owned_pages import (
     OwnedPageRef,
     OwnedPageSelection,
     OwnedPageSelectionDimension,
+    OwnedPageScope,
     OwnedPageSubmissionAlreadyAttempted,
     OwnedPageSubmissionPreparation,
     OwnedPageSubmissionState,
@@ -220,6 +222,13 @@ class ScriptedSubmissionBridge:
             raise AssertionError("test bridge received stale protection")
         del self.pages[request.thread]
 
+    def close_discovery(self, request: CloseOwnedDiscoveryPage) -> None:
+        self.calls.append(("close_pre_session", request))
+        page = self._guarded_page(request.thread, request.expected_page_token)
+        if page.protection is not request.expected_protection:
+            raise AssertionError("test bridge received stale protection")
+        del self.pages[request.thread]
+
     def _guarded_page(self, thread: str, page_token: int) -> SubmissionPage:
         page = self.pages[thread]
         if page.reference.page_token != page_token:
@@ -276,10 +285,18 @@ def test_plain_ask_sends_once_rebinds_the_exact_page_then_returns_id_only() -> N
         "observe_assignment",
         "rebind",
     ]
-    session_page = bridge.pages["surf-chatgpt-session-abc123"]
+    session_page = bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"]
     assert session_page.reference.page_token == 900
     assert session_page.reference.exact_url == "https://chatgpt.com/c/abc123"
     assert session_page.send_may_have_occurred is False
+    requests = {name: request for name, request in bridge.calls}
+    assert requests["prepare_submission"].allowed_scope is (
+        OwnedPageScope.CHATGPT_PRE_SESSION
+    )
+    assert requests["submit_prompt"].allowed_scope is (
+        OwnedPageScope.CHATGPT_PRE_SESSION
+    )
+    assert requests["observe_assignment"].allowed_scope is OwnedPageScope.CHATGPT
 
 
 def test_ask_wait_completes_one_handshake_then_uses_result_wait_observation() -> None:
@@ -347,7 +364,7 @@ def test_ask_session_resolves_and_submits_one_follow_up_on_the_same_binding() ->
         "submit_prompt",
         "observe_assignment",
     ]
-    session_page = bridge.pages["surf-chatgpt-session-abc123"]
+    session_page = bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"]
     assert session_page.reference.page_token == 900
     assert session_page.reference.exact_url == "https://chatgpt.com/c/abc123"
     assert session_page.send_may_have_occurred is False
@@ -367,7 +384,7 @@ def test_rebound_session_accepts_a_later_follow_up_from_a_short_lived_caller() -
     assert first_code == follow_up_code == 0
     assert first_payload["session"] == follow_up_payload["session"] == {"id": "abc123"}
     assert [name for name, _ in bridge.calls].count("submit_prompt") == 2
-    assert bridge.pages["surf-chatgpt-session-abc123"].reference.page_token == 900
+    assert bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"].reference.page_token == 900
 
 
 def test_ask_session_pre_send_gate_preserves_known_session_without_sending() -> None:
@@ -383,10 +400,10 @@ def test_ask_session_pre_send_gate_preserves_known_session_without_sending() -> 
     assert payload["session"] == {"id": "abc123"}
     assert payload["handoff"] == {
         "action": "complete_challenge",
-        "thread": "surf-chatgpt-session-abc123",
+        "thread": "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090",
     }
     assert "thread" not in payload
-    assert bridge.pages["surf-chatgpt-session-abc123"].protection is (
+    assert bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"].protection is (
         OwnedPageProtection.HUMAN_INTERVENTION
     )
     assert [name for name, _ in bridge.calls] == [
@@ -409,7 +426,7 @@ def test_ask_session_bridge_loss_after_send_preserves_known_recovery_identity() 
     assert payload["session"] == {"id": "abc123"}
     assert payload["ok"] is False
     assert "thread" not in payload
-    assert bridge.pages["surf-chatgpt-session-abc123"].send_may_have_occurred is True
+    assert bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"].send_may_have_occurred is True
     assert [name for name, _ in bridge.calls].count("submit_prompt") == 1
 
 
@@ -432,7 +449,7 @@ def test_ask_session_signal_after_send_never_becomes_indeterminate(
     assert payload["error"]["type"] == "interrupted"
     assert payload["session"] == {"id": "abc123"}
     assert "thread" not in payload
-    assert bridge.pages["surf-chatgpt-session-abc123"].send_may_have_occurred is True
+    assert bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"].send_may_have_occurred is True
     assert [name for name, _ in bridge.calls].count("submit_prompt") == 1
 
 
@@ -468,12 +485,12 @@ def test_ask_session_rejects_conflicting_assignment_without_rebinding() -> None:
     assert payload["session"] == {"id": "abc123"}
     assert "rebind" not in [name for name, _ in bridge.calls]
     assert [name for name, _ in bridge.calls].count("submit_prompt") == 1
-    assert bridge.pages["surf-chatgpt-session-abc123"].send_may_have_occurred is True
+    assert bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"].send_may_have_occurred is True
 
 
 def test_ask_session_preserves_existing_explicit_retention_without_reapplying_it() -> None:
     bridge = ScriptedSubmissionBridge()
-    thread = "surf-chatgpt-session-abc123"
+    thread = "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
     bridge.pages[thread] = SubmissionPage(
         OwnedPageRef(thread, 777, "https://chatgpt.com/c/abc123"),
         OwnedPageProtection.EXPLICITLY_RETAINED,
@@ -492,7 +509,7 @@ def test_ask_session_preserves_existing_explicit_retention_without_reapplying_it
 
 def test_ask_session_does_not_replay_an_unfinished_follow_up_attempt() -> None:
     bridge = ScriptedSubmissionBridge()
-    thread = "surf-chatgpt-session-abc123"
+    thread = "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"
     bridge.pages[thread] = SubmissionPage(
         OwnedPageRef(thread, 777, "https://chatgpt.com/c/abc123"),
         send_may_have_occurred=True,
@@ -558,7 +575,7 @@ def test_retry_thread_clears_gate_protection_only_after_readiness_is_affirmed() 
         "observe_assignment",
         "rebind",
     ]
-    assert bridge.pages["surf-chatgpt-session-abc123"].protection is None
+    assert bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"].protection is None
 
 
 def test_pre_send_gate_preserves_a_retryable_protected_thread_without_sending() -> None:
@@ -585,6 +602,39 @@ def test_pre_send_gate_preserves_a_retryable_protected_thread_without_sending() 
     assert "private prompt" not in json.dumps(payload)
 
 
+def test_pre_send_rate_limit_reports_specific_failure_without_sending() -> None:
+    bridge = ScriptedSubmissionBridge()
+    bridge.preparation_state = OwnedPagePreparationState.RATE_LIMITED
+
+    code, payload, _ = invoke(["ask", "private prompt"], bridge)
+
+    assert code == 1
+    assert payload["error"]["type"] == "rate_limited"
+    assert "thread" not in payload
+    assert "surf-chatgpt-submit-fixed" not in bridge.pages
+    assert [name for name, _ in bridge.calls] == [
+        "allocate",
+        "prepare_submission",
+        "close_pre_session",
+    ]
+    assert "private prompt" not in json.dumps(payload)
+
+
+def test_retained_pre_send_rate_limit_preserves_recovery_thread() -> None:
+    bridge = ScriptedSubmissionBridge()
+    bridge.preparation_state = OwnedPagePreparationState.RATE_LIMITED
+
+    code, payload, _ = invoke(["ask", "--retain", "private prompt"], bridge)
+
+    thread = "surf-chatgpt-submit-fixed"
+    assert code == 1
+    assert payload["error"]["type"] == "rate_limited"
+    assert payload["thread"] == thread
+    assert bridge.pages[thread].protection is OwnedPageProtection.EXPLICITLY_RETAINED
+    assert bridge.pages[thread].send_may_have_occurred is False
+    assert "close_pre_session" not in [name for name, _ in bridge.calls]
+
+
 def test_retained_pre_send_gate_becomes_human_protected_and_retries_exact_page() -> None:
     bridge = ScriptedSubmissionBridge()
     bridge.preparation_state = OwnedPagePreparationState.CHALLENGE
@@ -608,7 +658,7 @@ def test_retained_pre_send_gate_becomes_human_protected_and_retries_exact_page()
 
     assert retry_code == 0
     assert retry_payload == {"ok": True, "session": {"id": "abc123"}}
-    assert bridge.pages["surf-chatgpt-session-abc123"].protection is (
+    assert bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"].protection is (
         OwnedPageProtection.EXPLICITLY_RETAINED
     )
     assert [name for name, _ in bridge.calls].count("submit_prompt") == 1
@@ -652,6 +702,45 @@ def test_post_send_gate_is_indeterminate_and_the_same_thread_cannot_resubmit() -
     assert [name for name, _ in bridge.calls].count("submit_prompt") == first_submit_count
 
 
+@pytest.mark.parametrize("rate_limit_stage", ["submission", "assignment"])
+def test_post_send_rate_limit_is_indeterminate_and_never_retries(
+    rate_limit_stage: str,
+) -> None:
+    bridge = ScriptedSubmissionBridge()
+    if rate_limit_stage == "submission":
+        bridge.submission_state = OwnedPageSubmissionState.RATE_LIMITED
+    else:
+        bridge.assignment_states = [(OwnedPageAssignmentState.RATE_LIMITED, None)]
+
+    code, payload, _ = invoke(["ask", "prompt"], bridge)
+
+    assert code == 1
+    assert payload["error"]["type"] == "submission_outcome_indeterminate"
+    assert payload["error"]["cause"] == {
+        "type": "rate_limited",
+        "phase": "send_may_have_occurred_id_unknown",
+        "message": "ChatGPT reported a request rate limit.",
+    }
+    assert payload["thread"] == "surf-chatgpt-submit-fixed"
+    assert bridge.pages["surf-chatgpt-submit-fixed"].send_may_have_occurred is True
+    assert [name for name, _ in bridge.calls].count("submit_prompt") == 1
+
+
+def test_known_rate_limited_assignment_rebinds_before_reporting_failure() -> None:
+    bridge = ScriptedSubmissionBridge()
+    bridge.assignment_states = [(OwnedPageAssignmentState.RATE_LIMITED, "abc123")]
+
+    code, payload, _ = invoke(["ask", "prompt"], bridge)
+
+    assert code == 1
+    assert payload["error"]["type"] == "rate_limited"
+    assert payload["session"] == {"id": "abc123"}
+    assert "thread" not in payload
+    assert "surf-chatgpt-submit-fixed" not in bridge.pages
+    assert [name for name, _ in bridge.calls].count("submit_prompt") == 1
+    assert [name for name, _ in bridge.calls].count("rebind") == 1
+
+
 def test_post_send_gate_with_known_id_returns_handoff_without_reporting_success() -> None:
     bridge = ScriptedSubmissionBridge()
     bridge.assignment_states = [(OwnedPageAssignmentState.CHALLENGE, "abc123")]
@@ -672,7 +761,7 @@ def test_post_send_gate_with_known_id_returns_handoff_without_reporting_success(
         "handoff": {"action": "complete_challenge", "thread": thread},
     }
     assert bridge.pages[thread].protection is OwnedPageProtection.HUMAN_INTERVENTION
-    assert "surf-chatgpt-session-abc123" not in bridge.pages
+    assert "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090" not in bridge.pages
     assert [name for name, _ in bridge.calls].count("submit_prompt") == 1
 
 
@@ -753,7 +842,7 @@ def test_assignment_finishing_after_deadline_cannot_report_late_success() -> Non
     assert code == 1
     assert payload["error"]["type"] == "submission_outcome_indeterminate"
     assert payload["thread"] == "surf-chatgpt-submit-fixed"
-    assert "surf-chatgpt-session-abc123" not in bridge.pages
+    assert "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090" not in bridge.pages
 
 
 def test_retain_protects_the_same_live_page_through_rebind() -> None:
@@ -763,7 +852,7 @@ def test_retain_protects_the_same_live_page_through_rebind() -> None:
 
     assert code == 0
     assert payload == {"ok": True, "session": {"id": "abc123"}}
-    page = bridge.pages["surf-chatgpt-session-abc123"]
+    page = bridge.pages["surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090"]
     assert page.reference.page_token == 900
     assert page.protection is OwnedPageProtection.EXPLICITLY_RETAINED
 
@@ -816,7 +905,7 @@ def test_real_signals_project_submission_phase_and_preserve_durable_side_effects
     if barrier is SubmissionPhase.BEFORE_SEND:
         assert [name for name, _ in bridge.calls].count("submit_prompt") == 0
     if barrier is SubmissionPhase.HANDSHAKE_COMPLETE:
-        assert "surf-chatgpt-session-abc123" in bridge.pages
+        assert "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090" in bridge.pages
 
 
 @pytest.mark.parametrize(

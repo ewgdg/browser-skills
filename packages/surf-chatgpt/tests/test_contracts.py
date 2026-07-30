@@ -133,6 +133,23 @@ def test_indeterminate_submission_can_lead_a_signal_outcome(
     assert outcome.exit_code is signal_exit_code
 
 
+def test_rate_limited_attempt_is_terminal_without_result_text() -> None:
+    outcome = CommandOutcome.success(
+        {
+            "session": {"id": "abc123"},
+            "attempt": {"state": "rate_limited"},
+            "result": None,
+        }
+    )
+
+    assert outcome.to_public_json() == {
+        "ok": True,
+        "session": {"id": "abc123"},
+        "attempt": {"state": "rate_limited"},
+        "result": None,
+    }
+
+
 @pytest.mark.parametrize(
     "fields",
     [

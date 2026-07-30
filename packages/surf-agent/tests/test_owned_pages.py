@@ -995,6 +995,9 @@ def test_patchright_prompt_submission_sends_readiness_and_mutation_programs_in_o
             expected_page_token=11,
             allowed_scope=OwnedPageScope.CHATGPT,
             expected_protection=None,
+            prompt="private prompt",
+            composer_selectors=("#prompt-textarea", ".ProseMirror"),
+            send_selectors=('[data-testid="send-button"]',),
             readiness_program=readiness,
             submission_program=submission,
         ),
@@ -1015,6 +1018,9 @@ def test_patchright_prompt_submission_sends_readiness_and_mutation_programs_in_o
                 "expected_page_token": 11,
                 "allowed_scope": "chatgpt",
                 "expected_protection": None,
+                "prompt": "private prompt",
+                "composer_selectors": ["#prompt-textarea", ".ProseMirror"],
+                "send_selectors": ['[data-testid="send-button"]'],
                 "readiness_program": readiness.source,
                 "submission_program": submission.source,
             },
@@ -1098,6 +1104,103 @@ def test_patchright_assignment_observation_preserves_identity_during_gate() -> N
 
     assert outcome.state is OwnedPageAssignmentState.CHALLENGE
     assert outcome.session_id == "abc123"
+
+
+def test_patchright_assignment_observation_preserves_identity_at_rate_limit() -> None:
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "temporary",
+                "page_token": 11,
+                "url": "https://chatgpt.com/c/abc123",
+            },
+            "metadata": {"state": "rate_limited", "session_id": "abc123"},
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+
+    outcome = bridge.observe_assignment(
+        ObserveOwnedPageAssignment(
+            owner="surf-chatgpt",
+            thread="temporary",
+            expected_page_token=11,
+            allowed_scope=OwnedPageScope.CHATGPT,
+            expected_protection=None,
+            program=OwnedPageProgram("observe rate limit"),
+            completion_exact_url=None,
+        )
+    )
+
+    assert outcome.state is OwnedPageAssignmentState.RATE_LIMITED
+    assert outcome.session_id == "abc123"
+
+
+def test_patchright_transports_rate_limit_states_without_browser_content() -> None:
+    page = {
+        "thread": "temporary",
+        "page_token": 11,
+        "url": "https://chatgpt.com/",
+    }
+
+    preparation = PatchrightOwnedPageBridge(
+        ScriptedClient(
+            {"ok": True, "page": page, "metadata": {"state": "rate_limited"}}
+        )
+    ).prepare_submission(
+        PrepareOwnedPageSubmission(
+            owner="surf-chatgpt",
+            thread="temporary",
+            expected_page_token=11,
+            allowed_scope=OwnedPageScope.CHATGPT,
+            expected_protection=None,
+            program=OwnedPageProgram("prepare"),
+            requested_selection_dimensions=frozenset(),
+        )
+    )
+    submission = PatchrightOwnedPageBridge(
+        ScriptedClient(
+            {"ok": True, "page": page, "metadata": {"state": "rate_limited"}}
+        )
+    ).submit_prompt(
+        SubmitOwnedPagePrompt(
+            owner="surf-chatgpt",
+            thread="temporary",
+            expected_page_token=11,
+            allowed_scope=OwnedPageScope.CHATGPT,
+            expected_protection=None,
+            prompt="private prompt",
+            composer_selectors=("#prompt-textarea",),
+            send_selectors=('[data-testid="send-button"]',),
+            readiness_program=OwnedPageProgram("prepare"),
+            submission_program=OwnedPageProgram("submit"),
+        ),
+        on_send_may_have_occurred=lambda: None,
+    )
+    attempt = PatchrightOwnedPageBridge(
+        ScriptedClient(
+            {
+                "ok": True,
+                "page": {**page, "url": "https://chatgpt.com/c/abc123"},
+                "metadata": {"state": "rate_limited"},
+            }
+        )
+    ).extract_result(
+        ExtractOwnedPageResult(
+            owner="surf-chatgpt",
+            thread="temporary",
+            expected_page_token=11,
+            expected_exact_url="https://chatgpt.com/c/abc123",
+            allowed_scope=OwnedPageScope.CHATGPT,
+            expected_protection=None,
+            program=OwnedPageProgram("observe"),
+        )
+    )
+
+    assert preparation.state.value == "rate_limited"
+    assert submission.state.value == "rate_limited"
+    assert attempt.state.value == "rate_limited"
+    assert attempt.text is None
 
 
 def test_patchright_preparation_rejects_unrequested_browser_metadata() -> None:

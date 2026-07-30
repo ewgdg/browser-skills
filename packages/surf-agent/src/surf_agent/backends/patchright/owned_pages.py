@@ -24,6 +24,10 @@ from ..bridge_common import PageSlot
 from .retained_pages import PatchrightRetainedPageOperations
 
 
+_READ_ONLY_EVALUATION_MAX_ATTEMPTS = 3
+_READ_ONLY_EVALUATION_RETRY_MILLISECONDS = 100
+
+
 def _require_string_keyed_object(value: object, message: str) -> dict[str, object]:
     if not isinstance(value, dict) or any(
         not isinstance(key, str) for key in value
@@ -269,6 +273,9 @@ class PatchrightOwnedPageOperations:
             )
         readiness_program = self._required_argument(args, "readiness_program")
         submission_program = self._required_argument(args, "submission_program")
+        prompt = self._required_argument(args, "prompt")
+        composer_selectors = self._string_list_argument(args, "composer_selectors")
+        send_selectors = self._string_list_argument(args, "send_selectors")
         try:
             readiness = await self._runtime._maybe_await(
                 slot.page.evaluate(readiness_program)
@@ -287,19 +294,47 @@ class PatchrightOwnedPageOperations:
         # crossing this irreversible barrier. Any later loss is treated as post-send.
         slot.send_may_have_occurred = True
         try:
+            await self._type_into_visible_control(
+                slot.page,
+                composer_selectors,
+                prompt,
+            )
             metadata = await self._runtime._maybe_await(
                 slot.page.evaluate(submission_program)
             )
             decoded = self._decode_submission_metadata(metadata)
         except Exception:
             return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        if decoded["state"] == OwnedPageSubmissionState.SUBMITTED:
+            try:
+                await self._click_visible_control(slot.page, send_selectors)
+            except Exception:
+                # Once native dispatch starts, the click may have succeeded even if
+                # Patchright loses its acknowledgement or reports a transient URL.
+                # The serialized transaction affirmed every page guard before this
+                # point; only exact assignment observation may confirm the outcome.
+                return self._metadata_result(
+                    thread,
+                    slot,
+                    {"state": OwnedPageSubmissionState.SUBMITTED.value},
+                )
         return self._metadata_result(thread, slot, decoded)
 
     async def observe_assignment(self, args: dict[str, Any]) -> str:
-        guarded = self._submission_slot(args)
+        guarded = self._submission_identity_slot(args)
         if isinstance(guarded, str):
             return guarded
-        slot, thread = guarded
+        slot, thread, allowed_scope = guarded
+        if not owned_page_url_is_in_scope(
+            self._runtime._page_url(slot.page), allowed_scope
+        ):
+            if slot.send_may_have_occurred:
+                return self._metadata_result(
+                    thread,
+                    slot,
+                    {"state": OwnedPageAssignmentState.NOT_READY.value},
+                )
+            return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
         program = self._required_argument(args, "program")
         completion_exact_url = args.get("completion_exact_url")
         if completion_exact_url is not None and (
@@ -309,6 +344,19 @@ class PatchrightOwnedPageOperations:
             raise RuntimeError("invalid owned-page assignment completion request")
         try:
             metadata = await self._runtime._maybe_await(slot.page.evaluate(program))
+        except Exception:
+            # Assignment observation is bounded and cannot send. A browser-side
+            # evaluation interruption is therefore retryable only after revalidating
+            # every original owner, token, protection, and scope guard.
+            revalidated = self._submission_slot(args)
+            if isinstance(revalidated, tuple) and revalidated[0] is slot:
+                return self._metadata_result(
+                    thread,
+                    slot,
+                    {"state": OwnedPageAssignmentState.NOT_READY.value},
+                )
+            return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        try:
             decoded = self._decode_assignment_metadata(metadata)
         except Exception:
             return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
@@ -332,7 +380,10 @@ class PatchrightOwnedPageOperations:
         slot, thread = guarded
         program = self._required_argument(args, "program")
         try:
-            metadata = await self._runtime._maybe_await(slot.page.evaluate(program))
+            metadata = await self._evaluate_read_only(slot.page, program)
+        except Exception:
+            return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        try:
             decoded = self._decode_attempt_metadata(metadata)
         except Exception:
             return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
@@ -345,7 +396,10 @@ class PatchrightOwnedPageOperations:
         slot, thread = guarded
         program = self._required_argument(args, "program")
         try:
-            metadata = await self._runtime._maybe_await(slot.page.evaluate(program))
+            metadata = await self._evaluate_read_only(slot.page, program)
+        except Exception:
+            return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        try:
             decoded = self._decode_result_metadata(metadata)
         except Exception:
             return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
@@ -583,6 +637,127 @@ class PatchrightOwnedPageOperations:
             raise RuntimeError(f"owned-page {name} is required")
         return value
 
+    def _string_list_argument(
+        self,
+        args: dict[str, Any],
+        name: str,
+    ) -> tuple[str, ...]:
+        value = args.get(name)
+        if (
+            not isinstance(value, list)
+            or not value
+            or any(not isinstance(item, str) or not item for item in value)
+            or len(set(value)) != len(value)
+        ):
+            raise RuntimeError(f"owned-page {name} must contain unique strings")
+        return tuple(value)
+
+    async def _type_into_visible_control(
+        self,
+        page: Any,
+        selectors: tuple[str, ...],
+        value: str,
+    ) -> None:
+        await self._focus_visible_control(page, selectors)
+        # ChatGPT replaces its controlled textarea during trusted input. Locator
+        # click/fill waits on that detached node, while one atomic browser input
+        # completes before the replacement and can be verified before dispatch.
+        await self._runtime._maybe_await(page.keyboard.insert_text(value))
+        if await self._select_restored_editor_draft(page, selectors, value):
+            await self._runtime._maybe_await(page.keyboard.insert_text(value))
+
+    async def _select_restored_editor_draft(
+        self,
+        page: Any,
+        selectors: tuple[str, ...],
+        value: str,
+    ) -> bool:
+        state = await self._runtime._maybe_await(
+            page.evaluate(
+                """({expected, selectors}) => {
+                  const editor = document.activeElement;
+                  if (!editor || !selectors.some((selector) => editor.matches(selector))) {
+                    return 'editor_unrecognized';
+                  }
+                  const text = 'value' in editor
+                    ? String(editor.value) : String(editor.textContent || '');
+                  if (text === expected) return 'exact';
+                  if (!text.endsWith(expected)) return 'editor_unrecognized';
+                  const paragraphs = editor.querySelectorAll('p');
+                  if (paragraphs.length !== 1) return 'editor_unrecognized';
+                  const selection = window.getSelection();
+                  const range = document.createRange();
+                  range.selectNodeContents(paragraphs[0]);
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                  return selection.rangeCount === 1
+                    ? 'selected' : 'editor_unrecognized';
+                }""",
+                {"expected": value, "selectors": list(selectors)},
+            )
+        )
+        if state == "exact":
+            return False
+        if state == "selected":
+            return True
+        raise RuntimeError("Patchright could not reconcile the controlled editor")
+
+    async def _focus_visible_control(
+        self,
+        page: Any,
+        selectors: tuple[str, ...],
+    ) -> None:
+        for selector in selectors:
+            locator = page.locator(selector)
+            count = await self._runtime._maybe_await(locator.count())
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise RuntimeError("Patchright returned an invalid composer count")
+            for index in range(count):
+                candidate = locator.nth(index)
+                visible = await self._runtime._maybe_await(candidate.is_visible())
+                if visible is not True:
+                    continue
+                focused = await self._runtime._maybe_await(
+                    candidate.evaluate(
+                        "(node) => { node.focus(); return document.activeElement === node; }"
+                    )
+                )
+                if focused is not True:
+                    raise RuntimeError("Patchright could not focus the visible composer")
+                return
+        raise RuntimeError("Patchright could not identify a visible composer")
+
+    async def _click_visible_control(
+        self,
+        page: Any,
+        selectors: tuple[str, ...],
+    ) -> None:
+        for selector in selectors:
+            locator = page.locator(selector)
+            count = await self._runtime._maybe_await(locator.count())
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise RuntimeError("Patchright returned an invalid send-control count")
+            for index in range(count):
+                candidate = locator.nth(index)
+                visible = await self._runtime._maybe_await(candidate.is_visible())
+                if visible is not True:
+                    continue
+                await self._runtime._maybe_await(candidate.click())
+                return
+        raise RuntimeError("Patchright could not identify a visible send control")
+
+    async def _evaluate_read_only(self, page: Any, program: str) -> object:
+        for attempt in range(_READ_ONLY_EVALUATION_MAX_ATTEMPTS):
+            try:
+                return await self._runtime._maybe_await(page.evaluate(program))
+            except Exception:
+                if attempt + 1 == _READ_ONLY_EVALUATION_MAX_ATTEMPTS:
+                    raise
+                await self._runtime._maybe_await(
+                    page.wait_for_timeout(_READ_ONLY_EVALUATION_RETRY_MILLISECONDS)
+                )
+        raise AssertionError("read-only evaluation retry loop did not terminate")
+
     def _resolution_result(self, thread: str, slot: PageSlot) -> str:
         result = json.loads(self._page_result(thread, slot))
         result["protection"] = (
@@ -607,6 +782,20 @@ class PatchrightOwnedPageOperations:
             ) from error
 
     def _submission_slot(self, args: dict[str, Any]) -> tuple[PageSlot, str] | str:
+        guarded = self._submission_identity_slot(args)
+        if isinstance(guarded, str):
+            return guarded
+        slot, thread, allowed_scope = guarded
+        if not owned_page_url_is_in_scope(
+            self._runtime._page_url(slot.page), allowed_scope
+        ):
+            return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
+        return slot, thread
+
+    def _submission_identity_slot(
+        self,
+        args: dict[str, Any],
+    ) -> tuple[PageSlot, str, OwnedPageScope] | str:
         owner = self._required_argument(args, "owner")
         thread = self._required_argument(args, "thread")
         allowed_scope = self._scope_argument(args)
@@ -630,12 +819,9 @@ class PatchrightOwnedPageOperations:
             slot.owner != owner
             or slot.page_token != expected_page_token
             or slot.protection != expected_protection
-            or not owned_page_url_is_in_scope(
-                self._runtime._page_url(slot.page), allowed_scope
-            )
         ):
             return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
-        return slot, thread
+        return slot, thread, allowed_scope
 
     def _observation_slot(self, args: dict[str, Any]) -> tuple[PageSlot, str] | str:
         owner = self._required_argument(args, "owner")
@@ -820,6 +1006,7 @@ class PatchrightOwnedPageOperations:
             raise RuntimeError("invalid owned-page assignment metadata") from error
         allows_session_identity = state in {
             OwnedPageAssignmentState.SESSION,
+            OwnedPageAssignmentState.RATE_LIMITED,
             OwnedPageAssignmentState.LOGIN_REQUIRED,
             OwnedPageAssignmentState.CHALLENGE,
         }

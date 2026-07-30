@@ -142,6 +142,63 @@ def test_classifier_affirms_latest_response_failure_without_stale_content(
     assert "CANARY" not in str(metadata)
 
 
+def test_classifier_affirms_explicit_rate_limited_latest_attempt(page: Page) -> None:
+    _set_session_fixture(
+        page,
+        """
+        <section data-testid="conversation-turn-1" data-turn="user">
+          <div data-message-author-role="user" data-message-id="user-1">Question</div>
+        </section>
+        <section data-testid="conversation-turn-2" data-turn="assistant">
+          <div data-testid="conversation-turn-error" role="alert">
+            Too many requests. Please try again later.
+          </div>
+          <button data-testid="regenerate-button">Retry</button>
+        </section>
+        """,
+    )
+
+    metadata = page.evaluate(classify_latest_attempt_source())
+
+    assert metadata == {"state": "rate_limited"}
+
+
+def test_classifier_affirms_visible_rate_limit_before_a_turn_exists(page: Page) -> None:
+    _set_session_fixture(
+        page,
+        """
+        <div data-testid="request-error" role="alert">
+          Too many requests. Please try again later.
+        </div>
+        """,
+    )
+
+    assert page.evaluate(classify_latest_attempt_source()) == {
+        "state": "rate_limited"
+    }
+
+
+def test_classifier_does_not_infer_rate_limit_from_authored_content(page: Page) -> None:
+    _set_session_fixture(
+        page,
+        """
+        <section data-testid="conversation-turn-1" data-turn="user">
+          <div data-message-author-role="user" data-message-id="user-1">
+            Explain the phrase too many requests.
+          </div>
+        </section>
+        <section data-testid="conversation-turn-2" data-turn="assistant">
+          <div data-message-author-role="assistant" data-message-id="assistant-1">
+            Too many requests is an HTTP rate-limit message.
+          </div>
+          <button data-testid="copy-turn-action-button" aria-label="Copy response">Copy</button>
+        </section>
+        """,
+    )
+
+    assert page.evaluate(classify_latest_attempt_source()) == {"state": "completed"}
+
+
 def test_explicit_result_extraction_returns_only_the_completed_latest_response(
     page: Page,
 ) -> None:

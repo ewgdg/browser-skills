@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+from surf_agent.owned_pages import CHATGPT_SESSION_ID_PATTERN
+
 from .attempt import (
     GATE_SELECTORS,
     STOP_GENERATING_SELECTORS,
@@ -22,7 +24,7 @@ def classify_retained_page_source() -> str:
   if (classification.state !== 'unrecognized') {{
     return {{state: classification.state}};
   }}
-  const isSession = /^\/c\/[A-Za-z0-9_-]+$/.test(location.pathname);
+  const isSession = /^\/c\/{CHATGPT_SESSION_ID_PATTERN}$/.test(location.pathname);
   if (!isSession &&
       visibleMatches(document, {json.dumps(COMPOSER_SELECTORS)}).length > 0) {{
     return {{state: 'human_intervention'}};

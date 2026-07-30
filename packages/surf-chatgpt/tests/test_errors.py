@@ -20,6 +20,7 @@ def test_public_error_types_are_exactly_the_specification_allow_list() -> None:
         "browser_unavailable",
         "capacity_exceeded",
         "human_intervention_required",
+        "rate_limited",
         "submission_outcome_indeterminate",
         "session_rebind_failed",
         "session_not_found",
@@ -53,6 +54,27 @@ def test_public_error_and_cause_project_only_allow_listed_fields() -> None:
             "phase": "send_may_have_occurred_id_unknown",
             "message": "The browser bridge connection ended.",
         },
+    }
+
+
+def test_rate_limit_errors_have_fixed_non_retrying_public_projections() -> None:
+    assert PublicError(PublicErrorType.RATE_LIMITED).to_public_json() == {
+        "type": "rate_limited",
+        "message": "ChatGPT is rate limiting requests.",
+        "hint": "Wait for the account limit to reset before submitting a new prompt.",
+    }
+
+    error = PublicError(
+        PublicErrorType.SUBMISSION_OUTCOME_INDETERMINATE,
+        cause=PublicErrorCause(
+            PublicErrorCauseType.RATE_LIMITED,
+            SubmissionPhase.SEND_MAY_HAVE_OCCURRED_ID_UNKNOWN,
+        ),
+    )
+    assert error.to_public_json()["cause"] == {
+        "type": "rate_limited",
+        "phase": "send_may_have_occurred_id_unknown",
+        "message": "ChatGPT reported a request rate limit.",
     }
 
 
