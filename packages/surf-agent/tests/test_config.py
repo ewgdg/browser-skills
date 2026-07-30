@@ -20,11 +20,11 @@ from surf_agent.errors import SurfAgentError
 
 def test_backend_preference_is_environment_then_persisted_then_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "config.json"
-    assert resolve_backend_preference(path=path) == ("axi", "default")
-    write_config(path, {"backend": "patchright", "unknown": {"keep": True}})
-    assert resolve_backend_preference(path=path) == ("patchright", "config")
-    monkeypatch.setenv("SURF_AGENT_BACKEND", "camoufox")
-    assert resolve_backend_preference(path=path) == ("camoufox", "env")
+    assert resolve_backend_preference(path=path) == ("patchright", "default")
+    write_config(path, {"backend": "axi", "unknown": {"keep": True}})
+    assert resolve_backend_preference(path=path) == ("axi", "config")
+    monkeypatch.setenv("SURF_AGENT_BACKEND", "patchright")
+    assert resolve_backend_preference(path=path) == ("patchright", "env")
 
 
 def test_backend_mutations_preserve_unknown_top_level_keys(tmp_path: Path) -> None:
@@ -34,6 +34,11 @@ def test_backend_mutations_preserve_unknown_top_level_keys(tmp_path: Path) -> No
     assert load_config(path) == {"backend": "patchright", "unknown": {"keep": True}}
     reset_backend(path=path)
     assert load_config(path) == {"unknown": {"keep": True}}
+
+
+def test_backend_validation_describes_the_complete_supported_set(tmp_path: Path) -> None:
+    with pytest.raises(SurfAgentError, match="^backend must be 'axi' or 'patchright'$"):
+        set_backend("unsupported", path=tmp_path / "config.json")
 
 
 def test_atomic_write_failure_preserves_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

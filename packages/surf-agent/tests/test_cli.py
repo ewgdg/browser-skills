@@ -5,20 +5,15 @@ import shutil
 import subprocess
 import tempfile
 import sys
-import threading
 import types
 import unittest
-import urllib.request
 from contextlib import redirect_stderr, redirect_stdout
-from http.server import HTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-import surf_agent.backends.camoufox.bridge as camoufox_bridge
 import surf_agent.backends.patchright.bridge as patchright_bridge
-from surf_agent.backends.camoufox.bridge import CamoufoxRuntime, PageSlot, RequestHandler
-from surf_agent.backends.patchright.bridge import PatchrightRuntime
+from surf_agent.backends.patchright.bridge import PageSlot, PatchrightRuntime
 from surf_agent.backends.axi import AxiBackend
 from surf_agent.errors import BridgeUnavailable
 from surf_agent.cli import (
@@ -33,9 +28,7 @@ from surf_agent.cli import (
     SurfAgentError,
     choose_snapshot_diff,
     backend_config_file,
-    default_camoufox_profile_dir,
     default_chrome_profile_dir,
-    default_firefox_profile_dir,
     default_state_dir,
     surf_agent_config_dir,
     surf_agent_data_dir,
@@ -132,7 +125,7 @@ class FakeAxiAgent(SurfAgent):
         self.bridge_client = FakeBridgeClient(self)
         # Keep tests isolated from a developer's persisted surf-agent backend config.
         # Tests that intentionally cover Patchright set SURF_AGENT_BACKEND explicitly.
-        if os.environ.get("SURF_AGENT_BACKEND") not in {"camoufox", "patchright"}:
+        if os.environ.get("SURF_AGENT_BACKEND") != "patchright":
             self.backend = "axi"
             self.browser_backend = AxiBackend(self)
 
@@ -220,7 +213,6 @@ class AxiBackendTests(unittest.TestCase):
             self.assertEqual(backend_config_file(), home / "config.json")
             self.assertEqual(default_state_dir(), home / "threads")
             self.assertEqual(default_chrome_profile_dir(), home / "profiles" / "chrome")
-            self.assertEqual(default_firefox_profile_dir(), home / "profiles" / "firefox")
 
     def test_platformdirs_fallback_replaces_package_local_data_dir(self):
         with patch.dict("os.environ", {}, clear=True):
@@ -246,23 +238,33 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(error.getvalue(), "surf-agent: interrupted\n")
         self.assertNotIn("Traceback", error.getvalue())
 
+    def test_help_lists_only_supported_backend_commands(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(main(["help"]), 0)
+
+        backend_lines = [line.strip() for line in output.getvalue().splitlines() if line.strip().startswith("surf-agent backend set")]
+        setup_lines = [line.strip() for line in output.getvalue().splitlines() if line.strip().startswith("surf-agent setup")]
+        self.assertEqual([line.split()[:4] for line in backend_lines], [["surf-agent", "backend", "set", "axi|patchright"]])
+        self.assertEqual([line.split()[:3] for line in setup_lines], [["surf-agent", "setup", "patchright"]])
+
     def test_backend_config_commands_and_priority(self):
         with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch("surf_agent.cli.cleanup_backend_runtime"), patch.dict("os.environ", {}, clear=True):
             output = io.StringIO()
             with redirect_stdout(output):
                 self.assertEqual(main(["backend", "show"]), 0)
-            self.assertEqual(json.loads(output.getvalue()), {"backend": "axi", "source": "default", "config_file": str(Path(tmp) / "config.json")})
+            self.assertEqual(json.loads(output.getvalue()), {"backend": "patchright", "source": "default", "config_file": str(Path(tmp) / "config.json")})
 
             output = io.StringIO()
             with redirect_stdout(output):
-                self.assertEqual(main(["backend", "set", "camoufox"]), 0)
-            self.assertEqual(json.loads((Path(tmp) / "config.json").read_text()), {"backend": "camoufox"})
+                self.assertEqual(main(["backend", "set", "axi"]), 0)
+            self.assertEqual(json.loads((Path(tmp) / "config.json").read_text()), {"backend": "axi"})
 
             agent = SurfAgent(state_file=Path(tmp) / "thread.json")
-            self.assertEqual(agent.backend, "camoufox")
+            self.assertEqual(agent.backend, "axi")
 
-            with patch.dict("os.environ", {"SURF_AGENT_BACKEND": "axi"}, clear=True):
-                self.assertEqual(SurfAgent(state_file=Path(tmp) / "thread2.json").backend, "axi")
+            with patch.dict("os.environ", {"SURF_AGENT_BACKEND": "patchright"}, clear=True):
+                self.assertEqual(SurfAgent(state_file=Path(tmp) / "thread2.json").backend, "patchright")
                 output = io.StringIO()
                 with redirect_stdout(output):
                     self.assertEqual(main(["backend", "show"]), 0)
@@ -286,8 +288,8 @@ class AxiBackendTests(unittest.TestCase):
         with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch("surf_agent.cli.cleanup_backend_runtime") as cleanup, patch.dict("os.environ", {}, clear=True):
             output = io.StringIO()
             with redirect_stdout(output):
-                self.assertEqual(main(["backend", "set", "patchright"]), 0)
-            cleanup.assert_called_once_with("axi")
+                self.assertEqual(main(["backend", "set", "axi"]), 0)
+            cleanup.assert_called_once_with("patchright")
 
     def test_backend_set_skips_runtime_cleanup_when_backend_unchanged(self):
         with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch("surf_agent.cli.cleanup_backend_runtime") as cleanup, patch.dict("os.environ", {}, clear=True):
@@ -301,8 +303,8 @@ class AxiBackendTests(unittest.TestCase):
         with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch("surf_agent.cli.cleanup_backend_runtime") as cleanup, patch.dict("os.environ", {"SURF_AGENT_BACKEND": "patchright"}, clear=True):
             output = io.StringIO()
             with redirect_stdout(output):
-                self.assertEqual(main(["backend", "set", "camoufox"]), 0)
-            cleanup.assert_called_once_with("axi")
+                self.assertEqual(main(["backend", "set", "axi"]), 0)
+            cleanup.assert_called_once_with("patchright")
 
     def test_state_with_no_thread_does_not_create_or_query_page(self):
         with TemporaryDirectory() as tmp:
@@ -357,24 +359,6 @@ class AxiBackendTests(unittest.TestCase):
     def test_default_profiles_live_under_surf_agent_data_dir(self):
         with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_HOME": tmp}, clear=True):
             self.assertEqual(default_chrome_profile_dir(), skill_data_dir() / "profiles" / "chrome")
-            self.assertEqual(default_firefox_profile_dir(), skill_data_dir() / "profiles" / "firefox")
-
-    def test_camoufox_defaults_to_firefox_profile_family(self):
-        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_HOME": tmp}, clear=True):
-            self.assertEqual(default_camoufox_profile_dir(), skill_data_dir() / "profiles" / "firefox")
-
-    def test_camoufox_profile_env_overrides_firefox_family_default(self):
-        with TemporaryDirectory() as tmp, patch.dict(
-            "os.environ",
-            {
-                "SURF_AGENT_FIREFOX_PROFILE_DIR": str(Path(tmp) / "firefox-profile"),
-                "SURF_AGENT_CAMOUFOX_PROFILE_DIR": str(Path(tmp) / "camoufox-profile"),
-            },
-            clear=True,
-        ):
-            agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json")
-
-        self.assertEqual(agent.camoufox_profile_dir, Path(tmp) / "camoufox-profile")
 
     def test_bridge_profile_mismatch_rejects_old_auto_connect_bridge(self):
         client = AxiBridgeClient(timeout_s=1, expected_profile_dir=Path("/tmp/surf-profile"), expected_chrome_class="surf-agent")
@@ -428,22 +412,6 @@ class AxiBackendTests(unittest.TestCase):
 
         self.assertEqual(agent.calls, [])
 
-    def test_camoufox_profile_open_calls_backend_with_app_id(self):
-        backend_calls = []
-
-        class FakeCamoufoxBackend:
-            def profile_open(self, url, *, profile_dir, app_id):
-                backend_calls.append((url, profile_dir, app_id))
-                return 0
-
-        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_BACKEND": "camoufox", "SURF_AGENT_CAMOUFOX_APP_ID": "surf-agent-test"}, clear=True):
-            profile = Path(tmp) / "camoufox-profile"
-            agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json", camoufox_profile_dir=profile)
-            agent.browser_backend = FakeCamoufoxBackend()
-            self.assertEqual(agent.profile_open("https://x.test"), 0)
-
-        self.assertEqual(backend_calls[0], ("https://x.test", str(profile), "surf-agent-test"))
-
     def test_profile_command_dispatch(self):
         with patch.dict("os.environ", {}, clear=True), patch.object(SurfAgent, "_chrome_debug_endpoint_ready", return_value=False):
             output = io.StringIO()
@@ -451,43 +419,6 @@ class AxiBackendTests(unittest.TestCase):
             with redirect_stdout(output), redirect_stderr(error):
                 self.assertEqual(main(["profile", "show"]), 0)
             self.assertEqual(json.loads(output.getvalue())["chrome_debug_port"], 9336)
-
-    def test_setup_camoufox_prints_manual_instructions_without_running_installer(self):
-        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.importlib.util.find_spec", return_value=None), patch("surf_agent.cli.subprocess.run") as run:
-            output = io.StringIO()
-            error = io.StringIO()
-            with redirect_stdout(output), redirect_stderr(error):
-                self.assertEqual(main(["setup", "camoufox"]), 0)
-
-        run.assert_not_called()
-        self.assertIn("Camoufox setup is manual", output.getvalue())
-        self.assertIn("surf-agent[camoufox] @ git+https://github.com/ewgdg/browser-skills.git", output.getvalue())
-        self.assertIn("python -m camoufox fetch", output.getvalue())
-        self.assertEqual(error.getvalue(), "")
-
-    def test_setup_camoufox_reports_already_setup_when_package_and_browser_exist(self):
-        installed = subprocess.CompletedProcess(["ignored"], 0, stdout="Browser\n  Installed                   Yes\n", stderr="")
-        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.importlib.util.find_spec", return_value=object()), patch("surf_agent.cli.subprocess.run", return_value=installed) as run:
-            output = io.StringIO()
-            error = io.StringIO()
-            with redirect_stdout(output), redirect_stderr(error):
-                self.assertEqual(main(["setup", "camoufox"]), 0)
-
-        self.assertEqual(run.call_args.args[0], [sys.executable, "-m", "camoufox", "version"])
-        self.assertIn("Camoufox appears set up", output.getvalue())
-        self.assertEqual(error.getvalue(), "")
-
-    def test_camoufox_setup_alias_prints_manual_instructions(self):
-        with patch.dict("os.environ", {}, clear=True), patch("surf_agent.cli.importlib.util.find_spec", return_value=None), patch("surf_agent.cli.subprocess.run") as run:
-            output = io.StringIO()
-            error = io.StringIO()
-            with redirect_stdout(output), redirect_stderr(error):
-                self.assertEqual(main(["camoufox", "setup"]), 0)
-
-        run.assert_not_called()
-        self.assertIn("Camoufox setup is manual", output.getvalue())
-        self.assertIn("surf-agent[camoufox] @ git+https://github.com/ewgdg/browser-skills.git", output.getvalue())
-        self.assertEqual(error.getvalue(), "")
 
     def test_backend_config_accepts_patchright_and_resolves_backend(self):
         with TemporaryDirectory() as tmp, patch("surf_agent.cli.backend_config_file", return_value=Path(tmp) / "config.json"), patch("surf_agent.cli.cleanup_backend_runtime"), patch.dict("os.environ", {}, clear=True):
@@ -2136,414 +2067,6 @@ class AxiBackendTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(output.getvalue(), "Hello body\n")
         self.assertEqual([call[0] for call in agent.calls], [["bridge", "select_page", {"pageId": 22}], ["bridge", "evaluate_script", {"function": "() => (document.body.innerText)"}]])
-
-    def test_camoufox_backend_translates_core_commands(self):
-        class FakeCamoufoxClient:
-            def __init__(self):
-                self.calls = []
-
-            def call_tool(self, name, args=None):
-                self.calls.append((name, args or {}))
-                return f"{name} ok\n"
-
-        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_BACKEND": "camoufox"}, clear=True):
-            agent = SurfAgent(state_file=Path(tmp) / "thread.json")
-            client = FakeCamoufoxClient()
-            agent.camoufox_client = client
-            self.assertEqual(agent.execute_in_window(["open", "https://example.test/"]), "open ok\n")
-            self.assertEqual(agent.execute_in_window(["fill", "@e2", "hello", "world"]), "fill ok\n")
-            self.assertEqual(agent.execute_in_window(["screenshot", "--output", "/tmp/viewport.png"]), "screenshot ok\n")
-            self.assertEqual(agent.execute_in_window(["screenshot", "--output", "/tmp/full.png", "--full-page"]), "screenshot ok\n")
-            with self.assertRaisesRegex(SurfAgentError, "scroll requires direction"):
-                agent.execute_in_window(["scroll", "sideways"])
-
-        self.assertEqual(client.calls, [
-            ("open", {"thread": "thread", "url": "https://example.test/"}),
-            ("fill", {"thread": "thread", "uid": "@e2", "text": "hello world"}),
-            ("screenshot", {"thread": "thread", "path": "/tmp/viewport.png", "fullPage": False}),
-            ("screenshot", {"thread": "thread", "path": "/tmp/full.png", "fullPage": True}),
-        ])
-
-    def test_camoufox_snapshot_diff_does_not_require_axi_state(self):
-        class FakeCamoufoxClient:
-            def __init__(self, responses):
-                self.responses = list(responses)
-                self.calls = []
-
-            def call_tool(self, name, args=None):
-                self.calls.append((name, args or {}))
-                if not self.responses:
-                    raise AssertionError(f"unexpected camoufox call: {name}")
-                return self.responses.pop(0)
-
-        before = snapshot_text({20: "camoufox old"})
-        after = snapshot_text({20: "camoufox new"})
-        state = json.dumps({"backend": "camoufox", "open": True, "thread": "thread", "page_id": 7, "url": "https://example.test/", "title": "Example"}) + "\n"
-        with TemporaryDirectory() as tmp, patch.dict("os.environ", {"SURF_AGENT_BACKEND": "camoufox"}, clear=True):
-            agent = SurfAgent(state_file=Path(tmp) / "thread.json")
-            client = FakeCamoufoxClient([before, state, after, state])
-            agent.camoufox_client = client
-            output = io.StringIO()
-            error = io.StringIO()
-
-            exit_code = run_do(agent, thread="thread", argv=[], stdin=io.StringIO("snapshot --baseline\nsnapshot --diff\n"), stdout=output, stderr=error)
-
-        self.assertEqual(exit_code, 0)
-        self.assertIn("--- baseline", output.getvalue())
-        self.assertIn("camoufox old", output.getvalue())
-        self.assertIn("camoufox new", output.getvalue())
-        self.assertEqual(error.getvalue(), "")
-        self.assertEqual([name for name, _args in client.calls], ["snapshot", "state", "snapshot", "state"])
-
-
-    def test_camoufox_bridge_screenshot_uses_viewport_by_default_and_full_page_when_requested(self):
-        class FakePage:
-            def __init__(self):
-                self.screenshot_calls = []
-
-            def is_closed(self):
-                return False
-
-            def screenshot(self, path, full_page=False):
-                self.screenshot_calls.append({"path": path, "full_page": full_page})
-
-        page = FakePage()
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
-        runtime.browser_or_context = object()
-        runtime.pages["thread"] = PageSlot(page=page, page_token=1)
-
-        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/viewport.png"}), "screenshot: /tmp/viewport.png\n")
-        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/string-false.png", "fullPage": "false"}), "screenshot: /tmp/string-false.png\n")
-        self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/full.png", "fullPage": True}), "screenshot: /tmp/full.png\n")
-        self.assertEqual(page.screenshot_calls, [
-            {"path": "/tmp/viewport.png", "full_page": False},
-            {"path": "/tmp/string-false.png", "full_page": False},
-            {"path": "/tmp/full.png", "full_page": True},
-        ])
-
-    def test_camoufox_snapshot_passes_playwright_cli_aria_options(self):
-        class FakePage:
-            def __init__(self):
-                self.calls = []
-
-            def aria_snapshot(self, **kwargs):
-                self.calls.append(kwargs)
-                return '- page "Example"'
-
-        page = FakePage()
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
-        slot = PageSlot(page=page, page_token=1)
-
-        with patch.object(camoufox_bridge, "SNAPSHOT_DEPTH", 3), patch.object(camoufox_bridge, "SNAPSHOT_BOXES", True):
-            snapshot = runtime._snapshot(slot)
-
-        self.assertIn('- page "Example"', snapshot)
-        self.assertEqual(page.calls, [{"mode": "ai", "timeout": camoufox_bridge.SNAPSHOT_ARIA_TIMEOUT_MS, "depth": 3, "boxes": True}])
-
-    def test_camoufox_actions_delegate_native_refs_and_allow_selector_fallback(self):
-        class FakeElement:
-            def __init__(self):
-                self.clicked = False
-
-            def click(self):
-                self.clicked = True
-
-            def fill(self, text):
-                self.filled = text
-
-        class FakeLocatorGroup:
-            def __init__(self, items):
-                self.items = items
-
-            def count(self):
-                return len(self.items)
-
-            def nth(self, index):
-                return self.items[index]
-
-            @property
-            def first(self):
-                return self.items[0]
-
-            def click(self):
-                return self.first.click()
-
-            def fill(self, text):
-                return self.first.fill(text)
-
-        class FakePage:
-            url = "https://example.test/"
-
-            def __init__(self):
-                self.button = FakeElement()
-                self.iframe_button = FakeElement()
-
-            def is_closed(self):
-                return False
-
-            def locator(self, selector):
-                matches = {
-                    "aria-ref=e2": [self.button],
-                    "aria-ref=f1e2": [self.iframe_button],
-                    "aria-ref=e404": [],
-                    "button.submit": [self.button],
-                }
-                return FakeLocatorGroup(matches.get(selector, []))
-
-            def aria_snapshot(self, **kwargs):
-                return '- button "Submit" [ref=e2]\n- iframe [ref=e3]:\n  - button "Inner" [ref=f1e2]'
-
-            def title(self):
-                return "Example"
-
-        page = FakePage()
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
-        runtime.browser_or_context = object()
-        runtime.pages["thread"] = PageSlot(page=page, page_token=1)
-
-        snapshot = runtime.call("snapshot", {"thread": "thread"})
-        self.assertIn("[ref=e2]", snapshot)
-        self.assertIn("[ref=f1e2]", snapshot)
-        self.assertEqual(runtime.call("fill", {"thread": "thread", "uid": "@e2", "text": "hello"}), "filled\n")
-        self.assertEqual(page.button.filled, "hello")
-        self.assertEqual(runtime.call("click", {"thread": "thread", "uid": "f1e2"}), "clicked\n")
-        self.assertTrue(page.iframe_button.clicked)
-        runtime._target_locator(runtime.pages["thread"], "button.submit").click()
-        self.assertTrue(page.button.clicked)
-        with self.assertRaisesRegex(RuntimeError, "Capture a new snapshot"):
-            runtime.call("click", {"thread": "thread", "uid": "@e404"})
-
-    def test_camoufox_backend_profile_open_rejects_running_bridge(self):
-        from surf_agent.backends import CamoufoxBackend
-
-        class FakeClient:
-            def _health_ok(self):
-                return True
-
-        agent = FakeAxiAgent([], state_file=Path("/tmp/thread.json"))
-        agent.camoufox_client = FakeClient()
-        backend = CamoufoxBackend(agent, client=FakeClient(), welcome_url=lambda: "about:blank")
-        with self.assertRaisesRegex(SurfAgentError, "Camoufox bridge is running"):
-            backend.profile_open("https://x.test", profile_dir="/tmp", app_id="test")
-
-    def test_camoufox_backend_profile_open_launches_camoufox_subprocess(self):
-        from surf_agent.backends.camoufox.backend import CamoufoxBackend
-
-        class FakeClient:
-            def _health_ok(self):
-                return False
-
-        pops = []
-        fake_bin = "/usr/bin/camoufox-bin"
-
-        agent = FakeAxiAgent([], state_file=Path("/tmp/thread.json"))
-        agent.camoufox_client = FakeClient()
-        backend = CamoufoxBackend(agent, client=FakeClient(), welcome_url=lambda: "about:blank")
-        with (
-            patch("subprocess.Popen", side_effect=lambda *a, **kw: pops.append((a, kw)) or object()),
-            patch("surf_agent.backends.camoufox.backend._camoufox_binary_path", return_value=fake_bin),
-        ):
-            self.assertEqual(backend.profile_open("https://x.test", profile_dir="/tmp/p", app_id="test"), 0)
-
-        args = pops[0][0][0]
-        self.assertEqual(args[0], fake_bin)
-        self.assertEqual(args[1:], ["-profile", str(Path("/tmp/p")), "--class=test", "--name", "test", "https://x.test"])
-        self.assertTrue(pops[0][1]["start_new_session"])
-
-    def test_camoufox_runtime_passes_app_id_as_window_class(self):
-        calls = []
-
-        class FakeCamoufox:
-            def __init__(self, **kwargs):
-                calls.append(kwargs)
-
-            def __enter__(self):
-                return object()
-
-            def __exit__(self, exc_type, exc, traceback):
-                pass
-
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"), app_id="surf-agent-test")
-        fake_module = types.SimpleNamespace(Camoufox=FakeCamoufox)
-
-        with patch.dict(sys.modules, {"camoufox": types.SimpleNamespace(sync_api=fake_module), "camoufox.sync_api": fake_module}):
-            runtime.start()
-
-        self.assertEqual(calls[0]["args"], ["--class=surf-agent-test", "--name", "surf-agent-test"])
-        self.assertNotIn("no_viewport", calls[0])
-        self.assertNotIn("env", calls[0])
-
-    def test_camoufox_close_does_not_start_runtime(self):
-        class FakePage:
-            def __init__(self):
-                self.closed = False
-
-            def close(self):
-                self.closed = True
-
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
-        with patch.object(runtime, "start", side_effect=AssertionError("should not start")):
-            self.assertEqual(runtime.call("close", {"thread": "missing"}), "closed\n")
-            page = FakePage()
-            runtime.pages["thread"] = PageSlot(page=page, page_token=1)
-            self.assertEqual(runtime.call("close", {"thread": "thread"}), "closed\n")
-
-        self.assertTrue(page.closed)
-        self.assertNotIn("thread", runtime.pages)
-
-    def test_camoufox_open_reuses_initial_blank_context_page(self):
-        class BlankPage:
-            def __init__(self):
-                self.url = "about:blank"
-
-            def is_closed(self):
-                return False
-
-            def goto(self, url, wait_until=None):
-                self.url = url
-
-        class ContextWithBlankPage:
-            def __init__(self):
-                self.pages = [BlankPage()]
-
-            def new_page(self):
-                raise AssertionError("should reuse initial blank page")
-
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
-        runtime.browser_or_context = ContextWithBlankPage()
-
-        self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
-        self.assertIs(runtime.pages["thread"].page, runtime.browser_or_context.pages[0])
-        self.assertEqual(len(runtime.browser_or_context.pages), 1)
-
-    def test_camoufox_open_adopts_one_unowned_page_and_closes_restored_extras(self):
-        class RestoredPage:
-            def __init__(self, url):
-                self.url = url
-                self.closed = False
-
-            def is_closed(self):
-                return self.closed
-
-            def close(self):
-                self.closed = True
-
-            def goto(self, url, wait_until=None):
-                self.url = url
-
-        class ContextWithRestoredPages:
-            def __init__(self):
-                self.pages = [RestoredPage("https://restore-a.test/"), RestoredPage("https://restore-b.test/")]
-
-            def new_page(self):
-                raise AssertionError("should reuse restored page")
-
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
-        runtime.browser_or_context = ContextWithRestoredPages()
-
-        self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
-        self.assertIs(runtime.pages["thread"].page, runtime.browser_or_context.pages[0])
-        self.assertFalse(runtime.browser_or_context.pages[0].closed)
-        self.assertTrue(runtime.browser_or_context.pages[1].closed)
-
-    def test_camoufox_runtime_restarts_context_after_manual_window_close(self):
-        class ClosedPage:
-            def is_closed(self):
-                return True
-
-        class ClosedContext:
-            pages = []
-
-            def new_page(self):
-                raise RuntimeError("BrowserContext.new_page: Target page, context or browser has been closed")
-
-        class OpenContext:
-            def __init__(self):
-                self.pages = []
-
-            def new_page(self):
-                page = ClosedPage()
-                self.pages.append(page)
-                return page
-
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
-        runtime.browser_or_context = ClosedContext()
-        runtime.pages["thread"] = PageSlot(page=ClosedPage(), page_token=1)
-        open_context = OpenContext()
-
-        with patch.object(runtime, "start", side_effect=lambda: setattr(runtime, "browser_or_context", open_context)) as start:
-            slot = runtime._new_page("thread")
-
-        self.assertEqual(slot.page_token, 1)
-        self.assertIs(slot.page, open_context.pages[0])
-        self.assertEqual(start.call_count, 1)
-
-    def test_camoufox_open_recreates_page_when_goto_finds_closed_target(self):
-        class DeadPage:
-            url = "about:blank"
-
-            def is_closed(self):
-                return False
-
-            def close(self):
-                pass
-
-            def goto(self, url, wait_until=None):
-                raise RuntimeError("Page.goto: Target page, context or browser has been closed")
-
-        class OpenPage:
-            def __init__(self):
-                self.url = "about:blank"
-
-            def is_closed(self):
-                return False
-
-            def goto(self, url, wait_until=None):
-                self.url = url
-
-        class OpenContext:
-            pages = []
-
-            def new_page(self):
-                page = OpenPage()
-                self.pages.append(page)
-                return page
-
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
-        runtime.browser_or_context = OpenContext()
-        runtime.pages["thread"] = PageSlot(page=DeadPage(), page_token=1)
-
-        self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
-        self.assertIs(runtime.pages["thread"].page, runtime.browser_or_context.pages[0])
-
-    def test_camoufox_runtime_rejects_invalid_scroll_direction(self):
-        class FakePage:
-            def is_closed(self):
-                return False
-
-        runtime = CamoufoxRuntime(profile_dir=Path("/tmp/surf-camoufox-test"))
-        runtime.pages["thread"] = PageSlot(page=FakePage(), page_token=1)
-
-        with self.assertRaisesRegex(RuntimeError, "scroll requires direction"):
-            runtime.call("scroll", {"thread": "thread", "direction": "sideways"})
-
-    def test_camoufox_stop_request_shuts_down_http_server(self):
-        with TemporaryDirectory() as tmp:
-            server = HTTPServer(("127.0.0.1", 0), RequestHandler)
-            RequestHandler.runtime = CamoufoxRuntime(profile_dir=Path(tmp) / "profile")
-            thread = threading.Thread(target=server.serve_forever, daemon=True)
-            thread.start()
-            url = f"http://127.0.0.1:{server.server_port}/call"
-            payload = json.dumps({"name": "stop", "args": {}}).encode()
-            request = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-
-            with urllib.request.urlopen(request, timeout=2) as response:
-                body = json.loads(response.read().decode())
-            thread.join(timeout=2)
-            server.server_close()
-
-        self.assertEqual(body, {"result": "stopped\n"})
-        self.assertFalse(thread.is_alive())
 
     def test_close_matching_requires_pattern(self):
         output = io.StringIO()

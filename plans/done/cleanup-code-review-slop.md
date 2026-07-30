@@ -6,8 +6,8 @@ Fix review findings without changing CLI behavior:
 
 - Root `uv run pytest` works.
 - Dev tooling declared for pytest/ruff.
-- Camoufox/Patchright backend client+adapter duplication reduced.
-- Camoufox/Patchright bridge runtime duplication reduced where practical.
+- Local browser backend client and adapter duplication reduced.
+- Local browser bridge runtime duplication reduced where practical.
 - `surf_agent/cli.py` AXI forwarding slop reduced or isolated.
 - Temp JS file helper duplicated across surf-chatgpt reduced.
 - Existing package builds and tests pass.
@@ -24,7 +24,7 @@ Fix review findings without changing CLI behavior:
 
 1. Add root pytest config and dev dependency group.
 2. Remove obvious dead locals/imports.
-3. Extract shared local bridge client/backend support for Camoufox/Patchright backend adapters.
+3. Extract shared local bridge client/backend support.
 4. Extract shared bridge runtime data/ref helpers and HTTP handler where safe; keep sync/async browser calls separate.
 5. Extract surf-chatgpt temp JS helper.
 6. Trim or isolate AXI wrapper layer in `SurfAgent` if tests allow; otherwise document residual risk.
@@ -41,8 +41,8 @@ Fix review findings without changing CLI behavior:
 
 - Added root pytest importlib config and dev dependency group for pytest/ruff.
 - Removed ruff-reported dead locals/imports.
-- Extracted shared local bridge client/backend adapter logic to `surf_agent.backends.local_bridge` while keeping backend-specific profile launch and cleanup in Camoufox/Patchright modules.
-- Extracted shared bridge runtime dataclasses, text/ref helpers, bbox normalization, and HTTP request handler to `surf_agent.backends.bridge_common`; kept sync Camoufox and async Patchright browser flows separate.
+- Extracted shared local bridge client/backend adapter logic to `surf_agent.backends.local_bridge` while keeping browser-specific profile launch and cleanup in backend modules.
+- Extracted shared bridge runtime dataclasses, text/ref helpers, bbox normalization, and HTTP request handling to `surf_agent.backends.bridge_common`.
 - Extracted surf-chatgpt temporary JS file creation/deletion to `surf_chatgpt.temp_js`.
 - Removed the `SurfAgent` AXI forwarding wrapper layer, including `_axi_backend()` and the AXI-specific `ensure_page()` façade; tests that still exercise AXI internals now call the AXI backend directly.
 - Retained backend-specific stable page-id aliases because the backend packages already export those names.

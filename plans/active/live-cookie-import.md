@@ -34,7 +34,6 @@ Rules:
 - Import is opt-in. `set` requires either one or more `--domain` values or explicit `--all-domains`; they are mutually exclusive.
 - `import-cookies` always performs a fresh source backup and bypasses fingerprint suppression.
 - Automatic import occurs only before starting an inactive AXI/Patchright profile and only when the configured source fingerprint changed.
-- Camoufox rejects cookie import/configuration as unsupported.
 - Existing destination cookies are never deleted merely because they are absent from the source.
 - No time-based refresh heuristic exists.
 
@@ -213,7 +212,7 @@ Add `packages/surf-agent/tests/test_chrome_lifecycle.py` first.
 
 Required behavior:
 
-- Determine the actual active destination profile: AXI uses `chrome_profile_dir`; Patchright uses `patchright_profile_dir`; Camoufox is unaffected/rejected.
+- Determine the actual active destination profile: AXI uses `chrome_profile_dir`; Patchright uses `patchright_profile_dir`.
 - Generic process discovery recognizes any Chrome root using the destination `--user-data-dir`, including manual `profile open`, not only debug-port/pipe processes.
 - Automatic changed-cookie import completes before any AXI Chrome/bridge or Patchright bridge process starts.
 - Import failure prevents launch.

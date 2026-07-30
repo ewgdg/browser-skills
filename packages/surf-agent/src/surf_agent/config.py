@@ -11,15 +11,12 @@ from typing import Any, Iterable
 
 import tldextract
 
-from .constants import CAMOUFOX_BACKEND, DEFAULT_BACKEND, PATCHRIGHT_BACKEND
+from .constants import DEFAULT_BACKEND, SUPPORTED_BACKENDS, SUPPORTED_BACKENDS_DESCRIPTION
 from .errors import SurfAgentError
 
 # Use tldextract's packaged Public Suffix List snapshot.  Disabling network fetches
 # keeps command behavior deterministic and avoids exposing configured domains.
 _PSL = tldextract.TLDExtract(suffix_list_urls=())
-_BACKENDS = {DEFAULT_BACKEND, CAMOUFOX_BACKEND, PATCHRIGHT_BACKEND}
-
-
 @dataclass(frozen=True)
 class CookieScope:
     domains: tuple[str, ...] = ()
@@ -82,8 +79,8 @@ class CookieSourceConfig:
 
 def validate_backend_name(value: str, *, source: str = "backend") -> str:
     backend = value.strip().lower()
-    if backend not in _BACKENDS:
-        raise SurfAgentError(f"{source} must be 'axi', 'camoufox', or 'patchright'", exit_code=2)
+    if backend not in SUPPORTED_BACKENDS:
+        raise SurfAgentError(f"{source} must be {SUPPORTED_BACKENDS_DESCRIPTION}", exit_code=2)
     return backend
 
 

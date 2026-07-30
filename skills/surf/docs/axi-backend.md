@@ -1,5 +1,11 @@
 # AXI backend details
 
+AXI is an explicitly selected generic alternative to the default Patchright backend:
+
+```bash
+surf-agent backend set axi
+```
+
 `surf-agent` sets these AXI defaults internally for the bridge and the startup CLI fallback:
 
 ```bash

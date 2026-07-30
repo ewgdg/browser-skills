@@ -18,9 +18,9 @@ pi install git:github.com/ewgdg/browser-skills
 Install the browser helper CLIs separately:
 
 ```bash
-uv tool install "surf-agent @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
+uv tool install "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
 uv tool install \
-  --with "surf-agent @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
+  --with "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
   "surf-chatgpt @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-chatgpt"
 ```
 

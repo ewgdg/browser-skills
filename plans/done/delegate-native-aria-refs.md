@@ -10,7 +10,7 @@ Snapshot refs already identify exact elements through the driver-provided `aria-
 
 ## Scope & Constraints
 
-- Patchright and Camoufox adapters.
+- Patchright adapter.
 - Preserve AI-mode snapshots, selectors, action commands, stale-ref error text, depth, and box options.
 - Accept main-frame refs (`eN`) and iframe refs (`fNeN`), with optional `@` prefix.
 - No compatibility layer for removed `pr`/`cf` refs unless explicitly requested.
@@ -19,9 +19,8 @@ Snapshot refs already identify exact elements through the driver-provided `aria-
 ## Work Plan
 
 1. Patchright red/green slice: snapshot exposes native refs; fill/click delegate through `aria-ref`; stale refs fail clearly.
-2. Camoufox red/green slice with same behavior.
-3. Remove obsolete custom ref state, indexing, fingerprints, CSS-path helpers, sanitizers, limits, and tests.
-4. Run focused tests, full suite, lint, and real Patchright smoke test including iframe ref.
+2. Remove obsolete custom ref state, indexing, fingerprints, CSS-path helpers, sanitizers, limits, and tests.
+3. Run focused tests, full suite, lint, and real Patchright smoke test including iframe ref.
 
 ## Validation
 
@@ -34,7 +33,6 @@ Snapshot refs already identify exact elements through the driver-provided `aria-
 
 - [x] Native `aria-ref` behavior verified against current Patchright driver, including iframe refs and stale elements.
 - [x] Patchright slice.
-- [x] Camoufox slice.
 - [x] Dead-code removal.
 - [x] Full validation.
 
@@ -45,7 +43,7 @@ Snapshot refs already identify exact elements through the driver-provided `aria-
 
 ## Outcomes & Retrospective
 
-- Both adapters return native AI snapshots unchanged and resolve `eN`/`fNeN` refs through `aria-ref`.
+- Patchright returns native AI snapshots unchanged and resolves `eN`/`fNeN` refs through `aria-ref`.
 - Removed custom ref maps, actionable indexing, fingerprint rebinding, CSS paths, sanitizer regexes, duplicate snapshot nodes, and indexing limits.
 - Full suite: 196 tests and 29 subtests passed. Ruff and diff checks passed.
 - Live Patchright smoke test clicked main-frame and iframe refs; removed element ref produced the stale-snapshot error.

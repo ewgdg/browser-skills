@@ -1,6 +1,6 @@
 # Patchright backend
 
-Patchright is experimental. Use it for Chrome-channel persistent-profile trials where AXI is not enough.
+Patchright is Surf's default backend. It controls a persistent Chrome-channel profile through a local bridge.
 
 It may help Chrome-extension workflows, but extension behavior depends on the installed Chrome and profile state. Do not assume perfect 1Password support without a live smoke test.
 
@@ -15,12 +15,12 @@ surf-agent setup patchright
 
 Install Google Chrome yourself and make it available on PATH as `google-chrome`, or set `SURF_AGENT_CHROME_BIN`.
 
-## Select backend
+## Backend selection
 
-Persist Patchright:
+Fresh configuration uses Patchright. To restore the default after explicitly selecting AXI:
 
 ```bash
-surf-agent backend set patchright
+surf-agent backend reset
 ```
 
 Use once without changing config:

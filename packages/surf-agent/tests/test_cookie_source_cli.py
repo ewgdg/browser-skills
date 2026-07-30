@@ -53,12 +53,10 @@ def test_cookie_source_set_requires_exactly_one_scope_form(args: list[str]) -> N
     assert main(["profile", "cookie-source", "set", *args]) == 2
 
 
-def test_import_requires_config_and_camoufox_rejects_cookie_features(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_import_requires_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = tmp_path / "config.json"
     monkeypatch.setattr("surf_agent.cli.backend_config_file", lambda: config)
     assert main(["profile", "import-cookies"]) == 1
-    monkeypatch.setenv("SURF_AGENT_BACKEND", "camoufox")
-    assert main(["profile", "cookie-source", "show"]) == 1
 
 
 def test_cookie_source_set_rejects_source_family_that_cannot_match_destination(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -66,6 +64,7 @@ def test_cookie_source_set_rejects_source_family_that_cannot_match_destination(t
     source = tmp_path / "google-chrome"
     make_source(source)
     monkeypatch.setattr("surf_agent.cli.backend_config_file", lambda: config)
+    monkeypatch.setenv("SURF_AGENT_BACKEND", "axi")
     monkeypatch.setenv("SURF_AGENT_CHROME_BIN", "chromium")
 
     assert main(["profile", "cookie-source", "set", "--source", str(source), "--source-profile", "Default", "--domain", "example.com"]) == 1

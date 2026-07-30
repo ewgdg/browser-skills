@@ -7,14 +7,14 @@ description: Real browser control for web research, documentation lookup, browsi
 
 ## Backend policy
 
-Use installed `surf-agent` for browser operations. Default backend is `axi`, backed by a persistent AXI bridge and a dedicated surf-agent Chrome profile.
+Use installed `surf-agent` for browser operations. The default backend is Patchright, backed by a persistent local bridge and a dedicated surf-agent Chrome profile.
 
-Optional backends exist, but stay opt-in:
+AXI remains available as an explicitly selected generic alternative:
 
-- `camoufox`: experimental Firefox/Camoufox fingerprint-resistance trials.
-- `patchright`: experimental Chrome-channel persistent-profile trials.
+- `patchright`: default Chrome-channel persistent-profile browser control.
+- `axi`: explicit generic Chrome DevTools alternative.
 
-Backend selection priority: `SURF_AGENT_BACKEND`, then persisted platform user config (`surf-agent backend show` prints path), then `axi` default. Backend docs: [overview](docs/backends.md), [AXI](docs/axi-backend.md), [Camoufox](docs/camoufox-backend.md), [Patchright](docs/patchright-backend.md).
+Backend selection priority: `SURF_AGENT_BACKEND`, then persisted platform user config (`surf-agent backend show` prints path), then Patchright. Backend docs: [overview](docs/backends.md), [Patchright](docs/patchright-backend.md), [AXI](docs/axi-backend.md).
 
 ## Login state
 
@@ -25,7 +25,7 @@ Backend selection priority: `SURF_AGENT_BACKEND`, then persisted platform user c
 ## Prerequisites
 
 ```bash
-uv tool install "surf-agent @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
+uv tool install "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
 ```
 
 ## Operating rules

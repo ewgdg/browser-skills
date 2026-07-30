@@ -6,7 +6,7 @@ Read this for initial cookie-source setup, when expected login state is missing,
 
 Cookie import is opt-in and limited to explicitly allowed domains unless the user deliberately consents to `--all-domains`.
 
-For AXI and Patchright, Surf checks for changed source cookies before starting an inactive dedicated profile and imports them automatically. It does not refresh on a timer. Camoufox does not support cookie import.
+For AXI and Patchright, Surf checks for changed source cookies before starting an inactive dedicated profile and imports them automatically. It does not refresh on a timer.
 
 Imports add or update matching cookies but do not delete destination-only cookies. Logging out in the source browser therefore does not propagate that deletion to Surf.
 

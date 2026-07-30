@@ -6,7 +6,7 @@ Selection priority:
 
 1. `SURF_AGENT_BACKEND`
 2. persisted platform user config (`surf-agent backend show` prints path)
-3. default `axi`
+3. default `patchright`
 
 Use `surf-agent backend show` to inspect the selected backend and source.
 
@@ -16,7 +16,6 @@ Persist a backend:
 
 ```bash
 surf-agent backend set axi
-surf-agent backend set camoufox
 surf-agent backend set patchright
 ```
 
@@ -36,13 +35,12 @@ surf-agent backend reset
 
 ## Backend docs
 
-- [AXI backend](axi-backend.md) — default Chrome bridge backend.
-- [Camoufox backend](camoufox-backend.md) — experimental Firefox/Camoufox backend.
-- [Patchright backend](patchright-backend.md) — experimental Chrome-channel Patchright backend.
+- [Patchright backend](patchright-backend.md) — default Chrome-channel browser backend.
+- [AXI backend](axi-backend.md) — explicit generic Chrome DevTools alternative.
 
 
 ## Live cookie import
 
 AXI and Patchright share the Surf Chrome profile and can use an explicitly configured live Chrome cookie source. Configure allowed domains (or explicit all-domain consent) with `profile cookie-source set`, then inspect or force a refresh with `profile cookie-source show` and `profile import-cookies`.
 
-Automatic import occurs before starting an inactive owned profile only when the source fingerprint changes. SQLite online backup supports a running locked source. Same browser family, OS user, and `Local State.os_crypt` metadata are required. For imported Linux v11 cookies, Patchright must use Chrome’s real OS password store/keychain rather than its `--password-store=basic` and `--use-mock-keychain` automation defaults; the bridge excludes those defaults at launch. Imports upsert rows and do not remove destination-only cookies. Camoufox rejects this feature.
+Automatic import occurs before starting an inactive owned profile only when the source fingerprint changes. SQLite online backup supports a running locked source. Same browser family, OS user, and `Local State.os_crypt` metadata are required. For imported Linux v11 cookies, Patchright must use Chrome’s real OS password store/keychain rather than its `--password-store=basic` and `--use-mock-keychain` automation defaults; the bridge excludes those defaults at launch. Imports upsert rows and do not remove destination-only cookies.
