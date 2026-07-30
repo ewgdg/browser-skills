@@ -31,7 +31,11 @@ from .contracts import (
 from .errors import PublicError, PublicErrorType, SubmissionPhase
 from .session_address import InvalidSessionAddress, SessionAddress
 from .submission_lifecycle import SubmissionLifecycle
-from .surf_pages import LOGIN_THREAD, ChatGptOwnedPages
+from .surf_pages import (
+    LOGIN_THREAD,
+    ChatGptOwnedPages,
+    RetainedPageCapacityExceeded,
+)
 
 
 OBSERVATION_POLL_INTERVAL_SECONDS = 0.25
@@ -81,7 +85,10 @@ class OwnedPageSessionLifecycle:
 
     def login(self, request: LoginRequest) -> CommandOutcome:
         _ = request
-        self._pages.prepare_login()
+        try:
+            self._pages.prepare_login()
+        except RetainedPageCapacityExceeded as error:
+            return self._capacity_failure(error)
         return CommandOutcome.success(
             {
                 "handoff": {
@@ -92,7 +99,10 @@ class OwnedPageSessionLifecycle:
         )
 
     def ask(self, request: AskRequest) -> CommandOutcome:
-        submission = self._submission.ask(request)
+        try:
+            submission = self._submission.ask(request)
+        except RetainedPageCapacityExceeded as error:
+            return self._capacity_failure(error)
         if request.wait_timeout_seconds is None:
             return submission
         submitted_payload = submission.to_public_json()
@@ -219,7 +229,38 @@ class OwnedPageSessionLifecycle:
         )
 
     def abandon(self, request: AbandonRequest) -> CommandOutcome:
-        return self._pending_operation(request)
+        if (request.session is None) == (request.thread is None):
+            raise PublicError(PublicErrorType.INVALID_ARGS)
+        if request.session is not None:
+            identity: JsonObject = {"session": request.session.to_public_json()}
+            thread = request.session.thread
+            expected_exact_url = request.session.canonical_url
+        else:
+            assert request.thread is not None
+            identity = {"thread": request.thread}
+            thread = request.thread
+            expected_exact_url = None
+        try:
+            abandonment = self._pages.abandon(
+                thread=thread,
+                expected_exact_url=expected_exact_url,
+            )
+        except BridgeUnavailable:
+            return CommandOutcome.failure(
+                PublicError(PublicErrorType.BROWSER_UNAVAILABLE),
+                public_fields=identity,
+            )
+        except PublicError as error:
+            if (
+                request.session is not None
+                and error.type is PublicErrorType.THREAD_NOT_FOUND
+            ):
+                error = PublicError(PublicErrorType.SESSION_NOT_FOUND)
+            return CommandOutcome.failure(error, public_fields=identity)
+        fields = dict(identity)
+        if abandonment.attempt_state is not None:
+            fields["attempt"] = {"state": abandonment.attempt_state.value}
+        return CommandOutcome.success(fields)
 
     def recent(self, request: RecentSessionsRequest) -> CommandOutcome:
         return self._pending_operation(request)
@@ -344,6 +385,15 @@ class OwnedPageSessionLifecycle:
         return CommandOutcome.failure(
             error,
             public_fields={"session": session.to_public_json()},
+        )
+
+    def _capacity_failure(
+        self,
+        error: RetainedPageCapacityExceeded,
+    ) -> CommandOutcome:
+        return CommandOutcome.failure(
+            PublicError(PublicErrorType.CAPACITY_EXCEEDED),
+            public_fields={"capacity": error.to_public_json()},
         )
 
 

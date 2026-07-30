@@ -13,6 +13,12 @@ from surf_agent.backends.patchright.bridge import PatchrightRuntime
 from surf_agent.backends.patchright.owned_pages import PatchrightOwnedPageOperations
 
 
+ALLOCATION_POLICY_ARGS = {
+    "capacity_limit": 10,
+    "sweep_program": "classify-retained-page",
+}
+
+
 @pytest.fixture
 def headless_chrome() -> Browser:
     with sync_playwright() as playwright:
@@ -144,6 +150,25 @@ class ProgrammedPage(FakePage):
         return result
 
 
+class SequencedProgrammedPage(FakePage):
+    def __init__(self, url: str, results: dict[str, list[object]]) -> None:
+        super().__init__(url)
+        self.results = results
+
+    def evaluate(self, source: str) -> object:
+        self.evaluate_calls.append(source)
+        results = self.results[source]
+        result = results.pop(0) if len(results) > 1 else results[0]
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+class FailingCloseProgrammedPage(ProgrammedPage):
+    def close(self) -> None:
+        raise RuntimeError("private close failure")
+
+
 def test_owned_allocation_creates_a_background_window_without_touching_unrelated_pages(
     tmp_path: Path,
 ) -> None:
@@ -165,6 +190,7 @@ def test_owned_allocation_creates_a_background_window_without_touching_unrelated
             "allowed_scope": "chatgpt_pre_session",
             "expected_protection": "human_intervention",
             "protection": "human_intervention",
+            **ALLOCATION_POLICY_ARGS,
         },
     )
 
@@ -216,6 +242,7 @@ def test_owned_allocation_rejects_a_created_page_that_redirected_outside_scope(
                 "allowed_scope": "chatgpt_pre_session",
                 "expected_protection": "human_intervention",
                 "protection": "human_intervention",
+                **ALLOCATION_POLICY_ARGS,
             },
         )
 
@@ -249,6 +276,7 @@ def test_owned_allocation_reuses_the_exact_owned_thread_without_navigation(
             "allowed_scope": "chatgpt_pre_session",
             "expected_protection": "human_intervention",
             "protection": "human_intervention",
+            **ALLOCATION_POLICY_ARGS,
         },
     )
 
@@ -290,6 +318,7 @@ def test_owned_allocation_conflict_preserves_the_existing_binding(
             "allowed_scope": "chatgpt_pre_session",
             "expected_protection": "human_intervention",
             "protection": "human_intervention",
+            **ALLOCATION_POLICY_ARGS,
         },
     )
 
@@ -322,6 +351,7 @@ def test_owned_allocation_cannot_overwrite_existing_protection_without_a_guard(
             "allowed_scope": "chatgpt_pre_session",
             "expected_protection": "human_intervention",
             "protection": "human_intervention",
+            **ALLOCATION_POLICY_ARGS,
         },
     )
 
@@ -329,6 +359,211 @@ def test_owned_allocation_cannot_overwrite_existing_protection_without_a_guard(
     assert slot.protection == "explicitly_retained"
     assert page.closed is False
     assert page.goto_calls == []
+
+
+def test_eleventh_allocation_sweeps_one_terminal_page_then_allocates(
+    tmp_path: Path,
+) -> None:
+    sweep_program = "classify-retained-page"
+    terminal_page = ProgrammedPage(
+        "https://chatgpt.com/c/terminal",
+        {sweep_program: {"state": "completed"}},
+    )
+    protected_pages = [
+        ProgrammedPage(
+            f"https://chatgpt.com/c/retained-{index}",
+            {sweep_program: RuntimeError("protected DOM must not be inspected")},
+        )
+        for index in range(9)
+    ]
+    context = FakeContext(
+        [terminal_page, *protected_pages],
+        created_url="https://chatgpt.com/",
+        created_target_id="new-owned-target",
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.browser_or_context = context
+    runtime.pages["surf-chatgpt-session-terminal"] = PageSlot(
+        page=terminal_page,
+        page_token=1,
+        owner="surf-chatgpt",
+    )
+    for index, page in enumerate(protected_pages, start=2):
+        runtime.pages[f"surf-chatgpt-session-retained-{index}"] = PageSlot(
+            page=page,
+            page_token=index,
+            owner="surf-chatgpt",
+            protection="explicitly_retained",
+        )
+
+    raw = runtime.call(
+        "owned-allocate",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-login",
+            "url": "https://chatgpt.com/",
+            "allowed_scope": "chatgpt_pre_session",
+            "expected_protection": "human_intervention",
+            "protection": "human_intervention",
+            "capacity_limit": 10,
+            "sweep_program": sweep_program,
+        },
+    )
+
+    assert json.loads(raw)["page"]["thread"] == "surf-chatgpt-login"
+    assert terminal_page.evaluate_calls == [sweep_program]
+    assert terminal_page.closed is True
+    assert all(page.evaluate_calls == [] for page in protected_pages)
+    assert len(runtime.pages) == 10
+    assert context.create_target_calls == 1
+
+
+def test_eleventh_allocation_reports_ten_protected_pages_without_mutation(
+    tmp_path: Path,
+) -> None:
+    sweep_program = "classify-retained-page"
+    pages = [
+        ProgrammedPage(
+            f"https://chatgpt.com/c/session-{index}",
+            {sweep_program: {"state": "generating"}},
+        )
+        for index in range(9)
+    ]
+    out_of_scope = ProgrammedPage(
+        "https://example.com/private",
+        {sweep_program: RuntimeError("out-of-scope DOM must not be inspected")},
+    )
+    context = FakeContext([*pages, out_of_scope])
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.browser_or_context = context
+    for index, page in enumerate(pages[:4]):
+        runtime.pages[f"retained-{index}"] = PageSlot(
+            page=page,
+            page_token=index + 1,
+            owner="surf-chatgpt",
+            protection="explicitly_retained",
+        )
+    for index, page in enumerate(pages[4:6], start=4):
+        runtime.pages[f"human-{index}"] = PageSlot(
+            page=page,
+            page_token=index + 1,
+            owner="surf-chatgpt",
+            protection="human_intervention",
+        )
+    for index, page in enumerate(pages[6:8], start=6):
+        runtime.pages[f"generating-{index}"] = PageSlot(
+            page=page,
+            page_token=index + 1,
+            owner="surf-chatgpt",
+        )
+    pages[8].results[sweep_program] = {"state": "unrecognized"}
+    runtime.pages["unclassifiable"] = PageSlot(
+        page=pages[8],
+        page_token=9,
+        owner="surf-chatgpt",
+    )
+    runtime.pages["outside"] = PageSlot(
+        page=out_of_scope,
+        page_token=10,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-allocate",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-login",
+            "url": "https://chatgpt.com/",
+            "allowed_scope": "chatgpt_pre_session",
+            "expected_protection": "human_intervention",
+            "protection": "human_intervention",
+            "capacity_limit": 10,
+            "sweep_program": sweep_program,
+        },
+    )
+
+    outcome = json.loads(raw)
+    assert outcome["error"] == "capacity_exceeded"
+    assert outcome["capacity"]["limit"] == 10
+    assert [item["reason"] for item in outcome["capacity"]["retained"]] == [
+        *("explicitly_retained" for _ in range(4)),
+        *("human_intervention" for _ in range(2)),
+        *("generating" for _ in range(2)),
+        "inspection_failed",
+        "inspection_failed",
+    ]
+    assert len(outcome["capacity"]["retained"]) == 10
+    assert all(page.closed is False for page in [*pages, out_of_scope])
+    assert all(page.evaluate_calls == [] for page in pages[:6])
+    assert all(page.evaluate_calls == [sweep_program] for page in pages[6:])
+    assert out_of_scope.evaluate_calls == []
+    assert context.create_target_calls == 0
+
+
+def test_allocation_sweep_preserves_human_changed_and_inaccessible_pages(
+    tmp_path: Path,
+) -> None:
+    sweep_program = "classify-retained-page"
+    human_page = ProgrammedPage(
+        "https://chatgpt.com/",
+        {sweep_program: {"state": "human_intervention"}},
+    )
+    changed_page = ProgrammedPage(
+        "https://chatgpt.com/c/changed",
+        {sweep_program: {"state": "completed"}},
+    )
+    changed_page.before_evaluate = lambda _: setattr(
+        changed_page,
+        "url",
+        "https://chatgpt.com/c/replaced",
+    )
+    inaccessible_page = ProgrammedPage(
+        "https://chatgpt.com/c/inaccessible",
+        {sweep_program: RuntimeError("private inspection failure")},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    for index, (thread, page) in enumerate(
+        (
+            ("surf-chatgpt-login", human_page),
+            ("surf-chatgpt-session-changed", changed_page),
+            ("surf-chatgpt-session-inaccessible", inaccessible_page),
+        ),
+        start=1,
+    ):
+        runtime.pages[thread] = PageSlot(
+            page=page,
+            page_token=index,
+            owner="surf-chatgpt",
+        )
+
+    raw = runtime.call(
+        "owned-allocate",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-submit-new",
+            "url": "https://chatgpt.com/",
+            "allowed_scope": "chatgpt_pre_session",
+            "expected_protection": None,
+            "protection": None,
+            "capacity_limit": 3,
+            "sweep_program": sweep_program,
+        },
+    )
+
+    outcome = json.loads(raw)
+    assert [item["reason"] for item in outcome["capacity"]["retained"]] == [
+        "human_intervention",
+        "inspection_failed",
+        "inspection_failed",
+    ]
+    assert all(
+        page.evaluate_calls == [sweep_program]
+        for page in (human_page, changed_page, inaccessible_page)
+    )
+    assert all(
+        page.closed is False
+        for page in (human_page, changed_page, inaccessible_page)
+    )
 
 
 def test_session_resolution_reuses_only_the_exact_live_deterministic_binding(
@@ -861,6 +1096,329 @@ def test_owned_terminal_close_never_closes_a_protected_page(tmp_path: Path) -> N
     )
 
     assert json.loads(raw) == {"ok": False, "error": "ownership_conflict"}
+    assert page.evaluate_calls == []
+    assert page.closed is False
+
+
+def test_owned_abandonment_stops_once_affirms_stopped_then_closes(
+    tmp_path: Path,
+) -> None:
+    classify_program = "classify-retained-page"
+    stop_program = "request-stop-once"
+    page = SequencedProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {
+            classify_program: [
+                {"state": "generating"},
+                {"state": "stopped"},
+            ],
+            stop_program: [{"state": "stop_requested"}],
+        },
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+        protection="explicitly_retained",
+    )
+
+    raw = runtime.call(
+        "owned-abandon",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "classify_program": classify_program,
+            "stop_program": stop_program,
+            "stop_confirmation_timeout_seconds": 10.0,
+            "stop_confirmation_poll_interval_seconds": 0.1,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": True, "attempt_state": "stopped"}
+    assert page.evaluate_calls == [classify_program, stop_program, classify_program]
+    assert page.closed is True
+    assert "surf-chatgpt-session-abc123" not in runtime.pages
+
+
+def test_owned_abandonment_never_stops_a_page_replaced_during_classification(
+    tmp_path: Path,
+) -> None:
+    classify_program = "classify-retained-page"
+    stop_program = "request-stop-once"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {
+            classify_program: {"state": "generating"},
+            stop_program: {"state": "stop_requested"},
+        },
+    )
+    replacement = FakePage("https://chatgpt.com/c/abc123")
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    original_slot = PageSlot(page=page, page_token=8, owner="surf-chatgpt")
+    replacement_slot = PageSlot(
+        page=replacement,
+        page_token=9,
+        owner="surf-chatgpt",
+    )
+    runtime.pages["surf-chatgpt-session-abc123"] = original_slot
+    page.before_evaluate = lambda _: runtime.pages.__setitem__(
+        "surf-chatgpt-session-abc123",
+        replacement_slot,
+    )
+
+    raw = runtime.call(
+        "owned-abandon",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "classify_program": classify_program,
+            "stop_program": stop_program,
+            "stop_confirmation_timeout_seconds": 10.0,
+            "stop_confirmation_poll_interval_seconds": 0.1,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "abandonment_failed"}
+    assert page.evaluate_calls == [classify_program]
+    assert page.closed is False
+    assert replacement.closed is False
+    assert runtime.pages["surf-chatgpt-session-abc123"] is replacement_slot
+
+
+def test_owned_abandonment_stops_inspecting_after_stop_changes_page_scope(
+    tmp_path: Path,
+) -> None:
+    classify_program = "classify-retained-page"
+    stop_program = "request-stop-once"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {
+            classify_program: {"state": "generating"},
+            stop_program: {"state": "stop_requested"},
+        },
+    )
+    page.before_evaluate = lambda source: (
+        setattr(page, "url", "https://chatgpt.com/share/private")
+        if source == stop_program
+        else None
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-abandon",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "classify_program": classify_program,
+            "stop_program": stop_program,
+            "stop_confirmation_timeout_seconds": 10.0,
+            "stop_confirmation_poll_interval_seconds": 0.1,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "abandonment_failed"}
+    assert page.evaluate_calls == [classify_program, stop_program]
+    assert page.closed is False
+
+
+@pytest.mark.parametrize(
+    ("state", "expected_attempt_state"),
+    [
+        ("completed", "completed"),
+        ("stopped", "stopped"),
+        ("failed", "failed"),
+        ("human_intervention", None),
+    ],
+)
+def test_owned_abandonment_closes_terminal_or_human_page_without_stop(
+    state: str,
+    expected_attempt_state: str | None,
+    tmp_path: Path,
+) -> None:
+    classify_program = "classify-retained-page"
+    stop_program = "request-stop-once"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {classify_program: {"state": state}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+        protection="explicitly_retained",
+    )
+
+    raw = runtime.call(
+        "owned-abandon",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "classify_program": classify_program,
+            "stop_program": stop_program,
+            "stop_confirmation_timeout_seconds": 10.0,
+            "stop_confirmation_poll_interval_seconds": 0.1,
+        },
+    )
+
+    assert json.loads(raw) == {
+        "ok": True,
+        "attempt_state": expected_attempt_state,
+    }
+    assert page.evaluate_calls == [classify_program]
+    assert page.closed is True
+
+
+@pytest.mark.parametrize(
+    ("classify_result", "stop_result", "expected_calls"),
+    [
+        ({"state": "unrecognized"}, None, ["classify-retained-page"]),
+        (
+            {"state": "generating"},
+            {"state": "unrecognized"},
+            ["classify-retained-page", "request-stop-once"],
+        ),
+    ],
+)
+def test_owned_abandonment_preserves_page_when_classification_or_stop_fails(
+    classify_result: dict[str, str],
+    stop_result: dict[str, str] | None,
+    expected_calls: list[str],
+    tmp_path: Path,
+) -> None:
+    classify_program = "classify-retained-page"
+    stop_program = "request-stop-once"
+    results = {classify_program: classify_result}
+    if stop_result is not None:
+        results[stop_program] = stop_result
+    page = ProgrammedPage("https://chatgpt.com/c/abc123", results)
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+        protection="explicitly_retained",
+    )
+
+    raw = runtime.call(
+        "owned-abandon",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "classify_program": classify_program,
+            "stop_program": stop_program,
+            "stop_confirmation_timeout_seconds": 10.0,
+            "stop_confirmation_poll_interval_seconds": 0.1,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "abandonment_failed"}
+    assert page.evaluate_calls == expected_calls
+    assert page.closed is False
+    assert "surf-chatgpt-session-abc123" in runtime.pages
+
+
+def test_owned_abandonment_preserves_page_when_closure_cannot_be_affirmed(
+    tmp_path: Path,
+) -> None:
+    classify_program = "classify-retained-page"
+    page = FailingCloseProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {classify_program: {"state": "completed"}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-abandon",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "classify_program": classify_program,
+            "stop_program": "request-stop-once",
+            "stop_confirmation_timeout_seconds": 10.0,
+            "stop_confirmation_poll_interval_seconds": 0.1,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "abandonment_failed"}
+    assert page.closed is False
+    assert "surf-chatgpt-session-abc123" in runtime.pages
+
+
+@pytest.mark.parametrize(
+    ("owner", "url", "expected_exact_url", "expected_error"),
+    [
+        (
+            "different-owner",
+            "https://chatgpt.com/c/abc123",
+            "https://chatgpt.com/c/abc123",
+            "ownership_conflict",
+        ),
+        (
+            "surf-chatgpt",
+            "https://chatgpt.com/share/private",
+            None,
+            "abandonment_failed",
+        ),
+    ],
+)
+def test_owned_abandonment_preserves_unowned_or_out_of_scope_page_without_inspection(
+    owner: str,
+    url: str,
+    expected_exact_url: str | None,
+    expected_error: str,
+    tmp_path: Path,
+) -> None:
+    classify_program = "classify-retained-page"
+    page = ProgrammedPage(
+        url,
+        {classify_program: RuntimeError("page must not be inspected")},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner=owner,
+    )
+
+    raw = runtime.call(
+        "owned-abandon",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_exact_url": expected_exact_url,
+            "allowed_scope": "chatgpt",
+            "classify_program": classify_program,
+            "stop_program": "request-stop-once",
+            "stop_confirmation_timeout_seconds": 10.0,
+            "stop_confirmation_poll_interval_seconds": 0.1,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": expected_error}
     assert page.evaluate_calls == []
     assert page.closed is False
 

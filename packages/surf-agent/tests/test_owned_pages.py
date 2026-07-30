@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from surf_agent.owned_pages import (
+    AbandonOwnedPage,
     AllocateOwnedPage,
     ClassifyOwnedPageAttempt,
     CloseTerminalOwnedPage,
@@ -19,6 +20,10 @@ from surf_agent.owned_pages import (
     OwnedPageAttemptResult,
     OwnedPageAttemptState,
     OwnedPageAmbiguousSession,
+    OwnedPageAllocationPolicy,
+    OwnedPageAbandonment,
+    OwnedPageCapacity,
+    OwnedPageCapacityExceeded,
     OwnedPageClassifier,
     OwnedPageInspectionState,
     OwnedPageNotFound,
@@ -26,6 +31,8 @@ from surf_agent.owned_pages import (
     OwnedPageProgram,
     OwnedPagePromptSubmission,
     OwnedPageRef,
+    OwnedPageRetainedPage,
+    OwnedPageRetentionReason,
     OwnedPageScope,
     OwnedPageSelection,
     OwnedPageSelectionDimension,
@@ -49,6 +56,10 @@ from surf_agent.owned_pages import (
 
 
 CLASSIFIER = OwnedPageClassifier("() => ({state: 'session'})")
+ALLOCATION_POLICY = OwnedPageAllocationPolicy(
+    limit=10,
+    sweep_program=OwnedPageProgram("() => ({state: 'generating'})"),
+)
 
 
 class NoBrowserCallsClient:
@@ -135,6 +146,7 @@ def test_patchright_owned_allocation_uses_the_typed_bridge_transport() -> None:
         thread="surf-chatgpt-login",
         url="https://chatgpt.com/",
         allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+        policy=ALLOCATION_POLICY,
         expected_protection=OwnedPageProtection.HUMAN_INTERVENTION,
         protection=OwnedPageProtection.HUMAN_INTERVENTION,
     )
@@ -156,9 +168,180 @@ def test_patchright_owned_allocation_uses_the_typed_bridge_transport() -> None:
                 "allowed_scope": "chatgpt_pre_session",
                 "expected_protection": "human_intervention",
                 "protection": "human_intervention",
+                "capacity_limit": 10,
+                "sweep_program": ALLOCATION_POLICY.sweep_program.source,
             },
         )
     ]
+
+
+def test_patchright_capacity_failure_decodes_only_bounded_recovery_metadata() -> None:
+    client = ScriptedClient(
+        {
+            "ok": False,
+            "error": "capacity_exceeded",
+            "capacity": {
+                "limit": 2,
+                "retained": [
+                    {
+                        "thread": "surf-chatgpt-session-abc123",
+                        "session_id": "abc123",
+                        "reason": "generating",
+                    },
+                    {"thread": "surf-chatgpt-login", "reason": "human_intervention"},
+                ],
+            },
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+    request = AllocateOwnedPage(
+        owner="surf-chatgpt",
+        thread="surf-chatgpt-login",
+        url="https://chatgpt.com/",
+        allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+        expected_protection=OwnedPageProtection.HUMAN_INTERVENTION,
+        protection=OwnedPageProtection.HUMAN_INTERVENTION,
+        policy=OwnedPageAllocationPolicy(
+            limit=2,
+            sweep_program=OwnedPageProgram("() => ({state: 'generating'})"),
+        ),
+    )
+
+    with pytest.raises(OwnedPageCapacityExceeded) as caught:
+        bridge.allocate(request)
+
+    assert caught.value.capacity == OwnedPageCapacity(
+        limit=2,
+        retained=(
+            OwnedPageRetainedPage(
+                session_id="abc123",
+                thread="surf-chatgpt-session-abc123",
+                reason=OwnedPageRetentionReason.GENERATING,
+            ),
+            OwnedPageRetainedPage(
+                session_id=None,
+                thread="surf-chatgpt-login",
+                reason=OwnedPageRetentionReason.HUMAN_INTERVENTION,
+            ),
+        ),
+    )
+    assert client.calls == [
+        (
+            "owned-allocate",
+            {
+                "owner": "surf-chatgpt",
+                "thread": "surf-chatgpt-login",
+                "url": "https://chatgpt.com/",
+                "allowed_scope": "chatgpt_pre_session",
+                "expected_protection": "human_intervention",
+                "protection": "human_intervention",
+                "capacity_limit": 2,
+                "sweep_program": request.policy.sweep_program.source,
+            },
+        )
+    ]
+
+
+def test_patchright_abandonment_uses_one_typed_guarded_transaction() -> None:
+    client = ScriptedClient({"ok": True, "attempt_state": "stopped"})
+    bridge = PatchrightOwnedPageBridge(client)
+    request = AbandonOwnedPage(
+        owner="surf-chatgpt",
+        thread="surf-chatgpt-session-abc123",
+        expected_exact_url="https://chatgpt.com/c/abc123",
+        allowed_scope=OwnedPageScope.CHATGPT,
+        classify_program=OwnedPageProgram("() => ({state: 'generating'})"),
+        stop_program=OwnedPageProgram("() => ({state: 'stop_requested'})"),
+        stop_confirmation_timeout_seconds=10.0,
+        stop_confirmation_poll_interval_seconds=0.1,
+    )
+
+    outcome = bridge.abandon(request)
+
+    assert outcome == OwnedPageAbandonment(
+        attempt_state=OwnedPageAttemptState.STOPPED
+    )
+    assert client.calls == [
+        (
+            "owned-abandon",
+            {
+                "owner": "surf-chatgpt",
+                "thread": "surf-chatgpt-session-abc123",
+                "expected_exact_url": "https://chatgpt.com/c/abc123",
+                "allowed_scope": "chatgpt",
+                "classify_program": request.classify_program.source,
+                "stop_program": request.stop_program.source,
+                "stop_confirmation_timeout_seconds": 10.0,
+                "stop_confirmation_poll_interval_seconds": 0.1,
+            },
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        {
+            "ok": False,
+            "error": "capacity_exceeded",
+            "capacity": {
+                "limit": 10,
+                "retained": [
+                    {
+                        "session_id": "abc123",
+                        "thread": "surf-chatgpt-session-abc123",
+                        "reason": "generating",
+                        "title": "CANARY-private-title",
+                    }
+                ],
+            },
+        },
+        {
+            "ok": True,
+            "attempt_state": "stopped",
+            "text": "CANARY-private-response",
+        },
+        {
+            "ok": False,
+            "error": "abandonment_failed",
+            "text": "CANARY-private-response",
+        },
+    ],
+)
+def test_cleanup_transport_rejects_content_bearing_or_unexpected_metadata(
+    result: dict[str, object],
+) -> None:
+    bridge = PatchrightOwnedPageBridge(ScriptedClient(result))
+
+    if result.get("capacity") is not None:
+        request = AllocateOwnedPage(
+            owner="surf-chatgpt",
+            thread="surf-chatgpt-login",
+            url="https://chatgpt.com/",
+            allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+            policy=ALLOCATION_POLICY,
+            expected_protection=OwnedPageProtection.HUMAN_INTERVENTION,
+            protection=OwnedPageProtection.HUMAN_INTERVENTION,
+        )
+    else:
+        request = AbandonOwnedPage(
+            owner="surf-chatgpt",
+            thread="surf-chatgpt-session-abc123",
+            expected_exact_url="https://chatgpt.com/c/abc123",
+            allowed_scope=OwnedPageScope.CHATGPT,
+            classify_program=OwnedPageProgram("classify"),
+            stop_program=OwnedPageProgram("stop"),
+            stop_confirmation_timeout_seconds=10.0,
+            stop_confirmation_poll_interval_seconds=0.1,
+        )
+
+    with pytest.raises(ValueError) as caught:
+        if result.get("capacity") is not None:
+            bridge.allocate(request)
+        else:
+            bridge.abandon(request)
+
+    assert "CANARY" not in str(caught.value)
 
 
 def test_unsupported_backend_rejects_allocation_without_browser_work() -> None:
@@ -168,6 +351,7 @@ def test_unsupported_backend_rejects_allocation_without_browser_work() -> None:
         thread="surf-chatgpt-login",
         url="https://chatgpt.com/",
         allowed_scope=OwnedPageScope.CHATGPT,
+        policy=ALLOCATION_POLICY,
         expected_protection=OwnedPageProtection.HUMAN_INTERVENTION,
         protection=OwnedPageProtection.HUMAN_INTERVENTION,
     )

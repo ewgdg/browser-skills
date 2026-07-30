@@ -149,3 +149,20 @@ surf-chatgpt abandon --thread surf-chatgpt-login
 ```
 
 Abandonment is the only automatic path allowed to stop an active response attempt.
+It requests stop exactly once, affirms `stopped`, then closes. Terminal attempts and
+affirmed non-generating login or challenge pages close directly. If ownership, page
+scope, classification, stop, or closure cannot be affirmed, abandonment fails and
+preserves the page. Age, inactivity, observation timeout, caller exit, and process
+death never authorize abandonment.
+
+Before each owned-page allocation, the live bridge performs one metadata-only sweep
+of surf-chatgpt pages. Explicitly retained and human-protected pages are not DOM
+inspected. Other pages are inspected at most once and close only when terminal state,
+ownership, scope, protection, and identity are all affirmed. Sweeps never navigate,
+recover, poll, stop generation, or emit browser UI events.
+
+The bridge retains at most ten surf-chatgpt-owned pages. If ten protected pages remain,
+allocation fails with `capacity_exceeded` and a bounded `capacity.retained` list. Each
+entry contains only a session ID or necessary pre-session thread plus one reason:
+`generating`, `human_intervention`, `inspection_failed`, or `explicitly_retained`.
+Resolve the blocker or explicitly abandon one listed page before allocating another.

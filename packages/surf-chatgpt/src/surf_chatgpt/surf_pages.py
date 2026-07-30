@@ -4,6 +4,7 @@ from collections.abc import Callable
 from typing import TypeVar
 
 from surf_agent.owned_pages import (
+    AbandonOwnedPage,
     AllocateOwnedPage,
     ClassifyOwnedPageAttempt,
     CloseTerminalOwnedPage,
@@ -15,14 +16,20 @@ from surf_agent.owned_pages import (
     OwnedPageAttemptResult,
     OwnedPageAttemptState,
     OwnedPageAmbiguousSession,
+    OwnedPageAllocationPolicy,
+    OwnedPageAbandonment,
+    OwnedPageAbandonmentFailed,
     OwnedPageBridge,
     OwnedPageInspection,
     OwnedPageInspectionFailed,
+    OwnedPageCapacity,
+    OwnedPageCapacityExceeded,
     OwnedPageNotFound,
     OwnedPageOwnershipConflict,
     OwnedPageProgram,
     OwnedPageProtection,
     OwnedPageRef,
+    OwnedPageRetainedPage,
     OwnedPageSelectionDimension,
     OwnedPageScope,
     OwnedPageSubmissionAlreadyAttempted,
@@ -38,8 +45,9 @@ from surf_agent.owned_pages import (
 )
 from surf_agent.errors import BridgeIdentityUnproven, BridgeUnavailable, SurfAgentError
 
-from .contracts import Pace
+from .contracts import JsonObject, JsonValue, Pace
 from .dom.attempt import classify_latest_attempt_source, extract_latest_result_source
+from .dom.cleanup import classify_retained_page_source, request_stop_source
 from .dom.readiness import CURRENT_SESSION_CLASSIFIER
 from .dom.submission import (
     observe_session_assignment_source,
@@ -53,7 +61,33 @@ from .session_address import SessionAddress
 SURF_CHATGPT_OWNER = "surf-chatgpt"
 LOGIN_THREAD = "surf-chatgpt-login"
 CHATGPT_HOME_URL = "https://chatgpt.com/"
+MAX_RETAINED_PAGES = 10
+STOP_CONFIRMATION_TIMEOUT_SECONDS = 10.0
+STOP_CONFIRMATION_POLL_INTERVAL_SECONDS = 0.1
 _Result = TypeVar("_Result")
+
+
+class RetainedPageCapacityExceeded(Exception):
+    def __init__(self, capacity: OwnedPageCapacity) -> None:
+        self.capacity = capacity
+        super().__init__("Retained-page capacity exceeded.")
+
+    def to_public_json(self) -> JsonObject:
+        retained: list[JsonValue] = []
+        for page in self.capacity.retained:
+            item = _retained_page_public_json(page)
+            item["reason"] = page.reason.value
+            retained.append(item)
+        return {"limit": self.capacity.limit, "retained": retained}
+
+
+def _retained_page_public_json(page: OwnedPageRetainedPage) -> JsonObject:
+    if (
+        page.session_id is not None
+        and page.thread == SessionAddress(page.session_id).thread
+    ):
+        return {"session": {"id": page.session_id}}
+    return {"thread": page.thread}
 
 
 class ChatGptOwnedPages:
@@ -62,8 +96,8 @@ class ChatGptOwnedPages:
 
     def prepare_login(self) -> OwnedPageRef:
         self._require_capabilities()
-        try:
-            return self._bridge.allocate(
+        return self._run(
+            lambda: self._bridge.allocate(
                 AllocateOwnedPage(
                     owner=SURF_CHATGPT_OWNER,
                     thread=LOGIN_THREAD,
@@ -71,16 +105,10 @@ class ChatGptOwnedPages:
                     allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
                     expected_protection=OwnedPageProtection.HUMAN_INTERVENTION,
                     protection=OwnedPageProtection.HUMAN_INTERVENTION,
+                    policy=self._allocation_policy(),
                 )
             )
-        except UnsupportedOwnedPageCapability as error:
-            raise PublicError(PublicErrorType.UNSUPPORTED_BROWSER_CAPABILITY) from error
-        except OwnedPageOwnershipConflict as error:
-            raise PublicError(PublicErrorType.OWNERSHIP_CONFLICT) from error
-        except BridgeIdentityUnproven as error:
-            raise PublicError(PublicErrorType.BROWSER_IDENTITY_UNPROVEN) from error
-        except SurfAgentError as error:
-            raise PublicError(PublicErrorType.BROWSER_UNAVAILABLE) from error
+        )
 
     def inspect_thread(self, thread: str) -> OwnedPageInspection:
         self._require_capabilities()
@@ -122,6 +150,7 @@ class ChatGptOwnedPages:
                     allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
                     expected_protection=protection,
                     protection=protection,
+                    policy=self._allocation_policy(),
                 )
             )
         )
@@ -323,6 +352,34 @@ class ChatGptOwnedPages:
             )
         )
 
+    def abandon(
+        self,
+        *,
+        thread: str,
+        expected_exact_url: str | None,
+    ) -> OwnedPageAbandonment:
+        self._require_capabilities()
+        return self._run(
+            lambda: self._bridge.abandon(
+                AbandonOwnedPage(
+                    owner=SURF_CHATGPT_OWNER,
+                    thread=thread,
+                    expected_exact_url=expected_exact_url,
+                    allowed_scope=OwnedPageScope.CHATGPT,
+                    classify_program=OwnedPageProgram(
+                        classify_retained_page_source()
+                    ),
+                    stop_program=OwnedPageProgram(request_stop_source()),
+                    stop_confirmation_timeout_seconds=(
+                        STOP_CONFIRMATION_TIMEOUT_SECONDS
+                    ),
+                    stop_confirmation_poll_interval_seconds=(
+                        STOP_CONFIRMATION_POLL_INTERVAL_SECONDS
+                    ),
+                )
+            )
+        )
+
     def rebind_submission(
         self,
         page: OwnedPageRef,
@@ -360,10 +417,20 @@ class ChatGptOwnedPages:
             raise PublicError(PublicErrorType.INSPECTION_FAILED) from error
         except OwnedPageAmbiguousSession as error:
             raise PublicError(PublicErrorType.AMBIGUOUS_SESSION_PAGE) from error
+        except OwnedPageCapacityExceeded as error:
+            raise RetainedPageCapacityExceeded(error.capacity) from error
+        except OwnedPageAbandonmentFailed as error:
+            raise PublicError(PublicErrorType.ABANDONMENT_FAILED) from error
         except BridgeIdentityUnproven as error:
             raise PublicError(PublicErrorType.BROWSER_IDENTITY_UNPROVEN) from error
         except SurfAgentError as error:
             raise PublicError(PublicErrorType.BROWSER_UNAVAILABLE) from error
+
+    def _allocation_policy(self) -> OwnedPageAllocationPolicy:
+        return OwnedPageAllocationPolicy(
+            limit=MAX_RETAINED_PAGES,
+            sweep_program=OwnedPageProgram(classify_retained_page_source()),
+        )
 
     def _require_capabilities(self) -> None:
         if not self._bridge.capabilities().supported:

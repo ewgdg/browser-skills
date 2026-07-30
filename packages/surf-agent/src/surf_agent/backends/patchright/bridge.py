@@ -201,6 +201,8 @@ class PatchrightRuntime:
             return await self.owned_pages.extract_result(args)
         if name == "owned-close-terminal":
             return await self.owned_pages.close_terminal(args)
+        if name == "owned-abandon":
+            return await self.owned_pages.abandon(args)
         if name == "scroll" and str(args.get("direction") or "down") not in {"up", "down", "top", "bottom"}:
             raise RuntimeError("scroll requires direction: up, down, top, or bottom")
         await self._start_async()
@@ -323,6 +325,9 @@ class PatchrightRuntime:
     # the runtime remains the sole authority over bindings, tokens, and protection.
     def _owned_page_slot(self, thread: str) -> PageSlot | None:
         return self.pages.get(thread)
+
+    def _owned_page_bindings(self) -> list[tuple[str, PageSlot]]:
+        return list(self.pages.items())
 
     def _page_is_bound(self, page: Any) -> bool:
         return any(slot.page is page for slot in self.pages.values())

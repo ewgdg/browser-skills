@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -42,6 +43,8 @@ class OwnedPageBridgeErrorCode(StrEnum):
     INSPECTION_FAILED = "inspection_failed"
     SUBMISSION_ALREADY_ATTEMPTED = "submission_already_attempted"
     AMBIGUOUS_SESSION_PAGE = "ambiguous_session_page"
+    CAPACITY_EXCEEDED = "capacity_exceeded"
+    ABANDONMENT_FAILED = "abandonment_failed"
 
 
 class OwnedPageSelectionDimension(StrEnum):
@@ -80,6 +83,13 @@ class OwnedPageAttemptState(StrEnum):
     FAILED = "failed"
 
 
+class OwnedPageRetentionReason(StrEnum):
+    GENERATING = "generating"
+    HUMAN_INTERVENTION = "human_intervention"
+    INSPECTION_FAILED = "inspection_failed"
+    EXPLICITLY_RETAINED = "explicitly_retained"
+
+
 REQUIRED_OWNED_PAGE_CAPABILITIES = frozenset(OwnedPageCapability)
 CHATGPT_HOSTNAME = "chatgpt.com"
 CHATGPT_PRE_SESSION_PATHS = frozenset({"", "/", "/auth/login", "/auth/login/"})
@@ -104,11 +114,26 @@ class OwnedPageCapabilities:
 
 
 @dataclass(frozen=True)
+class OwnedPageAllocationPolicy:
+    limit: int
+    sweep_program: OwnedPageProgram
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.limit, int)
+            or isinstance(self.limit, bool)
+            or self.limit <= 0
+        ):
+            raise ValueError("Owned-page capacity limits must be positive integers.")
+
+
+@dataclass(frozen=True)
 class AllocateOwnedPage:
     owner: str
     thread: str
     url: str
     allowed_scope: OwnedPageScope
+    policy: OwnedPageAllocationPolicy
     expected_protection: OwnedPageProtection | None = None
     protection: OwnedPageProtection | None = None
 
@@ -213,6 +238,32 @@ class CloseTerminalOwnedPage(GuardedOwnedPageProgram):
 
 
 @dataclass(frozen=True)
+class AbandonOwnedPage:
+    owner: str
+    thread: str
+    expected_exact_url: str | None
+    allowed_scope: OwnedPageScope
+    classify_program: OwnedPageProgram
+    stop_program: OwnedPageProgram
+    stop_confirmation_timeout_seconds: float
+    stop_confirmation_poll_interval_seconds: float
+
+    def __post_init__(self) -> None:
+        intervals = (
+            self.stop_confirmation_timeout_seconds,
+            self.stop_confirmation_poll_interval_seconds,
+        )
+        if not all(
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and math.isfinite(value)
+            and value > 0
+            for value in intervals
+        ):
+            raise ValueError("Owned-page stop confirmation intervals must be positive.")
+
+
+@dataclass(frozen=True)
 class RebindOwnedPage:
     owner: str
     source_thread: str
@@ -285,6 +336,55 @@ class OwnedPageAttemptResult:
     text: str | None = None
 
 
+@dataclass(frozen=True)
+class OwnedPageAbandonment:
+    attempt_state: OwnedPageAttemptState | None
+
+    def __post_init__(self) -> None:
+        if self.attempt_state is not None and not isinstance(
+            self.attempt_state, OwnedPageAttemptState
+        ):
+            raise TypeError("Abandonment outcomes require an allow-listed attempt state.")
+        if self.attempt_state is OwnedPageAttemptState.GENERATING:
+            raise ValueError("Successful abandonment cannot remain generating.")
+
+
+@dataclass(frozen=True)
+class OwnedPageRetainedPage:
+    session_id: str | None
+    thread: str
+    reason: OwnedPageRetentionReason
+
+    def __post_init__(self) -> None:
+        if self.session_id is not None and (
+            not isinstance(self.session_id, str)
+            or not CHATGPT_SESSION_PATH_PATTERN.fullmatch(f"/c/{self.session_id}")
+        ):
+            raise ValueError("Retained pages require a valid session identity.")
+        if not isinstance(self.thread, str) or not self.thread:
+            raise ValueError("Retained pages require a non-empty thread identity.")
+        if not isinstance(self.reason, OwnedPageRetentionReason):
+            raise TypeError("Retained pages require an allow-listed reason.")
+
+
+@dataclass(frozen=True)
+class OwnedPageCapacity:
+    limit: int
+    retained: tuple[OwnedPageRetainedPage, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.limit, int)
+            or isinstance(self.limit, bool)
+            or self.limit <= 0
+        ):
+            raise ValueError("Owned-page capacity limits must be positive integers.")
+        if len(self.retained) != self.limit:
+            raise ValueError(
+                "Owned-page capacity failures require one entry per blocking page."
+            )
+
+
 class OwnedPageBridge(Protocol):
     def capabilities(self) -> OwnedPageCapabilities: ...
 
@@ -322,6 +422,8 @@ class OwnedPageBridge(Protocol):
     ) -> OwnedPageAttemptResult: ...
 
     def close_terminal(self, request: CloseTerminalOwnedPage) -> None: ...
+
+    def abandon(self, request: AbandonOwnedPage) -> OwnedPageAbandonment: ...
 
 
 class OwnedPageBridgeClient(Protocol):
@@ -368,6 +470,16 @@ class OwnedPageAmbiguousSession(Exception):
     pass
 
 
+class OwnedPageCapacityExceeded(Exception):
+    def __init__(self, capacity: OwnedPageCapacity) -> None:
+        self.capacity = capacity
+        super().__init__("Owned-page capacity exceeded.")
+
+
+class OwnedPageAbandonmentFailed(Exception):
+    pass
+
+
 class PatchrightOwnedPageBridge:
     def __init__(self, client: OwnedPageBridgeClient) -> None:
         self._client = client
@@ -384,7 +496,20 @@ class PatchrightOwnedPageBridge:
             "expected_protection": _protection_wire_value(request.expected_protection),
             "protection": _protection_wire_value(request.protection),
         }
-        return _decode_page_ref(self._client.call_tool("owned-allocate", payload))
+        payload.update(
+            {
+                "capacity_limit": request.policy.limit,
+                "sweep_program": request.policy.sweep_program.source,
+            }
+        )
+        try:
+            return _decode_page_ref(self._client.call_tool("owned-allocate", payload))
+        except OwnedPageCapacityExceeded as error:
+            if error.capacity.limit != request.policy.limit:
+                raise ValueError(
+                    "Owned-page bridge returned a mismatched capacity limit."
+                ) from None
+            raise
 
     def resolve(self, request: ResolveOwnedPage) -> ResolvedOwnedPage:
         payload: dict[str, object] = {
@@ -516,6 +641,26 @@ class PatchrightOwnedPageBridge:
             raise OwnedPageNotFound
         _decode_operation_outcome(raw)
 
+    def abandon(self, request: AbandonOwnedPage) -> OwnedPageAbandonment:
+        payload: dict[str, object] = {
+            "owner": request.owner,
+            "thread": request.thread,
+            "expected_exact_url": request.expected_exact_url,
+            "allowed_scope": request.allowed_scope.value,
+            "classify_program": request.classify_program.source,
+            "stop_program": request.stop_program.source,
+            "stop_confirmation_timeout_seconds": (
+                request.stop_confirmation_timeout_seconds
+            ),
+            "stop_confirmation_poll_interval_seconds": (
+                request.stop_confirmation_poll_interval_seconds
+            ),
+        }
+        raw = self._client.call_tool_if_running("owned-abandon", payload)
+        if raw is None:
+            raise OwnedPageNotFound
+        return _decode_abandonment(raw)
+
 
 class UnsupportedOwnedPageBridge:
     def capabilities(self) -> OwnedPageCapabilities:
@@ -578,13 +723,17 @@ class UnsupportedOwnedPageBridge:
         _ = request
         raise UnsupportedOwnedPageCapability
 
+    def abandon(self, request: AbandonOwnedPage) -> OwnedPageAbandonment:
+        _ = request
+        raise UnsupportedOwnedPageCapability
+
 
 def _decode_page_ref(raw: str) -> OwnedPageRef:
     decoded = json.loads(raw)
     if not isinstance(decoded, dict):
         raise ValueError("Owned-page bridge returned an invalid allocation outcome.")
     if decoded.get("ok") is False:
-        _raise_owned_page_error(decoded.get("error"))
+        _raise_owned_page_error(decoded.get("error"), decoded)
     if decoded.get("ok") is not True:
         raise ValueError("Owned-page bridge returned an invalid allocation outcome.")
     page = decoded.get("page")
@@ -635,7 +784,14 @@ def _decode_resolved_page(raw: str) -> ResolvedOwnedPage:
     return ResolvedOwnedPage(_decode_page_ref(page_only), protection)
 
 
-def _raise_owned_page_error(error: object) -> None:
+def _raise_owned_page_error(
+    error: object,
+    payload: dict[object, object] | None = None,
+) -> None:
+    if error == OwnedPageBridgeErrorCode.CAPACITY_EXCEEDED:
+        raise OwnedPageCapacityExceeded(_decode_capacity_failure(payload))
+    if error == OwnedPageBridgeErrorCode.ABANDONMENT_FAILED:
+        raise OwnedPageAbandonmentFailed
     if error == OwnedPageBridgeErrorCode.THREAD_NOT_FOUND:
         raise OwnedPageNotFound
     if error == OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT:
@@ -647,6 +803,76 @@ def _raise_owned_page_error(error: object) -> None:
     if error == OwnedPageBridgeErrorCode.AMBIGUOUS_SESSION_PAGE:
         raise OwnedPageAmbiguousSession
     raise ValueError("Owned-page bridge returned an invalid error outcome.")
+
+
+def _decode_capacity_failure(
+    payload: dict[object, object] | None,
+) -> OwnedPageCapacity:
+    if payload is None or set(payload) != {"ok", "error", "capacity"}:
+        raise ValueError("Owned-page bridge returned an invalid capacity outcome.")
+    capacity = payload.get("capacity")
+    if not isinstance(capacity, dict) or set(capacity) != {"limit", "retained"}:
+        raise ValueError("Owned-page bridge returned an invalid capacity outcome.")
+    limit = capacity.get("limit")
+    retained = capacity.get("retained")
+    if (
+        not isinstance(limit, int)
+        or isinstance(limit, bool)
+        or limit <= 0
+        or not isinstance(retained, list)
+    ):
+        raise ValueError("Owned-page bridge returned an invalid capacity outcome.")
+    decoded_retained: list[OwnedPageRetainedPage] = []
+    for item in retained:
+        metadata = _require_string_keyed_object(
+            item,
+            "Owned-page bridge returned invalid retained-page metadata.",
+        )
+        if set(metadata) not in (
+            {"thread", "reason"},
+            {"thread", "session_id", "reason"},
+        ):
+            raise ValueError("Owned-page bridge returned invalid retained-page metadata.")
+        session_id = metadata.get("session_id")
+        thread = metadata.get("thread")
+        if session_id is not None and not isinstance(session_id, str):
+            raise ValueError("Owned-page bridge returned invalid retained-page metadata.")
+        if not isinstance(thread, str):
+            raise ValueError("Owned-page bridge returned invalid retained-page metadata.")
+        try:
+            reason = OwnedPageRetentionReason(metadata["reason"])
+            decoded_retained.append(
+                OwnedPageRetainedPage(
+                    session_id=session_id,
+                    thread=thread,
+                    reason=reason,
+                )
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                "Owned-page bridge returned invalid retained-page metadata."
+            ) from error
+    return OwnedPageCapacity(limit=limit, retained=tuple(decoded_retained))
+
+
+def _decode_abandonment(raw: str) -> OwnedPageAbandonment:
+    decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError("Owned-page bridge returned an invalid abandonment outcome.")
+    if decoded.get("ok") is False:
+        if set(decoded) != {"ok", "error"}:
+            raise ValueError("Owned-page bridge returned an invalid abandonment outcome.")
+        _raise_owned_page_error(decoded.get("error"), decoded)
+    if set(decoded) != {"ok", "attempt_state"} or decoded.get("ok") is not True:
+        raise ValueError("Owned-page bridge returned an invalid abandonment outcome.")
+    raw_state = decoded["attempt_state"]
+    try:
+        state = None if raw_state is None else OwnedPageAttemptState(raw_state)
+        return OwnedPageAbandonment(attempt_state=state)
+    except (TypeError, ValueError) as error:
+        raise ValueError(
+            "Owned-page bridge returned an invalid abandonment outcome."
+        ) from error
 
 
 def _decode_operation_outcome(raw: str) -> None:

@@ -39,7 +39,7 @@ GATE_SELECTORS = (
 def classify_latest_attempt_source() -> str:
     """Build the metadata-only latest-response-attempt classifier."""
     return f"""() => {{
-  {_attempt_helpers_source()}
+  {attempt_helpers_source()}
   const classification = classifyLatestAttempt();
   return {{state: classification.state}};
 }}"""
@@ -48,7 +48,7 @@ def classify_latest_attempt_source() -> str:
 def extract_latest_result_source() -> str:
     """Build explicit latest-result extraction for session result only."""
     return f"""() => {{
-  {_attempt_helpers_source()}
+  {attempt_helpers_source()}
   const classification = classifyLatestAttempt();
   if (!['completed', 'stopped'].includes(classification.state)) {{
     return {{state: classification.state}};
@@ -60,7 +60,7 @@ def extract_latest_result_source() -> str:
 }}"""
 
 
-def _attempt_helpers_source() -> str:
+def attempt_helpers_source() -> str:
     return f"""
   function isVisible(node) {{
     if (!node || node.closest('[hidden], [aria-hidden="true"], [inert]')) return false;

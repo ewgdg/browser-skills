@@ -8,12 +8,17 @@ from typing import Any
 import pytest
 
 from surf_agent.owned_pages import (
+    AbandonOwnedPage,
     AllocateOwnedPage,
     ClassifyOwnedPageAttempt,
     CloseTerminalOwnedPage,
     ExtractOwnedPageResult,
     InspectOwnedPage,
     OwnedPageCapabilities,
+    OwnedPageAbandonment,
+    OwnedPageAbandonmentFailed,
+    OwnedPageCapacity,
+    OwnedPageCapacityExceeded,
     OwnedPageAmbiguousSession,
     OwnedPageAttemptMetadata,
     OwnedPageAttemptResult,
@@ -25,6 +30,8 @@ from surf_agent.owned_pages import (
     OwnedPageOwnershipConflict,
     OwnedPageProtection,
     OwnedPageRef,
+    OwnedPageRetainedPage,
+    OwnedPageRetentionReason,
     OwnedPageBridge,
     ProtectOwnedPage,
     RebindOwnedPage,
@@ -164,6 +171,34 @@ class InMemoryOwnedPageBridge:
             raise OwnedPageOwnershipConflict
         del self.pages[request.thread]
 
+    def abandon(self, request: AbandonOwnedPage) -> OwnedPageAbandonment:
+        self.calls.append(("abandon", request))
+        try:
+            page = self.pages[request.thread]
+        except KeyError as error:
+            raise OwnedPageNotFound from error
+        if (
+            page.owner != request.owner
+            or (
+                request.expected_exact_url is not None
+                and page.reference.exact_url != request.expected_exact_url
+            )
+        ):
+            raise OwnedPageOwnershipConflict
+        if page.attempt_state is OwnedPageAttemptState.GENERATING:
+            page.attempt_state = OwnedPageAttemptState.STOPPED
+        attempt_state = (
+            None
+            if page.inspection_state
+            in {
+                OwnedPageInspectionState.PRE_SESSION,
+                OwnedPageInspectionState.HUMAN_GATE,
+            }
+            else page.attempt_state
+        )
+        del self.pages[request.thread]
+        return OwnedPageAbandonment(attempt_state)
+
 
 def invoke(
     argv: list[str],
@@ -217,6 +252,51 @@ def test_login_allocates_or_reuses_one_protected_owned_page_and_returns_only_the
     assert '"page_token"' not in rendered
     assert "human_intervention" not in rendered
     assert "700" not in rendered
+
+
+class CapacityExceededBridge(InMemoryOwnedPageBridge):
+    def allocate(self, request: AllocateOwnedPage) -> OwnedPageRef:
+        self.calls.append(("allocate", request))
+        raise OwnedPageCapacityExceeded(
+            OwnedPageCapacity(
+                limit=10,
+                retained=tuple(
+                    OwnedPageRetainedPage(
+                        session_id=f"session-{index}",
+                        thread=(
+                            "surf-chatgpt-submit-pending"
+                            if index == 0
+                            else f"surf-chatgpt-session-session-{index}"
+                        ),
+                        reason=(
+                            OwnedPageRetentionReason.GENERATING
+                            if index % 2 == 0
+                            else OwnedPageRetentionReason.EXPLICITLY_RETAINED
+                        ),
+                    )
+                    for index in range(10)
+                ),
+            )
+        )
+
+
+def test_eleventh_scripted_allocation_returns_bounded_capacity_json() -> None:
+    bridge = CapacityExceededBridge()
+
+    code, payload, stderr = invoke(["login"], bridge)
+
+    assert code == 1
+    assert payload["error"]["type"] == "capacity_exceeded"
+    assert payload["capacity"]["limit"] == 10
+    assert len(payload["capacity"]["retained"]) == 10
+    assert payload["capacity"]["retained"][0] == {
+        "thread": "surf-chatgpt-submit-pending",
+        "reason": "generating",
+    }
+    assert "url" not in json.dumps(payload)
+    assert "page_token" not in json.dumps(payload)
+    assert stderr == ""
+    assert [operation for operation, _ in bridge.calls] == ["allocate"]
 
 
 def test_session_current_reads_only_the_exact_owned_thread_for_not_ready_or_durable_identity() -> (
@@ -288,6 +368,116 @@ def test_session_handoff_resolves_and_retains_only_the_durable_session() -> None
     assert "page_token" not in rendered
     assert "protection" not in rendered
     assert "https://" not in rendered
+
+
+def test_abandon_generating_session_stops_once_then_releases_the_page() -> None:
+    bridge = InMemoryOwnedPageBridge()
+    thread = "surf-chatgpt-session-abc123"
+    bridge.pages[thread] = MemoryPage(
+        owner="surf-chatgpt",
+        reference=OwnedPageRef(thread, 701, "https://chatgpt.com/c/abc123"),
+        protection=OwnedPageProtection.EXPLICITLY_RETAINED,
+        inspection_state=OwnedPageInspectionState.SESSION,
+        attempt_state=OwnedPageAttemptState.GENERATING,
+    )
+
+    code, payload, stderr = invoke(["abandon", "abc123"], bridge)
+
+    assert (code, payload, stderr) == (
+        0,
+        {
+            "ok": True,
+            "session": {"id": "abc123"},
+            "attempt": {"state": "stopped"},
+        },
+        "",
+    )
+    assert thread not in bridge.pages
+    assert [operation for operation, _ in bridge.calls] == ["abandon"]
+
+
+@pytest.mark.parametrize(
+    "attempt_state",
+    [
+        OwnedPageAttemptState.COMPLETED,
+        OwnedPageAttemptState.STOPPED,
+        OwnedPageAttemptState.FAILED,
+    ],
+)
+def test_abandon_terminal_session_closes_directly(
+    attempt_state: OwnedPageAttemptState,
+) -> None:
+    bridge = InMemoryOwnedPageBridge()
+    thread = "surf-chatgpt-session-abc123"
+    bridge.pages[thread] = MemoryPage(
+        owner="surf-chatgpt",
+        reference=OwnedPageRef(thread, 701, "https://chatgpt.com/c/abc123"),
+        protection=OwnedPageProtection.EXPLICITLY_RETAINED,
+        inspection_state=OwnedPageInspectionState.SESSION,
+        attempt_state=attempt_state,
+    )
+
+    code, payload, _ = invoke(["abandon", "abc123"], bridge)
+
+    assert code == 0
+    assert payload == {
+        "ok": True,
+        "session": {"id": "abc123"},
+        "attempt": {"state": attempt_state.value},
+    }
+    assert thread not in bridge.pages
+
+
+def test_abandon_affirmed_pre_session_human_page_returns_only_its_thread() -> None:
+    bridge = InMemoryOwnedPageBridge()
+    thread = "surf-chatgpt-login"
+    bridge.pages[thread] = MemoryPage(
+        owner="surf-chatgpt",
+        reference=OwnedPageRef(thread, 701, "https://chatgpt.com/auth/login"),
+        protection=OwnedPageProtection.HUMAN_INTERVENTION,
+        inspection_state=OwnedPageInspectionState.HUMAN_GATE,
+    )
+
+    code, payload, _ = invoke(["abandon", "--thread", thread], bridge)
+
+    assert code == 0
+    assert payload == {"ok": True, "thread": thread}
+    assert thread not in bridge.pages
+
+
+class FailedAbandonmentBridge(InMemoryOwnedPageBridge):
+    def abandon(self, request: AbandonOwnedPage) -> OwnedPageAbandonment:
+        self.calls.append(("abandon", request))
+        raise OwnedPageAbandonmentFailed
+
+
+def test_failed_abandonment_preserves_the_addressed_page_and_identity() -> None:
+    bridge = FailedAbandonmentBridge()
+    thread = "surf-chatgpt-session-abc123"
+    bridge.pages[thread] = MemoryPage(
+        owner="surf-chatgpt",
+        reference=OwnedPageRef(thread, 701, "https://chatgpt.com/c/abc123"),
+        protection=OwnedPageProtection.EXPLICITLY_RETAINED,
+        inspection_state=OwnedPageInspectionState.SESSION,
+    )
+
+    code, payload, stderr = invoke(["abandon", "abc123"], bridge)
+
+    assert code == 1
+    assert payload["error"]["type"] == "abandonment_failed"
+    assert payload["session"] == {"id": "abc123"}
+    assert thread in bridge.pages
+    assert stderr == ""
+
+
+def test_abandon_missing_session_uses_durable_session_error_semantics() -> None:
+    bridge = InMemoryOwnedPageBridge()
+
+    code, payload, _ = invoke(["abandon", "abc123"], bridge)
+
+    assert code == 1
+    assert payload["error"]["type"] == "session_not_found"
+    assert payload["session"] == {"id": "abc123"}
 
 
 def test_session_status_affirms_generating_without_extracting_response_content() -> None:

@@ -19,6 +19,7 @@ from ...owned_pages import (
     owned_page_url_is_in_scope,
 )
 from ..bridge_common import PageSlot
+from .retained_pages import PatchrightRetainedPageOperations
 
 
 def _require_string_keyed_object(value: object, message: str) -> dict[str, object]:
@@ -56,6 +57,8 @@ class PatchrightOwnedPageHost(Protocol):
 
     def _owned_page_slot(self, thread: str) -> PageSlot | None: ...
 
+    def _owned_page_bindings(self) -> list[tuple[str, PageSlot]]: ...
+
     def _page_is_bound(self, page: Any) -> bool: ...
 
     def _discard_owned_page_binding(self, thread: str) -> None: ...
@@ -87,6 +90,7 @@ class PatchrightOwnedPageOperations:
 
     def __init__(self, runtime: PatchrightOwnedPageHost) -> None:
         self._runtime = runtime
+        self._retained_pages = PatchrightRetainedPageOperations(runtime)
 
     async def allocate(self, args: dict[str, Any]) -> str:
         owner = self._required_argument(args, "owner")
@@ -106,6 +110,16 @@ class PatchrightOwnedPageOperations:
             )
         if not owned_page_url_is_in_scope(url, allowed_scope):
             raise RuntimeError("owned-page URL is outside the allowed scope")
+        capacity_limit = args.get("capacity_limit")
+        sweep_program = self._required_argument(args, "sweep_program")
+        if (
+            not isinstance(capacity_limit, int)
+            or isinstance(capacity_limit, bool)
+            or capacity_limit <= 0
+        ):
+            raise RuntimeError("invalid owned-page allocation policy")
+
+        retained = await self._retained_pages.sweep(owner, sweep_program)
 
         existing = self._runtime._owned_page_slot(thread)
         if existing is not None and not self._runtime._page_is_open(existing.page):
@@ -121,6 +135,20 @@ class PatchrightOwnedPageOperations:
             ):
                 return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
             return self._page_result(thread, existing)
+        if len(retained) >= capacity_limit:
+            if len(retained) > capacity_limit:
+                raise RuntimeError("owned-page capacity invariant exceeded")
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": OwnedPageBridgeErrorCode.CAPACITY_EXCEEDED.value,
+                    "capacity": {
+                        "limit": capacity_limit,
+                        "retained": retained,
+                    },
+                },
+                separators=(",", ":"),
+            )
 
         await self._runtime._start_async()
         page = await self._create_window_page(url)
@@ -353,6 +381,9 @@ class PatchrightOwnedPageOperations:
             return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
         self._runtime._discard_owned_page_binding(thread)
         return json.dumps({"ok": True}, separators=(",", ":"))
+
+    async def abandon(self, args: dict[str, Any]) -> str:
+        return await self._retained_pages.abandon(args)
 
     def rebind(self, args: dict[str, Any]) -> str:
         owner = self._required_argument(args, "owner")
