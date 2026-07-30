@@ -9,6 +9,7 @@ from surf_agent.owned_pages import (
     AllocateOwnedPage,
     InspectOwnedPage,
     OwnedPageCapabilities,
+    OwnedPageAmbiguousSession,
     OwnedPageInspection,
     OwnedPageInspectionFailed,
     OwnedPageInspectionState,
@@ -19,9 +20,11 @@ from surf_agent.owned_pages import (
     OwnedPageBridge,
     ProtectOwnedPage,
     RebindOwnedPage,
+    ResolveOwnedPage,
+    ResolvedOwnedPage,
     owned_page_url_is_in_scope,
 )
-from surf_agent.errors import BridgeIdentityUnproven
+from surf_agent.errors import BridgeIdentityUnproven, BridgeUnavailable
 from surf_chatgpt import cli
 from surf_chatgpt.session_lifecycle import OwnedPageSessionLifecycle
 
@@ -82,11 +85,42 @@ class InMemoryOwnedPageBridge:
             raise OwnedPageOwnershipConflict
         return OwnedPageInspection(page.reference, page.inspection_state)
 
+    def resolve(self, request: ResolveOwnedPage) -> ResolvedOwnedPage:
+        self.calls.append(("resolve", request))
+        existing = self.pages.get(request.thread)
+        if existing is not None:
+            if (
+                existing.owner != request.owner
+                or existing.reference.exact_url != request.exact_url
+            ):
+                raise OwnedPageOwnershipConflict
+            return ResolvedOwnedPage(existing.reference, existing.protection)
+        reference = OwnedPageRef(
+            request.thread,
+            self.next_page_token,
+            request.exact_url,
+        )
+        self.next_page_token += 1
+        self.pages[request.thread] = MemoryPage(
+            request.owner,
+            reference,
+            None,
+            OwnedPageInspectionState.SESSION,
+        )
+        return ResolvedOwnedPage(reference, None)
+
     def rebind(self, request: RebindOwnedPage) -> OwnedPageRef:
         raise AssertionError("rebind is outside the issue 14 lifecycle path")
 
     def protect(self, request: ProtectOwnedPage) -> None:
-        raise AssertionError("protect is outside the issue 14 lifecycle path")
+        self.calls.append(("protect", request))
+        page = self.pages[request.thread]
+        if (
+            page.reference.page_token != request.expected_page_token
+            or page.protection is not request.expected_protection
+        ):
+            raise OwnedPageOwnershipConflict
+        page.protection = request.protection
 
 
 def invoke(argv: list[str], bridge: OwnedPageBridge) -> tuple[int, dict[str, Any], str]:
@@ -175,6 +209,93 @@ def test_session_current_reads_only_the_exact_owned_thread_for_not_ready_or_dura
         "inspect",
         "inspect",
     ]
+
+
+def test_session_handoff_resolves_and_retains_only_the_durable_session() -> None:
+    bridge = InMemoryOwnedPageBridge()
+
+    code, payload, stderr = invoke(["session", "handoff", "abc123"], bridge)
+
+    assert (code, payload, stderr) == (
+        0,
+        {
+            "ok": True,
+            "session": {"id": "abc123"},
+            "handoff": {
+                "action": "inspect_browser",
+                "thread": "surf-chatgpt-session-abc123",
+            },
+        },
+        "",
+    )
+    page = bridge.pages["surf-chatgpt-session-abc123"]
+    assert page.reference.exact_url == "https://chatgpt.com/c/abc123"
+    assert page.protection is OwnedPageProtection.EXPLICITLY_RETAINED
+    assert [operation for operation, _ in bridge.calls] == ["resolve", "protect"]
+    rendered = json.dumps(payload)
+    assert "page_token" not in rendered
+    assert "protection" not in rendered
+    assert "https://" not in rendered
+
+
+def test_session_handoff_reuses_existing_retained_protection_idempotently() -> None:
+    bridge = InMemoryOwnedPageBridge()
+    thread = "surf-chatgpt-session-abc123"
+    bridge.pages[thread] = MemoryPage(
+        owner="surf-chatgpt",
+        reference=OwnedPageRef(
+            thread,
+            701,
+            "https://chatgpt.com/c/abc123",
+        ),
+        protection=OwnedPageProtection.EXPLICITLY_RETAINED,
+        inspection_state=OwnedPageInspectionState.SESSION,
+    )
+
+    code, payload, _ = invoke(["session", "handoff", "abc123"], bridge)
+
+    assert code == 0
+    assert payload["session"] == {"id": "abc123"}
+    assert bridge.pages[thread].reference.page_token == 701
+    assert bridge.pages[thread].protection is OwnedPageProtection.EXPLICITLY_RETAINED
+    assert [operation for operation, _ in bridge.calls] == ["resolve"]
+
+
+class AmbiguousSessionBridge(InMemoryOwnedPageBridge):
+    def resolve(self, request: ResolveOwnedPage) -> ResolvedOwnedPage:
+        self.calls.append(("resolve", request))
+        raise OwnedPageAmbiguousSession
+
+
+def test_session_handoff_projects_ambiguous_recovery_without_protection() -> None:
+    bridge = AmbiguousSessionBridge()
+
+    code, payload, _ = invoke(["session", "handoff", "abc123"], bridge)
+
+    assert code == 1
+    assert payload["error"]["type"] == "ambiguous_session_page"
+    assert payload["session"] == {"id": "abc123"}
+    assert "handoff" not in payload
+    assert [operation for operation, _ in bridge.calls] == ["resolve"]
+
+
+class DisconnectedProtectionBridge(InMemoryOwnedPageBridge):
+    def protect(self, request: ProtectOwnedPage) -> None:
+        self.calls.append(("protect", request))
+        raise BridgeUnavailable("private bridge failure")
+
+
+def test_session_handoff_preserves_durable_identity_when_protection_fails() -> None:
+    bridge = DisconnectedProtectionBridge()
+
+    code, payload, stderr = invoke(["session", "handoff", "abc123"], bridge)
+
+    assert code == 1
+    assert payload["error"]["type"] == "browser_unavailable"
+    assert payload["session"] == {"id": "abc123"}
+    assert "handoff" not in payload
+    assert stderr == ""
+    assert [operation for operation, _ in bridge.calls] == ["resolve", "protect"]
 
 
 def test_session_current_missing_thread_fails_without_allocating_or_recovering() -> (

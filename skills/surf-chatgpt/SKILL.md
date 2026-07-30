@@ -83,6 +83,11 @@ Address follow-ups by durable session identity:
 surf-chatgpt ask --session abc123 'Check one more constraint.'
 ```
 
+Separate callers may reuse the same ID. A live exact deterministic binding is reused;
+after a browser-bridge restart, Surf adopts one restored exact-URL page or creates a
+dedicated unfocused page at that canonical session URL. Ambiguous exact matches fail
+without adopting or changing any page.
+
 `--thread` is only for an exact preserved pre-session page returned after login or challenge intervention. It is not a conversation address.
 
 Use `session current --thread THREAD` to discover whether a preserved pre-session page has acquired a durable session ID. Use `session recent` only when session metadata is lost; explicitly select a returned candidate before running another session command.
@@ -100,6 +105,20 @@ Tell the user what action is required and wait for confirmation. Do not focus, r
 ```bash
 surf-agent --thread '<thread>' focus
 ```
+
+For manual inspection of a durable session, establish live retained protection first:
+
+```bash
+surf-chatgpt session handoff abc123
+```
+
+```json
+{"ok":true,"session":{"id":"abc123"},"handoff":{"action":"inspect_browser","thread":"surf-chatgpt-session-abc123"}}
+```
+
+Handoff does not focus or inspect conversation content. Its protection lasts only for
+the current bridge lifetime and ends on explicit abandonment, manual page closure, or
+bridge restart.
 
 Use proactive login when needed:
 

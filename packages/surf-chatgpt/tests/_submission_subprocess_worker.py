@@ -26,6 +26,8 @@ from surf_agent.owned_pages import (
     PrepareOwnedPageSubmission,
     ProtectOwnedPage,
     RebindOwnedPage,
+    ResolveOwnedPage,
+    ResolvedOwnedPage,
     SubmitOwnedPagePrompt,
 )
 from surf_chatgpt import cli
@@ -78,6 +80,19 @@ class RemoteOwnedPageBridge:
             OwnedPageInspectionState(response["state"]),
         )
 
+    def resolve(self, request: ResolveOwnedPage) -> ResolvedOwnedPage:
+        response = self._call(
+            "resolve",
+            thread=request.thread,
+            exact_url=request.exact_url,
+        )
+        return ResolvedOwnedPage(
+            _page(response),
+            OwnedPageProtection(response["protection"])
+            if response.get("protection") is not None
+            else None,
+        )
+
     def prepare_submission(
         self,
         request: PrepareOwnedPageSubmission,
@@ -117,6 +132,7 @@ class RemoteOwnedPageBridge:
             "observe_assignment",
             thread=request.thread,
             page_token=request.expected_page_token,
+            completion_exact_url=request.completion_exact_url,
         )
         return OwnedPageAssignmentObservation(
             _page(response),

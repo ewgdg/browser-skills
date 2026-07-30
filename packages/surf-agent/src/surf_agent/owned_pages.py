@@ -41,6 +41,7 @@ class OwnedPageBridgeErrorCode(StrEnum):
     OWNERSHIP_CONFLICT = "ownership_conflict"
     INSPECTION_FAILED = "inspection_failed"
     SUBMISSION_ALREADY_ATTEMPTED = "submission_already_attempted"
+    AMBIGUOUS_SESSION_PAGE = "ambiguous_session_page"
 
 
 class OwnedPageSelectionDimension(StrEnum):
@@ -78,6 +79,10 @@ CHATGPT_PRE_SESSION_PATHS = frozenset({"", "/", "/auth/login", "/auth/login/"})
 CHATGPT_SESSION_PATH_PATTERN = re.compile(r"^/c/[A-Za-z0-9_-]+$")
 
 
+def owned_page_canonical_session_url(session_id: str) -> str:
+    return f"https://{CHATGPT_HOSTNAME}/c/{session_id}"
+
+
 @dataclass(frozen=True)
 class OwnedPageCapabilities:
     available: frozenset[OwnedPageCapability] = frozenset()
@@ -107,6 +112,14 @@ class InspectOwnedPage:
     thread: str
     allowed_scope: OwnedPageScope
     classifier: OwnedPageClassifier
+
+
+@dataclass(frozen=True)
+class ResolveOwnedPage:
+    owner: str
+    thread: str
+    exact_url: str
+    allowed_scope: OwnedPageScope
 
 
 @dataclass(frozen=True)
@@ -163,6 +176,7 @@ class ObserveOwnedPageAssignment:
     allowed_scope: OwnedPageScope
     expected_protection: OwnedPageProtection | None
     program: OwnedPageProgram
+    completion_exact_url: str | None
 
 
 @dataclass(frozen=True)
@@ -191,6 +205,12 @@ class OwnedPageRef:
     thread: str
     page_token: int
     exact_url: str
+
+
+@dataclass(frozen=True)
+class ResolvedOwnedPage:
+    page: OwnedPageRef
+    protection: OwnedPageProtection | None
 
 
 @dataclass(frozen=True)
@@ -223,6 +243,8 @@ class OwnedPageBridge(Protocol):
     def capabilities(self) -> OwnedPageCapabilities: ...
 
     def allocate(self, request: AllocateOwnedPage) -> OwnedPageRef: ...
+
+    def resolve(self, request: ResolveOwnedPage) -> ResolvedOwnedPage: ...
 
     def inspect(self, request: InspectOwnedPage) -> OwnedPageInspection: ...
 
@@ -286,6 +308,10 @@ class OwnedPageSubmissionAlreadyAttempted(Exception):
     pass
 
 
+class OwnedPageAmbiguousSession(Exception):
+    pass
+
+
 class PatchrightOwnedPageBridge:
     def __init__(self, client: OwnedPageBridgeClient) -> None:
         self._client = client
@@ -303,6 +329,15 @@ class PatchrightOwnedPageBridge:
             "protection": _protection_wire_value(request.protection),
         }
         return _decode_page_ref(self._client.call_tool("owned-allocate", payload))
+
+    def resolve(self, request: ResolveOwnedPage) -> ResolvedOwnedPage:
+        payload: dict[str, object] = {
+            "owner": request.owner,
+            "thread": request.thread,
+            "exact_url": request.exact_url,
+            "allowed_scope": request.allowed_scope.value,
+        }
+        return _decode_resolved_page(self._client.call_tool("owned-resolve", payload))
 
     def inspect(self, request: InspectOwnedPage) -> OwnedPageInspection:
         payload: dict[str, object] = {
@@ -383,6 +418,7 @@ class PatchrightOwnedPageBridge:
         payload: dict[str, object] = {
             **_guard_payload(request),
             "program": request.program.source,
+            "completion_exact_url": request.completion_exact_url,
         }
         raw = self._client.call_tool_if_running("owned-observe-assignment", payload)
         if raw is None:
@@ -395,6 +431,10 @@ class UnsupportedOwnedPageBridge:
         return OwnedPageCapabilities()
 
     def allocate(self, request: AllocateOwnedPage) -> OwnedPageRef:
+        _ = request
+        raise UnsupportedOwnedPageCapability
+
+    def resolve(self, request: ResolveOwnedPage) -> ResolvedOwnedPage:
         _ = request
         raise UnsupportedOwnedPageCapability
 
@@ -462,6 +502,32 @@ def _decode_page_ref(raw: str) -> OwnedPageRef:
     )
 
 
+def _decode_resolved_page(raw: str) -> ResolvedOwnedPage:
+    decoded = json.loads(raw)
+    if not isinstance(decoded, dict):
+        raise ValueError("Owned-page bridge returned an invalid resolution outcome.")
+    if decoded.get("ok") is False:
+        _raise_owned_page_error(decoded.get("error"))
+    if set(decoded) != {
+        "ok",
+        "page",
+        "protection",
+    }:
+        raise ValueError("Owned-page bridge returned an invalid resolution outcome.")
+    if decoded.get("ok") is not True:
+        raise ValueError("Owned-page bridge returned an invalid resolution outcome.")
+    page_only = json.dumps(
+        {"ok": True, "page": decoded["page"]}, separators=(",", ":")
+    )
+    try:
+        protection = decode_owned_page_protection(decoded["protection"])
+    except ValueError as error:
+        raise ValueError(
+            "Owned-page bridge returned an invalid resolution outcome."
+        ) from error
+    return ResolvedOwnedPage(_decode_page_ref(page_only), protection)
+
+
 def _raise_owned_page_error(error: object) -> None:
     if error == OwnedPageBridgeErrorCode.THREAD_NOT_FOUND:
         raise OwnedPageNotFound
@@ -471,6 +537,8 @@ def _raise_owned_page_error(error: object) -> None:
         raise OwnedPageInspectionFailed
     if error == OwnedPageBridgeErrorCode.SUBMISSION_ALREADY_ATTEMPTED:
         raise OwnedPageSubmissionAlreadyAttempted
+    if error == OwnedPageBridgeErrorCode.AMBIGUOUS_SESSION_PAGE:
+        raise OwnedPageAmbiguousSession
     raise ValueError("Owned-page bridge returned an invalid error outcome.")
 
 

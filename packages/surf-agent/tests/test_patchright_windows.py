@@ -331,6 +331,200 @@ def test_owned_allocation_cannot_overwrite_existing_protection_without_a_guard(
     assert page.goto_calls == []
 
 
+def test_session_resolution_reuses_only_the_exact_live_deterministic_binding(
+    tmp_path: Path,
+) -> None:
+    page = FakePage("https://chatgpt.com/c/abc123", target_id="session-target")
+    context = FakeContext([page])
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.browser_or_context = context
+    slot = PageSlot(
+        page=page,
+        page_token=9,
+        owner="surf-chatgpt",
+        protection="explicitly_retained",
+    )
+    runtime.pages["surf-chatgpt-session-abc123"] = slot
+
+    raw = runtime.call(
+        "owned-resolve",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+        },
+    )
+
+    assert json.loads(raw) == {
+        "ok": True,
+        "page": {
+            "thread": "surf-chatgpt-session-abc123",
+            "page_token": 9,
+            "url": "https://chatgpt.com/c/abc123",
+        },
+        "protection": "explicitly_retained",
+    }
+    assert runtime.pages == {"surf-chatgpt-session-abc123": slot}
+    assert page.evaluate_calls == []
+    assert page.goto_calls == []
+    assert page.closed is False
+    assert context.cdp_calls == []
+
+
+@pytest.mark.parametrize(
+    ("owner", "url"),
+    [
+        ("different-owner", "https://chatgpt.com/c/abc123"),
+        ("surf-chatgpt", "https://chatgpt.com/c/different"),
+    ],
+)
+def test_session_resolution_preserves_a_conflicting_deterministic_binding(
+    owner: str,
+    url: str,
+    tmp_path: Path,
+) -> None:
+    page = FakePage(url, target_id="conflicting-target")
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    slot = PageSlot(page=page, page_token=9, owner=owner)
+    runtime.pages["surf-chatgpt-session-abc123"] = slot
+
+    raw = runtime.call(
+        "owned-resolve",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "ownership_conflict"}
+    assert runtime.pages == {"surf-chatgpt-session-abc123": slot}
+    assert runtime.browser_or_context is None
+    assert page.evaluate_calls == []
+    assert page.goto_calls == []
+    assert page.closed is False
+
+
+def test_session_resolution_adopts_one_unowned_restored_exact_url_only(
+    tmp_path: Path,
+) -> None:
+    unrelated_page = FakePage("https://user.test/private", target_id="user-target")
+    restored_page = FakePage(
+        "https://chatgpt.com/c/abc123", target_id="restored-target"
+    )
+    context = FakeContext([unrelated_page, restored_page])
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.browser_or_context = context
+
+    raw = runtime.call(
+        "owned-resolve",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+        },
+    )
+
+    assert json.loads(raw) == {
+        "ok": True,
+        "page": {
+            "thread": "surf-chatgpt-session-abc123",
+            "page_token": 1,
+            "url": "https://chatgpt.com/c/abc123",
+        },
+        "protection": None,
+    }
+    adopted = runtime.pages["surf-chatgpt-session-abc123"]
+    assert adopted.page is restored_page
+    assert adopted.owner == "surf-chatgpt"
+    assert restored_page.evaluate_calls == []
+    assert restored_page.goto_calls == []
+    assert restored_page.closed is False
+    assert unrelated_page.evaluate_calls == []
+    assert unrelated_page.goto_calls == []
+    assert unrelated_page.closed is False
+    assert context.cdp_calls == []
+
+
+def test_session_resolution_creates_an_unfocused_owned_page_when_no_match_exists(
+    tmp_path: Path,
+) -> None:
+    unrelated_page = FakePage("https://user.test/private", target_id="user-target")
+    context = FakeContext(
+        [unrelated_page],
+        created_url="https://chatgpt.com/c/abc123",
+        created_target_id="recovered-target",
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.browser_or_context = context
+
+    raw = runtime.call(
+        "owned-resolve",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+        },
+    )
+
+    assert json.loads(raw)["page"] == {
+        "thread": "surf-chatgpt-session-abc123",
+        "page_token": 1,
+        "url": "https://chatgpt.com/c/abc123",
+    }
+    assert context.cdp_calls == [
+        (
+            "Target.createTarget",
+            {
+                "url": "https://chatgpt.com/c/abc123",
+                "newWindow": True,
+                "background": True,
+            },
+        )
+    ]
+    assert runtime.pages["surf-chatgpt-session-abc123"].page is context.created_page
+    assert unrelated_page.evaluate_calls == []
+    assert unrelated_page.goto_calls == []
+    assert unrelated_page.closed is False
+
+
+def test_session_resolution_rejects_multiple_restored_exact_matches_without_adoption(
+    tmp_path: Path,
+) -> None:
+    first_match = FakePage(
+        "https://chatgpt.com/c/abc123", target_id="first-restored-target"
+    )
+    second_match = FakePage(
+        "https://chatgpt.com/c/abc123", target_id="second-restored-target"
+    )
+    unrelated_page = FakePage("https://user.test/private", target_id="user-target")
+    context = FakeContext([first_match, unrelated_page, second_match])
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.browser_or_context = context
+
+    raw = runtime.call(
+        "owned-resolve",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "ambiguous_session_page"}
+    assert runtime.pages == {}
+    assert context.cdp_calls == []
+    for page in (first_match, second_match, unrelated_page):
+        assert page.evaluate_calls == []
+        assert page.goto_calls == []
+        assert page.closed is False
+
+
 def test_owned_inspection_returns_only_exact_live_binding_metadata_without_page_mutation(
     tmp_path: Path,
 ) -> None:
@@ -548,7 +742,7 @@ def test_owned_rebind_replay_returns_the_same_destination_page_without_mutation(
 
     assert json.loads(replay) == json.loads(first)
     assert runtime.pages == {"surf-chatgpt-session-abc123": slot}
-    assert slot.send_may_have_occurred is True
+    assert slot.send_may_have_occurred is False
     assert page.closed is False
     assert page.goto_calls == []
 
@@ -797,7 +991,11 @@ def test_owned_post_marker_gate_is_returned_without_clearing_submission_barrier(
             {"requested_selection_dimensions": []},
             "prepare",
         ),
-        ("owned-observe-assignment", {}, "observe"),
+        (
+            "owned-observe-assignment",
+            {"completion_exact_url": None},
+            "observe",
+        ),
     ],
 )
 def test_owned_submission_operations_reject_non_allow_listed_browser_metadata(
@@ -834,7 +1032,7 @@ def test_owned_submission_operations_reject_non_allow_listed_browser_metadata(
     assert "private" not in raw
 
 
-def test_owned_assignment_observation_returns_only_allow_listed_session_identity(
+def test_owned_assignment_observation_can_complete_a_follow_up_submission_barrier(
     tmp_path: Path,
 ) -> None:
     program = "() => ({state: 'session', session_id: 'abc123'})"
@@ -860,6 +1058,7 @@ def test_owned_assignment_observation_returns_only_allow_listed_session_identity
             "allowed_scope": "chatgpt",
             "expected_protection": None,
             "program": program,
+            "completion_exact_url": "https://chatgpt.com/c/abc123",
         },
     )
 
@@ -867,7 +1066,7 @@ def test_owned_assignment_observation_returns_only_allow_listed_session_identity
         "state": "session",
         "session_id": "abc123",
     }
-    assert slot.send_may_have_occurred is True
+    assert slot.send_may_have_occurred is False
     assert page.closed is False
     assert page.goto_calls == []
 
@@ -881,12 +1080,13 @@ def test_owned_assignment_gate_preserves_only_allow_listed_session_identity(
         {program: {"state": "challenge", "session_id": "abc123"}},
     )
     runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
-    runtime.pages["temporary"] = PageSlot(
+    slot = PageSlot(
         page=page,
         page_token=12,
         owner="surf-chatgpt",
         send_may_have_occurred=True,
     )
+    runtime.pages["temporary"] = slot
 
     raw = runtime.call(
         "owned-observe-assignment",
@@ -897,6 +1097,7 @@ def test_owned_assignment_gate_preserves_only_allow_listed_session_identity(
             "allowed_scope": "chatgpt",
             "expected_protection": None,
             "program": program,
+            "completion_exact_url": "https://chatgpt.com/c/abc123",
         },
     )
 
@@ -904,6 +1105,7 @@ def test_owned_assignment_gate_preserves_only_allow_listed_session_identity(
         "state": "challenge",
         "session_id": "abc123",
     }
+    assert slot.send_may_have_occurred is True
 
 
 @pytest.mark.parametrize(

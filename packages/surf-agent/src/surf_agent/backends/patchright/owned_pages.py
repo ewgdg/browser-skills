@@ -13,6 +13,7 @@ from ...owned_pages import (
     OwnedPageSelectionDimension,
     OwnedPageSubmissionState,
     decode_owned_page_protection,
+    owned_page_canonical_session_url,
     owned_page_url_is_canonical_session,
     owned_page_url_is_in_scope,
 )
@@ -53,6 +54,8 @@ class PatchrightOwnedPageHost(Protocol):
     async def _best_effort_close_page(self, page: Any) -> None: ...
 
     def _owned_page_slot(self, thread: str) -> PageSlot | None: ...
+
+    def _page_is_bound(self, page: Any) -> bool: ...
 
     def _discard_owned_page_binding(self, thread: str) -> None: ...
 
@@ -154,6 +157,56 @@ class PatchrightOwnedPageOperations:
         result["metadata"] = {"state": state.value}
         return json.dumps(result, separators=(",", ":"))
 
+    async def resolve(self, args: dict[str, Any]) -> str:
+        owner = self._required_argument(args, "owner")
+        thread = self._required_argument(args, "thread")
+        exact_url = self._required_argument(args, "exact_url")
+        allowed_scope = self._scope_argument(args)
+        if not owned_page_url_is_canonical_session(
+            exact_url
+        ) or not owned_page_url_is_in_scope(exact_url, allowed_scope):
+            return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
+
+        existing = self._runtime._owned_page_slot(thread)
+        if existing is not None and not self._runtime._page_is_open(existing.page):
+            self._runtime._discard_owned_page_binding(thread)
+            existing = None
+        if existing is not None:
+            if (
+                existing.owner != owner
+                or self._runtime._page_url(existing.page) != exact_url
+            ):
+                return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
+            return self._resolution_result(thread, existing)
+
+        await self._runtime._start_async()
+        context = self._runtime._context()
+        restored_matches = [
+            page
+            for page in list(context.pages)
+            if self._runtime._page_is_open(page)
+            and not self._runtime._page_is_bound(page)
+            and self._runtime._page_url(page) == exact_url
+        ]
+        if len(restored_matches) == 1:
+            slot = self._runtime._bind_owned_page(
+                thread,
+                restored_matches[0],
+                owner,
+                None,
+            )
+            return self._resolution_result(thread, slot)
+
+        if not restored_matches:
+            page = await self._create_window_page(exact_url)
+            if self._runtime._page_url(page) != exact_url:
+                await self._runtime._best_effort_close_page(page)
+                return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
+            slot = self._runtime._bind_owned_page(thread, page, owner, None)
+            return self._resolution_result(thread, slot)
+
+        return self._error(OwnedPageBridgeErrorCode.AMBIGUOUS_SESSION_PAGE)
+
     async def prepare_submission(self, args: dict[str, Any]) -> str:
         guarded = self._submission_slot(args)
         if isinstance(guarded, str):
@@ -217,11 +270,28 @@ class PatchrightOwnedPageOperations:
             return guarded
         slot, thread = guarded
         program = self._required_argument(args, "program")
+        completion_exact_url = args.get("completion_exact_url")
+        if completion_exact_url is not None and (
+            not isinstance(completion_exact_url, str)
+            or not owned_page_url_is_canonical_session(completion_exact_url)
+        ):
+            raise RuntimeError("invalid owned-page assignment completion request")
         try:
             metadata = await self._runtime._maybe_await(slot.page.evaluate(program))
             decoded = self._decode_assignment_metadata(metadata)
         except Exception:
             return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        decoded_session_id = decoded.get("session_id")
+        # Clearing this barrier authorizes a later explicit follow-up. Do so only
+        # when this serialized transaction affirms the caller's exact session.
+        if completion_exact_url is not None and (
+            decoded["state"] == OwnedPageAssignmentState.SESSION
+            and self._runtime._page_url(slot.page) == completion_exact_url
+            and isinstance(decoded_session_id, str)
+            and completion_exact_url
+            == owned_page_canonical_session_url(decoded_session_id)
+        ):
+            slot.send_may_have_occurred = False
         return self._metadata_result(thread, slot, decoded)
 
     def rebind(self, args: dict[str, Any]) -> str:
@@ -261,6 +331,7 @@ class PatchrightOwnedPageOperations:
             ):
                 # A caller may lose the first response after the atomic move. Replaying
                 # the original CAS must affirm it instead of creating uncertainty.
+                destination.send_may_have_occurred = False
                 return self._page_result(destination_thread, destination)
             return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
         if not self._slot_matches_guards(
@@ -280,6 +351,9 @@ class PatchrightOwnedPageOperations:
             destination_thread,
             source,
         )
+        # A deterministic exact-URL binding proves the initial submission handshake
+        # completed. A later explicit --session call may now start a distinct attempt.
+        source.send_may_have_occurred = False
         return self._page_result(destination_thread, source)
 
     def _slot_matches_guards(
@@ -386,6 +460,13 @@ class PatchrightOwnedPageOperations:
         if not isinstance(value, str) or not value:
             raise RuntimeError(f"owned-page {name} is required")
         return value
+
+    def _resolution_result(self, thread: str, slot: PageSlot) -> str:
+        result = json.loads(self._page_result(thread, slot))
+        result["protection"] = (
+            str(slot.protection) if slot.protection is not None else None
+        )
+        return json.dumps(result, separators=(",", ":"))
 
     def _scope_argument(self, args: dict[str, Any]) -> OwnedPageScope:
         try:
@@ -522,7 +603,7 @@ class PatchrightOwnedPageOperations:
             not allows_session_identity
             or not isinstance(session_id, str)
             or not owned_page_url_is_canonical_session(
-                f"https://chatgpt.com/c/{session_id}"
+                owned_page_canonical_session_url(session_id)
             )
         ):
             raise RuntimeError("invalid owned-page assignment metadata")

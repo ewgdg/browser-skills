@@ -21,6 +21,11 @@ CAUGHT_SIGNALS = (
     pytest.param(signal.SIGTERM, 143, id="sigterm"),
 )
 ALL_BARRIERS = tuple(SubmissionBarrier)
+FOLLOW_UP_BARRIERS = (
+    SubmissionBarrier.BEFORE_SEND,
+    SubmissionBarrier.ID_KNOWN_REBIND_PENDING,
+    SubmissionBarrier.HANDSHAKE_COMPLETE,
+)
 
 
 @pytest.mark.parametrize(("signal_number", "expected_exit"), CAUGHT_SIGNALS)
@@ -72,6 +77,76 @@ def test_bridge_disconnect_at_each_barrier_projects_recoverable_state(
     assert result.stdout == _compact_line(result.json)
     _assert_durable_state(harness, barrier)
     _assert_recovery_without_another_send(harness, barrier)
+
+
+@pytest.mark.parametrize(("signal_number", "expected_exit"), CAUGHT_SIGNALS)
+@pytest.mark.parametrize("barrier", FOLLOW_UP_BARRIERS)
+def test_follow_up_caught_signal_keeps_the_known_session_recoverable(
+    barrier: SubmissionBarrier,
+    signal_number: signal.Signals,
+    expected_exit: int,
+) -> None:
+    harness = SubmissionSubprocessHarness(barrier, follow_up=True)
+
+    result = harness.interrupt(signal_number)
+
+    assert result.returncode == expected_exit
+    assert result.stderr == ""
+    assert result.json["error"]["type"] == "interrupted"
+    assert result.json["session"] == {"id": SESSION_ID}
+    assert "thread" not in result.json
+    assert harness.state.bindings == {SESSION_THREAD: SESSION_URL}
+    assert harness.state.send_count == (
+        0 if barrier is SubmissionBarrier.BEFORE_SEND else 1
+    )
+    send_count = harness.state.send_count
+    recovered = harness.recover_current()
+    assert recovered.json == {"ok": True, "session": {"id": SESSION_ID}}
+    assert harness.state.send_count == send_count
+
+
+@pytest.mark.parametrize("barrier", FOLLOW_UP_BARRIERS)
+def test_follow_up_bridge_disconnect_never_loses_known_session_identity(
+    barrier: SubmissionBarrier,
+) -> None:
+    harness = SubmissionSubprocessHarness(barrier, follow_up=True)
+
+    result = harness.disconnect_bridge()
+
+    expected_exit = 0 if barrier is SubmissionBarrier.HANDSHAKE_COMPLETE else 1
+    assert result.returncode == expected_exit
+    assert result.stderr == ""
+    if barrier is SubmissionBarrier.HANDSHAKE_COMPLETE:
+        assert result.json == {"ok": True, "session": {"id": SESSION_ID}}
+    else:
+        assert result.json["error"]["type"] == "browser_unavailable"
+    assert result.json["session"] == {"id": SESSION_ID}
+    assert "thread" not in result.json
+    assert harness.state.bindings == {SESSION_THREAD: SESSION_URL}
+    assert harness.state.send_count == (
+        0 if barrier is SubmissionBarrier.BEFORE_SEND else 1
+    )
+
+
+@pytest.mark.parametrize("barrier", FOLLOW_UP_BARRIERS)
+def test_follow_up_sigkill_leaves_the_durable_session_recoverable(
+    barrier: SubmissionBarrier,
+) -> None:
+    harness = SubmissionSubprocessHarness(barrier, follow_up=True)
+
+    result = harness.interrupt(signal.SIGKILL)
+
+    assert result.returncode == -signal.SIGKILL
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert harness.state.bindings == {SESSION_THREAD: SESSION_URL}
+    assert harness.state.send_count == (
+        0 if barrier is SubmissionBarrier.BEFORE_SEND else 1
+    )
+    send_count = harness.state.send_count
+    recovered = harness.recover_current()
+    assert recovered.json == {"ok": True, "session": {"id": SESSION_ID}}
+    assert harness.state.send_count == send_count
 
 
 def _caught_signal_payload(barrier: SubmissionBarrier) -> dict[str, object]:

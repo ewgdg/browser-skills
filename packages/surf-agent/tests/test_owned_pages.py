@@ -12,6 +12,7 @@ from surf_agent.owned_pages import (
     ObserveOwnedPageAssignment,
     OwnedPageAssignmentObservation,
     OwnedPageAssignmentState,
+    OwnedPageAmbiguousSession,
     OwnedPageClassifier,
     OwnedPageInspectionState,
     OwnedPageNotFound,
@@ -32,6 +33,8 @@ from surf_agent.owned_pages import (
     PrepareOwnedPageSubmission,
     RebindOwnedPage,
     REQUIRED_OWNED_PAGE_CAPABILITIES,
+    ResolveOwnedPage,
+    ResolvedOwnedPage,
     UnsupportedOwnedPageCapability,
     UnsupportedOwnedPageBridge,
     SubmitOwnedPagePrompt,
@@ -165,6 +168,66 @@ def test_unsupported_backend_rejects_allocation_without_browser_work() -> None:
 
     with pytest.raises(UnsupportedOwnedPageCapability):
         bridge.allocate(request)
+
+
+def test_patchright_session_resolution_uses_one_typed_bridge_transaction() -> None:
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "surf-chatgpt-session-abc123",
+                "page_token": 12,
+                "url": "https://chatgpt.com/c/abc123",
+            },
+            "protection": "explicitly_retained",
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+
+    resolved = bridge.resolve(
+        ResolveOwnedPage(
+            owner="surf-chatgpt",
+            thread="surf-chatgpt-session-abc123",
+            exact_url="https://chatgpt.com/c/abc123",
+            allowed_scope=OwnedPageScope.CHATGPT,
+        )
+    )
+
+    assert resolved == ResolvedOwnedPage(
+        page=OwnedPageRef(
+            thread="surf-chatgpt-session-abc123",
+            page_token=12,
+            exact_url="https://chatgpt.com/c/abc123",
+        ),
+        protection=OwnedPageProtection.EXPLICITLY_RETAINED,
+    )
+    assert client.calls == [
+        (
+            "owned-resolve",
+            {
+                "owner": "surf-chatgpt",
+                "thread": "surf-chatgpt-session-abc123",
+                "exact_url": "https://chatgpt.com/c/abc123",
+                "allowed_scope": "chatgpt",
+            },
+        )
+    ]
+
+
+def test_patchright_session_resolution_projects_ambiguous_exact_matches() -> None:
+    bridge = PatchrightOwnedPageBridge(
+        ScriptedClient({"ok": False, "error": "ambiguous_session_page"})
+    )
+
+    with pytest.raises(OwnedPageAmbiguousSession):
+        bridge.resolve(
+            ResolveOwnedPage(
+                owner="surf-chatgpt",
+                thread="surf-chatgpt-session-abc123",
+                exact_url="https://chatgpt.com/c/abc123",
+                allowed_scope=OwnedPageScope.CHATGPT,
+            )
+        )
 
 
 def test_patchright_inspection_addresses_only_the_live_thread_without_starting_a_bridge() -> (
@@ -480,6 +543,7 @@ def test_patchright_assignment_observation_decodes_only_the_session_identity() -
             allowed_scope=OwnedPageScope.CHATGPT,
             expected_protection=None,
             program=program,
+            completion_exact_url=None,
         )
     )
 
@@ -498,6 +562,7 @@ def test_patchright_assignment_observation_decodes_only_the_session_identity() -
                 "allowed_scope": "chatgpt",
                 "expected_protection": None,
                 "program": program.source,
+                "completion_exact_url": None,
             },
         )
     ]
@@ -525,6 +590,7 @@ def test_patchright_assignment_observation_preserves_identity_during_gate() -> N
             allowed_scope=OwnedPageScope.CHATGPT,
             expected_protection=None,
             program=OwnedPageProgram("() => ({state: 'challenge'})"),
+            completion_exact_url=None,
         )
     )
 
@@ -594,6 +660,7 @@ def test_patchright_assignment_rejects_browser_metadata_beyond_session_identity(
                 allowed_scope=OwnedPageScope.CHATGPT,
                 expected_protection=None,
                 program=OwnedPageProgram("() => ({state: 'not_ready'})"),
+                completion_exact_url=None,
             )
         )
 

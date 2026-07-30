@@ -8,6 +8,7 @@ from surf_agent.owned_pages import (
     InspectOwnedPage,
     ObserveOwnedPageAssignment,
     OwnedPageAssignmentObservation,
+    OwnedPageAmbiguousSession,
     OwnedPageBridge,
     OwnedPageInspection,
     OwnedPageInspectionFailed,
@@ -24,6 +25,8 @@ from surf_agent.owned_pages import (
     PrepareOwnedPageSubmission,
     ProtectOwnedPage,
     RebindOwnedPage,
+    ResolveOwnedPage,
+    ResolvedOwnedPage,
     SubmitOwnedPagePrompt,
     UnsupportedOwnedPageCapability,
 )
@@ -116,10 +119,24 @@ class ChatGptOwnedPages:
             )
         )
 
+    def resolve_session(self, session: SessionAddress) -> ResolvedOwnedPage:
+        self._require_capabilities()
+        return self._run(
+            lambda: self._bridge.resolve(
+                ResolveOwnedPage(
+                    owner=SURF_CHATGPT_OWNER,
+                    thread=session.thread,
+                    exact_url=session.canonical_url,
+                    allowed_scope=OwnedPageScope.CHATGPT,
+                )
+            )
+        )
+
     def prepare_submission(
         self,
         page: OwnedPageRef,
         *,
+        allowed_scope: OwnedPageScope,
         expected_protection: OwnedPageProtection | None,
         model_query: str | None,
         thinking_query: str | None,
@@ -140,7 +157,7 @@ class ChatGptOwnedPages:
                     owner=SURF_CHATGPT_OWNER,
                     thread=page.thread,
                     expected_page_token=page.page_token,
-                    allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+                    allowed_scope=allowed_scope,
                     expected_protection=expected_protection,
                     program=OwnedPageProgram(
                         prepare_submission_source(
@@ -158,6 +175,7 @@ class ChatGptOwnedPages:
         self,
         page: OwnedPageRef,
         *,
+        allowed_scope: OwnedPageScope,
         expected_protection: OwnedPageProtection | None,
         prompt: str,
         allow_logged_out: bool,
@@ -171,7 +189,7 @@ class ChatGptOwnedPages:
                     owner=SURF_CHATGPT_OWNER,
                     thread=page.thread,
                     expected_page_token=page.page_token,
-                    allowed_scope=OwnedPageScope.CHATGPT_PRE_SESSION,
+                    allowed_scope=allowed_scope,
                     expected_protection=expected_protection,
                     readiness_program=OwnedPageProgram(
                         prepare_submission_source(
@@ -196,7 +214,9 @@ class ChatGptOwnedPages:
         self,
         page: OwnedPageRef,
         *,
+        allowed_scope: OwnedPageScope,
         expected_protection: OwnedPageProtection | None,
+        completion_exact_url: str | None,
     ) -> OwnedPageAssignmentObservation:
         self._require_capabilities()
         return self._run(
@@ -205,9 +225,10 @@ class ChatGptOwnedPages:
                     owner=SURF_CHATGPT_OWNER,
                     thread=page.thread,
                     expected_page_token=page.page_token,
-                    allowed_scope=OwnedPageScope.CHATGPT,
+                    allowed_scope=allowed_scope,
                     expected_protection=expected_protection,
                     program=OwnedPageProgram(observe_session_assignment_source()),
+                    completion_exact_url=completion_exact_url,
                 )
             )
         )
@@ -268,6 +289,8 @@ class ChatGptOwnedPages:
             raise PublicError(PublicErrorType.OWNERSHIP_CONFLICT) from error
         except OwnedPageInspectionFailed as error:
             raise PublicError(PublicErrorType.INSPECTION_FAILED) from error
+        except OwnedPageAmbiguousSession as error:
+            raise PublicError(PublicErrorType.AMBIGUOUS_SESSION_PAGE) from error
         except BridgeIdentityUnproven as error:
             raise PublicError(PublicErrorType.BROWSER_IDENTITY_UNPROVEN) from error
         except SurfAgentError as error:

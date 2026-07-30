@@ -91,7 +91,7 @@ class _BridgeServer(threading.Thread):
             while True:
                 try:
                     request = self._channel.receive()
-                except EOFError:
+                except (EOFError, ConnectionError, OSError):
                     return
                 response = self._handle_request(request)
                 try:
@@ -126,6 +126,15 @@ class _BridgeServer(threading.Thread):
             exact_url = self._state.bindings[thread]
             state = "session" if exact_url == SESSION_URL else "pre_session"
             return {**self._page_response(thread), "state": state}
+
+        if operation == "resolve":
+            thread = request["thread"]
+            assert request["exact_url"] == SESSION_URL
+            assert self._state.bindings[thread] == SESSION_URL
+            return {
+                **self._page_response(thread),
+                "protection": self._state.protection,
+            }
 
         if operation == "prepare_submission":
             if self._state.send_count:
@@ -205,13 +214,21 @@ class _ActiveChild:
 
 
 class SubmissionSubprocessHarness:
-    def __init__(self, barrier: SubmissionBarrier) -> None:
+    def __init__(
+        self,
+        barrier: SubmissionBarrier,
+        *,
+        follow_up: bool = False,
+    ) -> None:
         self.barrier = barrier
         self.state = DurableBridgeState()
+        self.follow_up = follow_up
+        if follow_up:
+            self.state.bindings[SESSION_THREAD] = SESSION_URL
 
     def interrupt(self, signal_number: signal.Signals) -> ProcessResult:
         active = self._start_child(
-            ["ask", "--pace", "none", "subprocess prompt"],
+            self._ask_argv(),
             barrier=self.barrier,
         )
         self._wait_for_barrier(active)
@@ -220,7 +237,7 @@ class SubmissionSubprocessHarness:
 
     def disconnect_bridge(self) -> ProcessResult:
         active = self._start_child(
-            ["ask", "--pace", "none", "subprocess prompt"],
+            self._ask_argv(),
             barrier=self.barrier,
         )
         self._wait_for_barrier(active)
@@ -231,7 +248,8 @@ class SubmissionSubprocessHarness:
     def recover_current(self) -> ProcessResult:
         thread = (
             SESSION_THREAD
-            if self.barrier is SubmissionBarrier.HANDSHAKE_COMPLETE
+            if self.follow_up
+            or self.barrier is SubmissionBarrier.HANDSHAKE_COMPLETE
             else SUBMISSION_THREAD
         )
         active = self._start_child(
@@ -239,6 +257,18 @@ class SubmissionSubprocessHarness:
             barrier=None,
         )
         return self._finish_child(active)
+
+    def _ask_argv(self) -> list[str]:
+        if self.follow_up:
+            return [
+                "ask",
+                "--session",
+                SESSION_ID,
+                "--pace",
+                "none",
+                "subprocess follow-up",
+            ]
+        return ["ask", "--pace", "none", "subprocess prompt"]
 
     def _start_child(
         self,

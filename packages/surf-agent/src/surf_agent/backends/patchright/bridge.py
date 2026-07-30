@@ -181,6 +181,8 @@ class PatchrightRuntime:
             return json.dumps(result, sort_keys=True) + "\n"
         if name == "owned-inspect":
             return await self.owned_pages.inspect(args)
+        if name == "owned-resolve":
+            return await self.owned_pages.resolve(args)
         if name == "owned-rebind":
             return self.owned_pages.rebind(args)
         if name == "owned-protect":
@@ -315,6 +317,9 @@ class PatchrightRuntime:
     # the runtime remains the sole authority over bindings, tokens, and protection.
     def _owned_page_slot(self, thread: str) -> PageSlot | None:
         return self.pages.get(thread)
+
+    def _page_is_bound(self, page: Any) -> bool:
+        return any(slot.page is page for slot in self.pages.values())
 
     def _discard_owned_page_binding(self, thread: str) -> None:
         self.pages.pop(thread, None)
