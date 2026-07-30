@@ -133,12 +133,18 @@ class LocalBridgeClient:
         raise SurfAgentError(f"{self.backend_label} bridge did not become healthy; {self.startup_error}")
 
     def _health_ok(self) -> bool:
+        data = self._health_payload()
+        return data is not None and data.get("status") == "ok"
+
+    def _health_payload(self) -> dict[str, object] | None:
         try:
             with urllib.request.urlopen(f"http://127.0.0.1:{self.port}/health", timeout=1.0) as response:
                 data = json.loads(response.read().decode())
-                return response.status == 200 and data.get("status") == "ok"
+                if response.status != 200 or not isinstance(data, dict):
+                    return None
+                return data
         except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
-            return False
+            return None
 
     def _wait_until_stopped(self) -> None:
         deadline = time.monotonic() + CHROME_NEW_WINDOW_TIMEOUT_S

@@ -11,6 +11,10 @@ class BridgeUnavailable(SurfAgentError):
     pass
 
 
+class BridgeIdentityUnproven(SurfAgentError):
+    pass
+
+
 class BridgeToolError(SurfAgentError):
     def __init__(self, *, backend_label: str, tool_name: str, detail: str) -> None:
         self.detail = detail

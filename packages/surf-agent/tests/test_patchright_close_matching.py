@@ -11,10 +11,10 @@ import pytest
 
 from surf_agent.backends.bridge_common import PageSlot
 from surf_agent.backends.local_bridge import LocalBridgeClient
-from surf_agent.backends.patchright.backend import PatchrightBackend
+from surf_agent.backends.patchright.backend import PatchrightBackend, PatchrightBridgeClient
 from surf_agent.backends.patchright.bridge import PatchrightRuntime
 from surf_agent.cli import SurfAgent, main
-from surf_agent.errors import BridgeUnavailable, SurfAgentError
+from surf_agent.errors import BridgeIdentityUnproven, BridgeUnavailable, SurfAgentError
 
 
 class Page:
@@ -65,6 +65,14 @@ def local_client(tmp_path: Path) -> LocalBridgeClient:
 def bridge_response(result: str) -> MagicMock:
     response = MagicMock()
     response.read.return_value = json.dumps({"result": result}).encode()
+    response.__enter__.return_value = response
+    return response
+
+
+def health_response(payload: dict[str, object]) -> MagicMock:
+    response = MagicMock()
+    response.status = 200
+    response.read.return_value = json.dumps(payload).encode()
     response.__enter__.return_value = response
     return response
 
@@ -139,10 +147,62 @@ def test_call_tool_if_running_preserves_bridge_errors(tmp_path: Path) -> None:
 
     with (
         patch.object(client, "_health_ok", return_value=True),
-        patch("surf_agent.backends.local_bridge.urllib.request.urlopen", side_effect=TimeoutError("timed out")),
-        pytest.raises(BridgeUnavailable, match="Test bridge tool close-matching timed out after 1s"),
+        patch(
+            "surf_agent.backends.local_bridge.urllib.request.urlopen",
+            side_effect=TimeoutError("timed out"),
+        ),
+        pytest.raises(
+            BridgeUnavailable,
+            match="Test bridge tool close-matching timed out after 1s",
+        ),
     ):
         client.call_tool_if_running("close-matching", {"pattern": "*"})
+
+
+def test_patchright_health_proves_the_configured_profile_identity(
+    tmp_path: Path,
+) -> None:
+    profile_dir = tmp_path / "profile"
+    client = PatchrightBridgeClient(
+        timeout_s=1,
+        port=9555,
+        profile_dir=profile_dir,
+    )
+    runtime = PatchrightRuntime(profile_dir=profile_dir)
+
+    with patch(
+        "surf_agent.backends.local_bridge.urllib.request.urlopen",
+        side_effect=[
+            health_response(runtime.health_payload()),
+            bridge_response("inspected\n"),
+        ],
+    ):
+        assert client.call_tool_if_running("owned-inspect", {}) == "inspected\n"
+
+
+def test_patchright_health_rejects_a_mismatched_bridge_identity(
+    tmp_path: Path,
+) -> None:
+    client = PatchrightBridgeClient(
+        timeout_s=1,
+        port=9555,
+        profile_dir=tmp_path / "profile",
+    )
+
+    with (
+        patch(
+            "surf_agent.backends.local_bridge.urllib.request.urlopen",
+            return_value=health_response(
+                {
+                    "status": "ok",
+                    "backend": "patchright",
+                    "profile_identity": "different-profile",
+                }
+            ),
+        ),
+        pytest.raises(BridgeIdentityUnproven),
+    ):
+        client.call_tool_if_running("owned-inspect", {})
 
 
 def test_close_matching_closes_matching_managed_threads_in_sorted_order(tmp_path: Path) -> None:

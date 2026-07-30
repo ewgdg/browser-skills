@@ -13,8 +13,10 @@ from pathlib import Path
 
 from platformdirs import PlatformDirs
 from typing import Any
-from ...constants import DEFAULT_PATCHRIGHT_APP_ID
+from ...constants import DEFAULT_PATCHRIGHT_APP_ID, PATCHRIGHT_BACKEND
+from ...owned_pages import OwnedPageProtection
 from .constants import CONTEXT_RESTART_REQUIRED
+from .owned_pages import PatchrightOwnedPageOperations
 from ..bridge_common import (
     CLOSED_TARGET_MESSAGE,
     NATIVE_ARIA_REF_PATTERN,
@@ -24,6 +26,7 @@ from ..bridge_common import (
     STARTUP_PAGE_URLS,
     BridgeRequestHandler,
     PageSlot,
+    bridge_health_payload,
 )
 
 SNAPSHOT_ARIA_TIMEOUT_MS = 3_000
@@ -33,10 +36,13 @@ CDP_NEW_WINDOW_POLL_INTERVAL_S = 0.05
 # Linux v11 cookies require Chrome’s real OS password store/keychain, not Patchright automation defaults.
 PATCHRIGHT_INCOMPATIBLE_DEFAULT_ARGS = ("--password-store=basic", "--use-mock-keychain")
 
+async_playwright: Any = None
 try:
-    from patchright.async_api import async_playwright
+    from patchright import async_api as patchright_async_api
 except ImportError:
-    async_playwright = None
+    pass
+else:
+    async_playwright = patchright_async_api.async_playwright
 
 
 class PatchrightRuntime:
@@ -48,11 +54,15 @@ class PatchrightRuntime:
         self.manager: Any | None = None
         self.browser_or_context: Any | None = None
         self.pages: dict[str, PageSlot] = {}
+        self.owned_pages = PatchrightOwnedPageOperations(self)
         self._next_page_token = 1
         self._runner: asyncio.Runner | None = None
         self.shutdown_requested = False
         self._close_shutdown_pending = False
         self.restart_requested = False
+
+    def health_payload(self) -> dict[str, object]:
+        return bridge_health_payload(PATCHRIGHT_BACKEND, self.profile_dir)
 
     def start(self) -> None:
         self._run(self._start_async())
@@ -169,6 +179,14 @@ class PatchrightRuntime:
             if not result["failed"]:
                 self._close_shutdown_pending = True
             return json.dumps(result, sort_keys=True) + "\n"
+        if name == "owned-inspect":
+            return await self.owned_pages.inspect(args)
+        if name == "owned-rebind":
+            return self.owned_pages.rebind(args)
+        if name == "owned-protect":
+            return self.owned_pages.protect(args)
+        if name == "owned-allocate":
+            return await self.owned_pages.allocate(args)
         if name == "scroll" and str(args.get("direction") or "down") not in {"up", "down", "top", "bottom"}:
             raise RuntimeError("scroll requires direction: up, down, top, or bottom")
         await self._start_async()
@@ -286,6 +304,49 @@ class PatchrightRuntime:
         if hasattr(self.browser_or_context, "new_page") and hasattr(self.browser_or_context, "pages"):
             return self.browser_or_context
         return self.browser_or_context.new_context()
+
+    # Owned-page transactions validate guards first, then call these synchronously so
+    # the runtime remains the sole authority over bindings, tokens, and protection.
+    def _owned_page_slot(self, thread: str) -> PageSlot | None:
+        return self.pages.get(thread)
+
+    def _discard_owned_page_binding(self, thread: str) -> None:
+        self.pages.pop(thread, None)
+
+    def _bind_owned_page(
+        self,
+        thread: str,
+        page: Any,
+        owner: str,
+        protection: OwnedPageProtection | None,
+    ) -> PageSlot:
+        slot = PageSlot(
+            page=page,
+            page_token=self._next_page_token,
+            owner=owner,
+            protection=protection,
+        )
+        self._next_page_token += 1
+        self.pages[thread] = slot
+        return slot
+
+    def _rebind_owned_page(
+        self,
+        source_thread: str,
+        destination_thread: str,
+        slot: PageSlot,
+    ) -> None:
+        if source_thread == destination_thread:
+            return
+        self.pages.pop(source_thread)
+        self.pages[destination_thread] = slot
+
+    def _set_owned_page_protection(
+        self,
+        slot: PageSlot,
+        protection: OwnedPageProtection | None,
+    ) -> None:
+        slot.protection = protection
 
     async def _page(self, thread: str) -> PageSlot:
         slot = self.pages.get(thread)

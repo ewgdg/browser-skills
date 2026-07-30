@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ...constants import PATCHRIGHT_BACKEND
-from ...errors import BridgeToolError, SurfAgentError
+from ...errors import BridgeIdentityUnproven, BridgeToolError, SurfAgentError
 from ...chrome_lifecycle import browser_executable_family
 from ..local_bridge import LocalBridgeBackend, LocalBridgeClient, stable_local_page_id
+from ..bridge_common import bridge_health_payload
 from .constants import CONTEXT_RESTART_REQUIRED
 
 PATCHRIGHT_INSTALL_HINT = (
@@ -29,6 +30,17 @@ class PatchrightBridgeClient(LocalBridgeClient):
             startup_error=PATCHRIGHT_INSTALL_HINT,
             timeout_hint="; restart it with `surf-agent bridge stop` if it stays wedged",
         )
+
+    def _health_ok(self) -> bool:
+        payload = self._health_payload()
+        if payload is None:
+            return False
+        expected_identity = bridge_health_payload(PATCHRIGHT_BACKEND, self.profile_dir)
+        if payload != expected_identity:
+            raise BridgeIdentityUnproven(
+                "Patchright bridge identity does not match the configured Surf profile"
+            )
+        return True
 
     def call_tool(self, name: str, args: dict[str, Any] | None = None) -> str:
         try:

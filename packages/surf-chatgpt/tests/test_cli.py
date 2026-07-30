@@ -340,7 +340,10 @@ def test_operational_and_unexpected_failures_are_safe_single_objects() -> None:
     assert stderr == ""
 
 
-def test_default_lifecycle_fails_safely_before_owned_page_support_exists() -> None:
+def test_axi_default_lifecycle_fails_before_owned_page_browser_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("SURF_AGENT_BACKEND", "axi")
     output = io.StringIO()
     errors = io.StringIO()
 

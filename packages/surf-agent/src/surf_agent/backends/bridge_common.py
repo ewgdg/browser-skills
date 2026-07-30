@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
+
+from ..owned_pages import OwnedPageProtection
 
 STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
 CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
@@ -20,6 +24,8 @@ NATIVE_ARIA_REF_PATTERN = re.compile(r"^(?:f\d+)?e\d+$")
 class PageSlot:
     page: Any
     page_token: int
+    owner: str | None = None
+    protection: OwnedPageProtection | None = None
 
 
 class BridgeRequestHandler(BaseHTTPRequestHandler):
@@ -29,7 +35,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         if urlparse(self.path).path != "/health":
             self._write(404, {"error": "not found"})
             return
-        self._write(200, {"status": "ok"})
+        self._write(200, self.runtime.health_payload())
 
     def do_POST(self) -> None:
         if urlparse(self.path).path != "/call":
@@ -42,7 +48,7 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
             if name == "stop":
                 result = self.runtime.stop()
                 self._write(200, {"result": result})
-                self.server._BaseServer__shutdown_request = True
+                setattr(self.server, "_BaseServer__shutdown_request", True)
                 return
             result = self.runtime.call(name, payload.get("args") or {})
         except Exception as exc:
@@ -63,3 +69,13 @@ class BridgeRequestHandler(BaseHTTPRequestHandler):
         self.send_header("content-length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+
+def bridge_health_payload(backend: str, profile_dir: Path) -> dict[str, object]:
+    """Affirm one normalized profile without exposing its machine-specific path."""
+    normalized_profile = str(profile_dir.expanduser().resolve())
+    return {
+        "status": "ok",
+        "backend": backend,
+        "profile_identity": hashlib.sha256(normalized_profile.encode()).hexdigest(),
+    }

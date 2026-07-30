@@ -4,12 +4,22 @@ from contextlib import contextmanager
 import threading
 from pathlib import Path
 
+from surf_agent.backends.bridge_common import bridge_health_payload
 from surf_agent.backends.patchright.backend import PatchrightBridgeClient
 from surf_agent.backends.patchright.bridge import PatchrightHTTPServer, RequestHandler
 from surf_agent.backends.patchright.constants import CONTEXT_RESTART_REQUIRED
+from surf_agent.constants import PATCHRIGHT_BACKEND
 
 
-class RestartRequiredRuntime:
+class IdentityRuntime:
+    def __init__(self, profile_dir: Path) -> None:
+        self.profile_dir = profile_dir
+
+    def health_payload(self) -> dict[str, object]:
+        return bridge_health_payload(PATCHRIGHT_BACKEND, self.profile_dir)
+
+
+class RestartRequiredRuntime(IdentityRuntime):
     restart_requested = False
 
     def call(self, _name: str, _args: dict[str, object]) -> str:
@@ -23,7 +33,7 @@ class RestartRequiredRuntime:
         return "stopped\n"
 
 
-class HealthyRuntime:
+class HealthyRuntime(IdentityRuntime):
     restart_requested = False
 
     def call(self, name: str, args: dict[str, object]) -> str:
@@ -48,7 +58,8 @@ def serve(server: PatchrightHTTPServer) -> None:
 
 
 def test_patchright_client_restarts_bridge_and_retries_interrupted_request(tmp_path: Path) -> None:
-    first_runtime = RestartRequiredRuntime()
+    profile_dir = tmp_path / "profile"
+    first_runtime = RestartRequiredRuntime(profile_dir)
     RequestHandler.runtime = first_runtime
     first_server = PatchrightHTTPServer(("127.0.0.1", 0), RequestHandler)
     first_thread = threading.Thread(target=serve, args=(first_server,), daemon=True)
@@ -57,13 +68,13 @@ def test_patchright_client_restarts_bridge_and_retries_interrupted_request(tmp_p
     client = PatchrightBridgeClient(
         timeout_s=1,
         port=first_server.server_address[1],
-        profile_dir=tmp_path / "profile",
+        profile_dir=profile_dir,
     )
     started_servers: list[tuple[PatchrightHTTPServer, threading.Thread]] = []
 
     @contextmanager
     def start_replacement_bridge():
-        replacement_runtime = HealthyRuntime()
+        replacement_runtime = HealthyRuntime(profile_dir)
         RequestHandler.runtime = replacement_runtime
         replacement_server = PatchrightHTTPServer(("127.0.0.1", 0), RequestHandler)
         replacement_thread = threading.Thread(target=serve, args=(replacement_server,), daemon=True)
