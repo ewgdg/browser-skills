@@ -5,9 +5,15 @@ from typing import TypeVar
 
 from surf_agent.owned_pages import (
     AllocateOwnedPage,
+    ClassifyOwnedPageAttempt,
+    CloseTerminalOwnedPage,
+    ExtractOwnedPageResult,
     InspectOwnedPage,
     ObserveOwnedPageAssignment,
     OwnedPageAssignmentObservation,
+    OwnedPageAttemptMetadata,
+    OwnedPageAttemptResult,
+    OwnedPageAttemptState,
     OwnedPageAmbiguousSession,
     OwnedPageBridge,
     OwnedPageInspection,
@@ -33,6 +39,7 @@ from surf_agent.owned_pages import (
 from surf_agent.errors import BridgeIdentityUnproven, BridgeUnavailable, SurfAgentError
 
 from .contracts import Pace
+from .dom.attempt import classify_latest_attempt_source, extract_latest_result_source
 from .dom.readiness import CURRENT_SESSION_CLASSIFIER
 from .dom.submission import (
     observe_session_assignment_source,
@@ -250,6 +257,68 @@ class ChatGptOwnedPages:
                     allowed_scope=OwnedPageScope.CHATGPT,
                     expected_protection=expected_protection,
                     protection=protection,
+                )
+            )
+        )
+
+    def classify_attempt(
+        self,
+        resolved: ResolvedOwnedPage,
+    ) -> OwnedPageAttemptMetadata:
+        self._require_capabilities()
+        page = resolved.page
+        return self._run(
+            lambda: self._bridge.classify_attempt(
+                ClassifyOwnedPageAttempt(
+                    owner=SURF_CHATGPT_OWNER,
+                    thread=page.thread,
+                    expected_page_token=page.page_token,
+                    expected_exact_url=page.exact_url,
+                    allowed_scope=OwnedPageScope.CHATGPT,
+                    expected_protection=resolved.protection,
+                    program=OwnedPageProgram(classify_latest_attempt_source()),
+                )
+            )
+        )
+
+    def extract_result(
+        self,
+        resolved: ResolvedOwnedPage,
+    ) -> OwnedPageAttemptResult:
+        self._require_capabilities()
+        page = resolved.page
+        return self._run(
+            lambda: self._bridge.extract_result(
+                ExtractOwnedPageResult(
+                    owner=SURF_CHATGPT_OWNER,
+                    thread=page.thread,
+                    expected_page_token=page.page_token,
+                    expected_exact_url=page.exact_url,
+                    allowed_scope=OwnedPageScope.CHATGPT,
+                    expected_protection=resolved.protection,
+                    program=OwnedPageProgram(extract_latest_result_source()),
+                )
+            )
+        )
+
+    def close_terminal(
+        self,
+        resolved: ResolvedOwnedPage,
+        expected_state: OwnedPageAttemptState,
+    ) -> None:
+        self._require_capabilities()
+        page = resolved.page
+        self._run(
+            lambda: self._bridge.close_terminal(
+                CloseTerminalOwnedPage(
+                    owner=SURF_CHATGPT_OWNER,
+                    thread=page.thread,
+                    expected_page_token=page.page_token,
+                    expected_exact_url=page.exact_url,
+                    allowed_scope=OwnedPageScope.CHATGPT,
+                    expected_protection=resolved.protection,
+                    program=OwnedPageProgram(classify_latest_attempt_source()),
+                    expected_state=expected_state,
                 )
             )
         )

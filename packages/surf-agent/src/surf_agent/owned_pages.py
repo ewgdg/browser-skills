@@ -73,6 +73,13 @@ class OwnedPageAssignmentState(StrEnum):
     UI_CHANGED = "ui_changed"
 
 
+class OwnedPageAttemptState(StrEnum):
+    GENERATING = "generating"
+    COMPLETED = "completed"
+    STOPPED = "stopped"
+    FAILED = "failed"
+
+
 REQUIRED_OWNED_PAGE_CAPABILITIES = frozenset(OwnedPageCapability)
 CHATGPT_HOSTNAME = "chatgpt.com"
 CHATGPT_PRE_SESSION_PATHS = frozenset({"", "/", "/auth/login", "/auth/login/"})
@@ -180,6 +187,32 @@ class ObserveOwnedPageAssignment:
 
 
 @dataclass(frozen=True)
+class GuardedOwnedPageProgram:
+    owner: str
+    thread: str
+    expected_page_token: int
+    expected_exact_url: str
+    allowed_scope: OwnedPageScope
+    expected_protection: OwnedPageProtection | None
+    program: OwnedPageProgram
+
+
+@dataclass(frozen=True)
+class ClassifyOwnedPageAttempt(GuardedOwnedPageProgram):
+    pass
+
+
+@dataclass(frozen=True)
+class ExtractOwnedPageResult(GuardedOwnedPageProgram):
+    pass
+
+
+@dataclass(frozen=True)
+class CloseTerminalOwnedPage(GuardedOwnedPageProgram):
+    expected_state: OwnedPageAttemptState
+
+
+@dataclass(frozen=True)
 class RebindOwnedPage:
     owner: str
     source_thread: str
@@ -239,6 +272,19 @@ class OwnedPageAssignmentObservation:
     session_id: str | None = None
 
 
+@dataclass(frozen=True)
+class OwnedPageAttemptMetadata:
+    page: OwnedPageRef
+    state: OwnedPageAttemptState
+
+
+@dataclass(frozen=True)
+class OwnedPageAttemptResult:
+    page: OwnedPageRef
+    state: OwnedPageAttemptState
+    text: str | None = None
+
+
 class OwnedPageBridge(Protocol):
     def capabilities(self) -> OwnedPageCapabilities: ...
 
@@ -266,6 +312,16 @@ class OwnedPageBridge(Protocol):
     def observe_assignment(
         self, request: ObserveOwnedPageAssignment
     ) -> OwnedPageAssignmentObservation: ...
+
+    def classify_attempt(
+        self, request: ClassifyOwnedPageAttempt
+    ) -> OwnedPageAttemptMetadata: ...
+
+    def extract_result(
+        self, request: ExtractOwnedPageResult
+    ) -> OwnedPageAttemptResult: ...
+
+    def close_terminal(self, request: CloseTerminalOwnedPage) -> None: ...
 
 
 class OwnedPageBridgeClient(Protocol):
@@ -425,6 +481,41 @@ class PatchrightOwnedPageBridge:
             raise OwnedPageNotFound
         return _decode_assignment_observation(raw)
 
+    def classify_attempt(
+        self, request: ClassifyOwnedPageAttempt
+    ) -> OwnedPageAttemptMetadata:
+        payload: dict[str, object] = {
+            **_observation_guard_payload(request),
+            "program": request.program.source,
+        }
+        raw = self._client.call_tool_if_running("owned-classify-attempt", payload)
+        if raw is None:
+            raise OwnedPageNotFound
+        return _decode_attempt_metadata(raw)
+
+    def extract_result(
+        self, request: ExtractOwnedPageResult
+    ) -> OwnedPageAttemptResult:
+        payload: dict[str, object] = {
+            **_observation_guard_payload(request),
+            "program": request.program.source,
+        }
+        raw = self._client.call_tool_if_running("owned-extract-result", payload)
+        if raw is None:
+            raise OwnedPageNotFound
+        return _decode_attempt_result(raw)
+
+    def close_terminal(self, request: CloseTerminalOwnedPage) -> None:
+        payload: dict[str, object] = {
+            **_observation_guard_payload(request),
+            "program": request.program.source,
+            "expected_state": request.expected_state.value,
+        }
+        raw = self._client.call_tool_if_running("owned-close-terminal", payload)
+        if raw is None:
+            raise OwnedPageNotFound
+        _decode_operation_outcome(raw)
+
 
 class UnsupportedOwnedPageBridge:
     def capabilities(self) -> OwnedPageCapabilities:
@@ -468,6 +559,22 @@ class UnsupportedOwnedPageBridge:
     def observe_assignment(
         self, request: ObserveOwnedPageAssignment
     ) -> OwnedPageAssignmentObservation:
+        _ = request
+        raise UnsupportedOwnedPageCapability
+
+    def classify_attempt(
+        self, request: ClassifyOwnedPageAttempt
+    ) -> OwnedPageAttemptMetadata:
+        _ = request
+        raise UnsupportedOwnedPageCapability
+
+    def extract_result(
+        self, request: ExtractOwnedPageResult
+    ) -> OwnedPageAttemptResult:
+        _ = request
+        raise UnsupportedOwnedPageCapability
+
+    def close_terminal(self, request: CloseTerminalOwnedPage) -> None:
         _ = request
         raise UnsupportedOwnedPageCapability
 
@@ -575,7 +682,8 @@ def _decode_inspection(raw: str) -> OwnedPageInspection:
 def _guard_payload(
     request: PrepareOwnedPageSubmission
     | SubmitOwnedPagePrompt
-    | ObserveOwnedPageAssignment,
+    | ObserveOwnedPageAssignment
+    | GuardedOwnedPageProgram,
 ) -> dict[str, object]:
     return {
         "owner": request.owner,
@@ -583,6 +691,15 @@ def _guard_payload(
         "expected_page_token": request.expected_page_token,
         "allowed_scope": request.allowed_scope.value,
         "expected_protection": _protection_wire_value(request.expected_protection),
+    }
+
+
+def _observation_guard_payload(
+    request: GuardedOwnedPageProgram,
+) -> dict[str, object]:
+    return {
+        **_guard_payload(request),
+        "expected_exact_url": request.expected_exact_url,
     }
 
 
@@ -682,6 +799,40 @@ def _decode_assignment_observation(raw: str) -> OwnedPageAssignmentObservation:
     ):
         raise ValueError("Owned-page bridge returned invalid assignment metadata.")
     return OwnedPageAssignmentObservation(page, state, session_id)
+
+
+def _decode_attempt_metadata(raw: str) -> OwnedPageAttemptMetadata:
+    page, metadata = _decode_guarded_metadata(raw)
+    if set(metadata) != {"state"}:
+        raise ValueError("Owned-page bridge returned invalid attempt metadata.")
+    try:
+        state = OwnedPageAttemptState(metadata["state"])
+    except (TypeError, ValueError) as error:
+        raise ValueError("Owned-page bridge returned invalid attempt metadata.") from error
+    return OwnedPageAttemptMetadata(page=page, state=state)
+
+
+def _decode_attempt_result(raw: str) -> OwnedPageAttemptResult:
+    page, metadata = _decode_guarded_metadata(raw)
+    try:
+        state = OwnedPageAttemptState(metadata.get("state"))
+    except (TypeError, ValueError) as error:
+        raise ValueError("Owned-page bridge returned invalid result metadata.") from error
+    requires_text = state in {
+        OwnedPageAttemptState.COMPLETED,
+        OwnedPageAttemptState.STOPPED,
+    }
+    expected_keys = {"state", "text"} if requires_text else {"state"}
+    if set(metadata) != expected_keys:
+        raise ValueError("Owned-page bridge returned invalid result metadata.")
+    text = metadata.get("text")
+    if requires_text and not isinstance(text, str):
+        raise ValueError("Owned-page bridge returned invalid result metadata.")
+    return OwnedPageAttemptResult(
+        page=page,
+        state=state,
+        text=text if isinstance(text, str) else None,
+    )
 
 
 def _protection_wire_value(

@@ -625,6 +625,246 @@ def test_owned_inspection_rejects_non_allow_listed_classifier_metadata(
     assert page.closed is False
 
 
+def test_owned_attempt_classification_returns_only_allow_listed_state(
+    tmp_path: Path,
+) -> None:
+    program = "() => ({state: 'generating'})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {program: {"state": "generating"}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-classify-attempt",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_page_token": 8,
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+        },
+    )
+
+    assert json.loads(raw) == {
+        "ok": True,
+        "page": {
+            "thread": "surf-chatgpt-session-abc123",
+            "page_token": 8,
+            "url": "https://chatgpt.com/c/abc123",
+        },
+        "metadata": {"state": "generating"},
+    }
+    assert page.evaluate_calls == [program]
+    assert page.closed is False
+
+
+def test_owned_explicit_result_extraction_allows_text_only_for_terminal_results(
+    tmp_path: Path,
+) -> None:
+    program = "() => ({state: 'completed', text: 'Answer'})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {program: {"state": "completed", "text": "Answer"}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-extract-result",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_page_token": 8,
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+        },
+    )
+
+    assert json.loads(raw)["metadata"] == {
+        "state": "completed",
+        "text": "Answer",
+    }
+    assert page.evaluate_calls == [program]
+
+
+def test_owned_terminal_close_reclassifies_and_closes_one_exact_unprotected_page(
+    tmp_path: Path,
+) -> None:
+    program = "() => ({state: 'completed'})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {program: {"state": "completed"}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-close-terminal",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_page_token": 8,
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+            "expected_state": "completed",
+        },
+    )
+
+    assert json.loads(raw) == {"ok": True}
+    assert page.evaluate_calls == [program]
+    assert page.closed is True
+    assert "surf-chatgpt-session-abc123" not in runtime.pages
+
+
+@pytest.mark.parametrize(
+    ("operation", "metadata", "extra_args"),
+    [
+        (
+            "owned-classify-attempt",
+            {"state": "generating", "text": "CANARY-response"},
+            {},
+        ),
+        ("owned-classify-attempt", {"state": "unrecognized"}, {}),
+        (
+            "owned-extract-result",
+            {"state": "generating", "text": "CANARY-unstable-response"},
+            {},
+        ),
+        (
+            "owned-close-terminal",
+            {"state": "completed", "text": "CANARY-cleanup-content"},
+            {"expected_state": "completed"},
+        ),
+    ],
+)
+def test_owned_observation_operations_reject_unexpected_or_content_bearing_metadata(
+    operation: str,
+    metadata: dict[str, str],
+    extra_args: dict[str, str],
+    tmp_path: Path,
+) -> None:
+    program = "private-canary-program"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {program: metadata},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        operation,
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_page_token": 8,
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+            **extra_args,
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "inspection_failed"}
+    assert "CANARY" not in raw
+    assert page.closed is False
+    assert "surf-chatgpt-session-abc123" in runtime.pages
+
+
+def test_owned_terminal_close_preserves_page_replaced_during_classification(
+    tmp_path: Path,
+) -> None:
+    program = "() => ({state: 'completed'})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {program: {"state": "completed"}},
+    )
+    page.before_evaluate = lambda _: setattr(
+        page, "url", "https://chatgpt.com/c/replaced"
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+    )
+
+    raw = runtime.call(
+        "owned-close-terminal",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_page_token": 8,
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "expected_protection": None,
+            "program": program,
+            "expected_state": "completed",
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "ownership_conflict"}
+    assert page.closed is False
+    assert "surf-chatgpt-session-abc123" in runtime.pages
+
+
+def test_owned_terminal_close_never_closes_a_protected_page(tmp_path: Path) -> None:
+    program = "() => ({state: 'completed'})"
+    page = ProgrammedPage(
+        "https://chatgpt.com/c/abc123",
+        {program: {"state": "completed"}},
+    )
+    runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
+    runtime.pages["surf-chatgpt-session-abc123"] = PageSlot(
+        page=page,
+        page_token=8,
+        owner="surf-chatgpt",
+        protection="explicitly_retained",
+    )
+
+    raw = runtime.call(
+        "owned-close-terminal",
+        {
+            "owner": "surf-chatgpt",
+            "thread": "surf-chatgpt-session-abc123",
+            "expected_page_token": 8,
+            "expected_exact_url": "https://chatgpt.com/c/abc123",
+            "allowed_scope": "chatgpt",
+            "expected_protection": "explicitly_retained",
+            "program": program,
+            "expected_state": "completed",
+        },
+    )
+
+    assert json.loads(raw) == {"ok": False, "error": "ownership_conflict"}
+    assert page.evaluate_calls == []
+    assert page.closed is False
+
+
 def test_owned_rebind_atomically_moves_the_same_live_page_without_browser_mutation(
     tmp_path: Path,
 ) -> None:

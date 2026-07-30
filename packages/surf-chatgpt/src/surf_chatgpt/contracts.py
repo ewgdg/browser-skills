@@ -339,6 +339,33 @@ def _validate_success_contract(value: JsonObject) -> None:
         _validate_handoff(value["handoff"])
     if "thread" in value:
         _require_string(value["thread"], "thread")
+    _validate_attempt_relationships(value)
+
+
+def _validate_attempt_relationships(value: JsonObject) -> None:
+    if "attempt" not in value:
+        if "result" in value:
+            raise ValueError("Result requires an affirmed attempt state.")
+        return
+    attempt = _require_object(value["attempt"], "attempt")
+    state = AttemptState(_require_string(attempt["state"], "attempt state"))
+    if "observation" in value:
+        if state is not AttemptState.GENERATING or value.get("result") is not None:
+            raise ValueError("Observation outcomes require a generating attempt.")
+    if "result" not in value:
+        return
+    result = value["result"]
+    if result is None:
+        if state not in {AttemptState.GENERATING, AttemptState.FAILED}:
+            raise ValueError("Terminal answer states require their result text.")
+        return
+    result_object = _require_object(result, "result")
+    partial = result_object["partial"]
+    if state is AttemptState.COMPLETED and partial is False:
+        return
+    if state is AttemptState.STOPPED and partial is True:
+        return
+    raise ValueError("Result partiality does not match the attempt state.")
 
 
 def _validate_failure_contract(value: JsonObject) -> None:

@@ -131,3 +131,36 @@ def test_indeterminate_submission_can_lead_a_signal_outcome(
     )
 
     assert outcome.exit_code is signal_exit_code
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {
+            "session": {"id": "abc123"},
+            "attempt": {"state": "generating"},
+            "result": {"text": "unstable", "partial": False},
+        },
+        {
+            "session": {"id": "abc123"},
+            "attempt": {"state": "completed"},
+            "result": {"text": "Answer", "partial": True},
+        },
+        {
+            "session": {"id": "abc123"},
+            "attempt": {"state": "stopped"},
+            "result": {"text": "Partial", "partial": False},
+        },
+        {
+            "session": {"id": "abc123"},
+            "attempt": {"state": "failed"},
+            "observation": {"outcome": "timed_out"},
+            "result": None,
+        },
+    ],
+)
+def test_attempt_result_and_observation_fields_must_form_an_exact_schema(
+    fields: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        CommandOutcome.success(fields)  # type: ignore[arg-type]

@@ -8,10 +8,16 @@ import pytest
 
 from surf_agent.owned_pages import (
     AllocateOwnedPage,
+    ClassifyOwnedPageAttempt,
+    CloseTerminalOwnedPage,
+    ExtractOwnedPageResult,
     InspectOwnedPage,
     ObserveOwnedPageAssignment,
     OwnedPageAssignmentObservation,
     OwnedPageAssignmentState,
+    OwnedPageAttemptMetadata,
+    OwnedPageAttemptResult,
+    OwnedPageAttemptState,
     OwnedPageAmbiguousSession,
     OwnedPageClassifier,
     OwnedPageInspectionState,
@@ -265,6 +271,125 @@ def test_patchright_inspection_addresses_only_the_live_thread_without_starting_a
                 "thread": "preserved",
                 "allowed_scope": "chatgpt",
                 "classifier": CLASSIFIER.source,
+            },
+        )
+    ]
+
+
+def test_patchright_attempt_classification_uses_guarded_metadata_only_transport() -> None:
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "surf-chatgpt-session-abc123",
+                "page_token": 9,
+                "url": "https://chatgpt.com/c/abc123",
+            },
+            "metadata": {"state": "generating"},
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+    request = ClassifyOwnedPageAttempt(
+        owner="surf-chatgpt",
+        thread="surf-chatgpt-session-abc123",
+        expected_page_token=9,
+        expected_exact_url="https://chatgpt.com/c/abc123",
+        allowed_scope=OwnedPageScope.CHATGPT,
+        expected_protection=None,
+        program=OwnedPageProgram("() => ({state: 'generating'})"),
+    )
+
+    observation = bridge.classify_attempt(request)
+
+    assert observation == OwnedPageAttemptMetadata(
+        page=OwnedPageRef(
+            thread="surf-chatgpt-session-abc123",
+            page_token=9,
+            exact_url="https://chatgpt.com/c/abc123",
+        ),
+        state=OwnedPageAttemptState.GENERATING,
+    )
+    assert client.calls == [
+        (
+            "owned-classify-attempt",
+            {
+                "owner": "surf-chatgpt",
+                "thread": "surf-chatgpt-session-abc123",
+                "expected_page_token": 9,
+                "expected_exact_url": "https://chatgpt.com/c/abc123",
+                "allowed_scope": "chatgpt",
+                "expected_protection": None,
+                "program": request.program.source,
+            },
+        )
+    ]
+
+
+def test_patchright_explicit_result_transport_allows_terminal_response_text() -> None:
+    client = ScriptedClient(
+        {
+            "ok": True,
+            "page": {
+                "thread": "surf-chatgpt-session-abc123",
+                "page_token": 9,
+                "url": "https://chatgpt.com/c/abc123",
+            },
+            "metadata": {"state": "stopped", "text": "Partial answer"},
+        }
+    )
+    bridge = PatchrightOwnedPageBridge(client)
+    request = ExtractOwnedPageResult(
+        owner="surf-chatgpt",
+        thread="surf-chatgpt-session-abc123",
+        expected_page_token=9,
+        expected_exact_url="https://chatgpt.com/c/abc123",
+        allowed_scope=OwnedPageScope.CHATGPT,
+        expected_protection=None,
+        program=OwnedPageProgram("() => ({state: 'stopped', text: 'Partial answer'})"),
+    )
+
+    result = bridge.extract_result(request)
+
+    assert result == OwnedPageAttemptResult(
+        page=OwnedPageRef(
+            thread="surf-chatgpt-session-abc123",
+            page_token=9,
+            exact_url="https://chatgpt.com/c/abc123",
+        ),
+        state=OwnedPageAttemptState.STOPPED,
+        text="Partial answer",
+    )
+    assert client.calls[0][0] == "owned-extract-result"
+
+
+def test_patchright_terminal_close_transport_carries_all_guards_and_no_content() -> None:
+    client = ScriptedClient({"ok": True})
+    bridge = PatchrightOwnedPageBridge(client)
+    request = CloseTerminalOwnedPage(
+        owner="surf-chatgpt",
+        thread="surf-chatgpt-session-abc123",
+        expected_page_token=9,
+        expected_exact_url="https://chatgpt.com/c/abc123",
+        allowed_scope=OwnedPageScope.CHATGPT,
+        expected_protection=None,
+        program=OwnedPageProgram("() => ({state: 'completed'})"),
+        expected_state=OwnedPageAttemptState.COMPLETED,
+    )
+
+    bridge.close_terminal(request)
+
+    assert client.calls == [
+        (
+            "owned-close-terminal",
+            {
+                "owner": "surf-chatgpt",
+                "thread": "surf-chatgpt-session-abc123",
+                "expected_page_token": 9,
+                "expected_exact_url": "https://chatgpt.com/c/abc123",
+                "allowed_scope": "chatgpt",
+                "expected_protection": None,
+                "program": request.program.source,
+                "expected_state": "completed",
             },
         )
     ]

@@ -75,6 +75,18 @@ surf-chatgpt session status abc123
 surf-chatgpt session result abc123
 ```
 
+Observation is read-only, repeatable, and non-consuming. A one-shot result while
+generation is active returns `not_ready`; waiting returns `timed_out` only when its
+observer deadline expires. Neither outcome stops or changes the response attempt.
+
+Completed results use `{"text":"...","partial":false}`. An explicitly stopped
+response uses `partial:true`; a failed response has a null result. Only explicit
+`session result` commands extract response text. Status and terminal cleanup remain
+metadata-only.
+
+After terminal JSON is written and flushed, the unprotected page closes through a
+guarded best-effort cleanup. Use `--retain` when the terminal page must remain open.
+
 ## Follow up and recover
 
 Address follow-ups by durable session identity:
@@ -128,7 +140,8 @@ surf-chatgpt login
 
 ## Retention and abandonment
 
-Generating and human-blocked pages remain protected. `--retain` explicitly protects a page after terminal observation. Release it only through explicit abandonment:
+Generating and human-blocked pages remain protected. `--retain` explicitly protects
+a page during terminal observation. Release it only through explicit abandonment:
 
 ```bash
 surf-chatgpt abandon abc123

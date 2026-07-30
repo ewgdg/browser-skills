@@ -12,10 +12,16 @@ import pytest
 from surf_agent.errors import BridgeUnavailable
 from surf_agent.owned_pages import (
     AllocateOwnedPage,
+    ClassifyOwnedPageAttempt,
+    CloseTerminalOwnedPage,
+    ExtractOwnedPageResult,
     InspectOwnedPage,
     ObserveOwnedPageAssignment,
     OwnedPageAssignmentObservation,
     OwnedPageAssignmentState,
+    OwnedPageAttemptMetadata,
+    OwnedPageAttemptResult,
+    OwnedPageAttemptState,
     OwnedPageCapabilities,
     OwnedPageInspection,
     OwnedPageInspectionState,
@@ -59,6 +65,9 @@ class ScriptedSubmissionBridge:
         self.submission_state = OwnedPageSubmissionState.SUBMITTED
         self.assignment_states: list[tuple[OwnedPageAssignmentState, str | None]] = [
             (OwnedPageAssignmentState.SESSION, "abc123")
+        ]
+        self.attempt_states: list[tuple[OwnedPageAttemptState, str]] = [
+            (OwnedPageAttemptState.GENERATING, "")
         ]
         self.fail_operation: str | None = None
         self.after_send_marker: Callable[[], None] | None = None
@@ -179,6 +188,38 @@ class ScriptedSubmissionBridge:
             raise AssertionError("test bridge received stale protection")
         page.protection = request.protection
 
+    def classify_attempt(
+        self, request: ClassifyOwnedPageAttempt
+    ) -> OwnedPageAttemptMetadata:
+        self.calls.append(("classify_attempt", request))
+        page = self._guarded_page(request.thread, request.expected_page_token)
+        return OwnedPageAttemptMetadata(page.reference, self.attempt_states[0][0])
+
+    def extract_result(
+        self, request: ExtractOwnedPageResult
+    ) -> OwnedPageAttemptResult:
+        self.calls.append(("extract_result", request))
+        page = self._guarded_page(request.thread, request.expected_page_token)
+        state, text = (
+            self.attempt_states.pop(0)
+            if len(self.attempt_states) > 1
+            else self.attempt_states[0]
+        )
+        return OwnedPageAttemptResult(
+            page.reference,
+            state,
+            text
+            if state in {OwnedPageAttemptState.COMPLETED, OwnedPageAttemptState.STOPPED}
+            else None,
+        )
+
+    def close_terminal(self, request: CloseTerminalOwnedPage) -> None:
+        self.calls.append(("close_terminal", request))
+        page = self._guarded_page(request.thread, request.expected_page_token)
+        if page.protection is not request.expected_protection:
+            raise AssertionError("test bridge received stale protection")
+        del self.pages[request.thread]
+
     def _guarded_page(self, thread: str, page_token: int) -> SubmissionPage:
         page = self.pages[thread]
         if page.reference.page_token != page_token:
@@ -239,6 +280,53 @@ def test_plain_ask_sends_once_rebinds_the_exact_page_then_returns_id_only() -> N
     assert session_page.reference.page_token == 900
     assert session_page.reference.exact_url == "https://chatgpt.com/c/abc123"
     assert session_page.send_may_have_occurred is False
+
+
+def test_ask_wait_completes_one_handshake_then_uses_result_wait_observation() -> None:
+    bridge = ScriptedSubmissionBridge()
+    bridge.selection = (
+        OwnedPageSelection(OwnedPageSelectionDimension.MODEL, "GPT-5.6"),
+    )
+    bridge.attempt_states = [
+        (OwnedPageAttemptState.GENERATING, ""),
+        (OwnedPageAttemptState.COMPLETED, "Answer"),
+    ]
+    clock = [0.0]
+
+    def advance(duration: float) -> None:
+        clock[0] += duration
+
+    code, payload, stderr = invoke(
+        ["ask", "--model", "latest", "--wait=5", "hello"],
+        bridge,
+        monotonic=lambda: clock[0],
+        sleeper=advance,
+    )
+
+    assert (code, payload, stderr) == (
+        0,
+        {
+            "ok": True,
+            "session": {"id": "abc123"},
+            "selection": {"model": "GPT-5.6"},
+            "attempt": {"state": "completed"},
+            "result": {"text": "Answer", "partial": False},
+        },
+        "",
+    )
+    operations = [name for name, _ in bridge.calls]
+    assert operations == [
+        "allocate",
+        "prepare_submission",
+        "submit_prompt",
+        "observe_assignment",
+        "rebind",
+        "resolve",
+        "extract_result",
+        "extract_result",
+        "close_terminal",
+    ]
+    assert operations.count("submit_prompt") == 1
 
 
 def test_ask_session_resolves_and_submits_one_follow_up_on_the_same_binding() -> None:

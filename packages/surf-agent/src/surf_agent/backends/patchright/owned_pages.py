@@ -5,6 +5,7 @@ from typing import Any, Protocol
 
 from ...owned_pages import (
     OwnedPageAssignmentState,
+    OwnedPageAttemptState,
     OwnedPageBridgeErrorCode,
     OwnedPageInspectionState,
     OwnedPagePreparationState,
@@ -294,6 +295,65 @@ class PatchrightOwnedPageOperations:
             slot.send_may_have_occurred = False
         return self._metadata_result(thread, slot, decoded)
 
+    async def classify_attempt(self, args: dict[str, Any]) -> str:
+        guarded = self._observation_slot(args)
+        if isinstance(guarded, str):
+            return guarded
+        slot, thread = guarded
+        program = self._required_argument(args, "program")
+        try:
+            metadata = await self._runtime._maybe_await(slot.page.evaluate(program))
+            decoded = self._decode_attempt_metadata(metadata)
+        except Exception:
+            return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        return self._metadata_result(thread, slot, decoded)
+
+    async def extract_result(self, args: dict[str, Any]) -> str:
+        guarded = self._observation_slot(args)
+        if isinstance(guarded, str):
+            return guarded
+        slot, thread = guarded
+        program = self._required_argument(args, "program")
+        try:
+            metadata = await self._runtime._maybe_await(slot.page.evaluate(program))
+            decoded = self._decode_result_metadata(metadata)
+        except Exception:
+            return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        return self._metadata_result(thread, slot, decoded)
+
+    async def close_terminal(self, args: dict[str, Any]) -> str:
+        guarded = self._observation_slot(args)
+        if isinstance(guarded, str):
+            return guarded
+        slot, thread = guarded
+        if slot.protection is not None:
+            return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
+        program = self._required_argument(args, "program")
+        try:
+            expected_state = OwnedPageAttemptState(args["expected_state"])
+        except (KeyError, TypeError, ValueError) as error:
+            raise RuntimeError("invalid owned-page terminal close request") from error
+        if expected_state is OwnedPageAttemptState.GENERATING:
+            raise RuntimeError("invalid owned-page terminal close request")
+        try:
+            metadata = await self._runtime._maybe_await(slot.page.evaluate(program))
+            decoded = self._decode_attempt_metadata(metadata)
+        except Exception:
+            return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        if decoded["state"] != expected_state.value:
+            return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        revalidated = self._observation_slot(args)
+        if isinstance(revalidated, str) or revalidated[0] is not slot:
+            return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
+        try:
+            await self._runtime._maybe_await(slot.page.close())
+            if self._runtime._page_is_open(slot.page):
+                raise RuntimeError("owned page remained open")
+        except Exception:
+            return self._error(OwnedPageBridgeErrorCode.INSPECTION_FAILED)
+        self._runtime._discard_owned_page_binding(thread)
+        return json.dumps({"ok": True}, separators=(",", ":"))
+
     def rebind(self, args: dict[str, Any]) -> str:
         owner = self._required_argument(args, "owner")
         source_thread = self._required_argument(args, "source_thread")
@@ -515,6 +575,38 @@ class PatchrightOwnedPageOperations:
             return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
         return slot, thread
 
+    def _observation_slot(self, args: dict[str, Any]) -> tuple[PageSlot, str] | str:
+        owner = self._required_argument(args, "owner")
+        thread = self._required_argument(args, "thread")
+        expected_exact_url = self._required_argument(args, "expected_exact_url")
+        allowed_scope = self._scope_argument(args)
+        expected_page_token = args.get("expected_page_token")
+        try:
+            expected_protection = decode_owned_page_protection(
+                args["expected_protection"]
+            )
+        except (KeyError, ValueError) as error:
+            raise RuntimeError("invalid owned-page observation request") from error
+        if (
+            not isinstance(expected_page_token, int)
+            or isinstance(expected_page_token, bool)
+            or expected_page_token < 1
+            or not owned_page_url_is_canonical_session(expected_exact_url)
+        ):
+            raise RuntimeError("invalid owned-page observation request")
+        slot = self._runtime._owned_page_slot(thread)
+        if not self._slot_matches_guards(
+            slot,
+            owner=owner,
+            expected_page_token=expected_page_token,
+            expected_exact_url=expected_exact_url,
+            allowed_scope=allowed_scope,
+            expected_protection=expected_protection,
+        ):
+            return self._error(OwnedPageBridgeErrorCode.OWNERSHIP_CONFLICT)
+        assert slot is not None
+        return slot, thread
+
     def _selection_dimensions_argument(
         self, args: dict[str, Any]
     ) -> frozenset[OwnedPageSelectionDimension]:
@@ -563,6 +655,39 @@ class PatchrightOwnedPageOperations:
                 )
             },
         }
+
+    def _decode_attempt_metadata(self, metadata: object) -> dict[str, object]:
+        fields = _require_string_keyed_object(
+            metadata,
+            "invalid owned-page attempt metadata",
+        )
+        if set(fields) != {"state"}:
+            raise RuntimeError("invalid owned-page attempt metadata")
+        try:
+            state = OwnedPageAttemptState(fields["state"])
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("invalid owned-page attempt metadata") from error
+        return {"state": state.value}
+
+    def _decode_result_metadata(self, metadata: object) -> dict[str, object]:
+        fields = _require_string_keyed_object(
+            metadata,
+            "invalid owned-page result metadata",
+        )
+        try:
+            state = OwnedPageAttemptState(fields.get("state"))
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("invalid owned-page result metadata") from error
+        includes_text = state in {
+            OwnedPageAttemptState.COMPLETED,
+            OwnedPageAttemptState.STOPPED,
+        }
+        expected_keys = {"state", "text"} if includes_text else {"state"}
+        if set(fields) != expected_keys:
+            raise RuntimeError("invalid owned-page result metadata")
+        if includes_text and not isinstance(fields["text"], str):
+            raise RuntimeError("invalid owned-page result metadata")
+        return {key: fields[key] for key in expected_keys}
 
     def _decode_submission_metadata(self, metadata: object) -> dict[str, object]:
         fields = _require_string_keyed_object(
