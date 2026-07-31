@@ -87,3 +87,82 @@ def test_plain_ask_uses_thread_addressed_browser_operations() -> None:
             "surf-chatgpt-session-6ca13d52ca70c883e0f0bb101e425a89e8624de51db2d2392593af6a84118090",
         )
     ]
+
+
+def test_selection_inspection_affirms_picker_state_without_sending_and_closes_after_output() -> (
+    None
+):
+    browser = MemoryBrowserPort()
+    browser.evaluations = iter(
+        [
+            {
+                "state": "ready",
+                "selection": {"model": "GPT-5.6 Sol", "thinking": "Pro"},
+            }
+        ]
+    )
+    lifecycle = BrowserSessionLifecycle(
+        browser,
+        selection_thread_factory=lambda: "selection-diagnostic",
+    )
+    output = io.StringIO()
+
+    exit_code = cli.main(
+        [
+            "selection",
+            "inspect",
+            "--model",
+            "5.6 sol",
+            "--thinking",
+            "pro",
+        ],
+        stdin=io.StringIO(),
+        stdout=output,
+        lifecycle=lifecycle,
+    )
+
+    assert exit_code == 0
+    assert json.loads(output.getvalue()) == {
+        "ok": True,
+        "selection": {"model": "GPT-5.6 Sol", "thinking": "Pro"},
+    }
+    assert browser.drafts == {}
+    assert browser.sent_prompts == []
+    assert "selection-diagnostic" not in browser.pages
+
+
+def test_selection_inspection_retries_the_exact_preserved_thread_without_navigation() -> (
+    None
+):
+    browser = MemoryBrowserPort()
+    thread = "surf-chatgpt-selection-safe123"
+    preserved_url = "https://chatgpt.com/?model=auto"
+    browser.pages[thread] = preserved_url
+    browser.evaluations = iter([{"state": "ready", "selection": {"thinking": "Pro"}}])
+    lifecycle = BrowserSessionLifecycle(browser)
+    output = io.StringIO()
+
+    exit_code = cli.main(
+        [
+            "selection",
+            "inspect",
+            "--thinking",
+            "pro",
+            "--thread",
+            thread,
+            "--retain",
+        ],
+        stdin=io.StringIO(),
+        stdout=output,
+        lifecycle=lifecycle,
+    )
+
+    assert exit_code == 0
+    assert json.loads(output.getvalue()) == {
+        "ok": True,
+        "selection": {"thinking": "Pro"},
+        "thread": thread,
+    }
+    assert browser.pages == {thread: preserved_url}
+    assert browser.drafts == {}
+    assert browser.sent_prompts == []

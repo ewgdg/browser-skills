@@ -139,6 +139,14 @@ class AskRequest:
 
 
 @dataclass(frozen=True)
+class SelectionInspectionRequest:
+    model: str | None = None
+    thinking: str | None = None
+    thread: str | None = None
+    retain: bool = False
+
+
+@dataclass(frozen=True)
 class ObservationRequest:
     session: SessionAddress
     mode: ObservationMode

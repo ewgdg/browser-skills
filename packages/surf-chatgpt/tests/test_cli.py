@@ -23,6 +23,7 @@ from surf_chatgpt.contracts import (
     Pace,
     ProcessExitCode,
     RecentSessionsRequest,
+    SelectionInspectionRequest,
 )
 from surf_chatgpt.errors import PublicError, PublicErrorType
 from surf_chatgpt.session_address import SessionAddress
@@ -66,6 +67,9 @@ class RecordingLifecycle:
 
     def recent(self, request: RecentSessionsRequest) -> CommandOutcome:
         return self._record("recent", request)
+
+    def inspect_selection(self, request: SelectionInspectionRequest) -> CommandOutcome:
+        return self._record("inspect_selection", request)
 
     def login(self, request: LoginRequest) -> CommandOutcome:
         return self._record("login", request)
@@ -118,6 +122,47 @@ def test_plain_ask_dispatches_one_typed_request_and_one_compact_json_object() ->
     output = io.StringIO()
     cli.main(["ask", "hello"], stdin=io.StringIO(), stdout=output, lifecycle=RecordingLifecycle())
     assert output.getvalue() == '{"ok":true,"session":{"id":"abc123"}}\n'
+
+
+def test_selection_inspect_dispatches_one_typed_request() -> None:
+    lifecycle = RecordingLifecycle(
+        outcome=CommandOutcome.success(
+            {"selection": {"model": "GPT-5.6 Sol", "thinking": "Pro"}}
+        )
+    )
+
+    code, payload, stderr, lifecycle = invoke(
+        [
+            "selection",
+            "inspect",
+            "--model",
+            "5.6 sol",
+            "--thinking",
+            "pro",
+            "--thread",
+            "surf-chatgpt-selection-safe123",
+            "--retain",
+        ],
+        lifecycle=lifecycle,
+    )
+
+    assert code == 0
+    assert payload == {
+        "ok": True,
+        "selection": {"model": "GPT-5.6 Sol", "thinking": "Pro"},
+    }
+    assert stderr == ""
+    assert lifecycle.calls == [
+        (
+            "inspect_selection",
+            SelectionInspectionRequest(
+                model="5.6 sol",
+                thinking="pro",
+                thread="surf-chatgpt-selection-safe123",
+                retain=True,
+            ),
+        )
+    ]
 
 
 def test_ask_uses_stdin_only_when_the_positional_prompt_is_absent() -> None:
@@ -187,6 +232,7 @@ def test_bare_wait_preserves_the_following_prompt_and_uses_the_default_timeout()
         ["ask", "--wait=inf", "prompt"],
         ["ask", "--model", "", "prompt"],
         ["ask", "--thread", "", "prompt"],
+        ["selection", "inspect"],
         ["ask", "--unknown-option", "prompt"],
         ["unknown-command"],
     ],

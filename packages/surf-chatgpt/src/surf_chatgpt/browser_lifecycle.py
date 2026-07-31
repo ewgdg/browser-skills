@@ -22,6 +22,7 @@ from .contracts import (
     ObservationRequest,
     ProcessExitCode,
     RecentSessionsRequest,
+    SelectionInspectionRequest,
 )
 from .dom.attempt import (
     STOP_GENERATING_SELECTORS,
@@ -48,6 +49,7 @@ from .session_address import InvalidSessionAddress, SessionAddress
 
 CHATGPT_HOME_URL = "https://chatgpt.com/"
 SUBMISSION_THREAD_PREFIX = "surf-chatgpt-submit-"
+SELECTION_THREAD_PREFIX = "surf-chatgpt-selection-"
 DISCOVERY_THREAD_PREFIX = "surf-chatgpt-discovery-"
 LOGIN_THREAD = "surf-chatgpt-login"
 SESSION_ASSIGNMENT_TIMEOUT_SECONDS = 30.0
@@ -71,6 +73,7 @@ class BrowserSessionLifecycle:
         browser: BrowserPagePort,
         *,
         submission_thread_factory: Callable[[], str] | None = None,
+        selection_thread_factory: Callable[[], str] | None = None,
         discovery_thread_factory: Callable[[], str] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
@@ -78,6 +81,9 @@ class BrowserSessionLifecycle:
         self._browser = browser
         self._submission_thread_factory = (
             submission_thread_factory or _new_submission_thread
+        )
+        self._selection_thread_factory = (
+            selection_thread_factory or _new_selection_thread
         )
         self._discovery_thread_factory = (
             discovery_thread_factory or _new_discovery_thread
@@ -196,6 +202,89 @@ class BrowserSessionLifecycle:
         if selection:
             fields["selection"] = selection
         return CommandOutcome.success(fields)
+
+    def inspect_selection(
+        self,
+        request: SelectionInspectionRequest,
+    ) -> CommandOutcome:
+        thread = request.thread or self._selection_thread_factory()
+        self._phase = SubmissionPhase.BEFORE_SEND
+        self._thread = thread
+        self._session = None
+        cleanup: Callable[[], None] | None = None
+        retained_fields: JsonObject = {"thread": thread} if request.retain else {}
+        try:
+            if request.thread is None:
+                cleanup = (
+                    None if request.retain else lambda: self._browser.close(thread)
+                )
+                self._browser.ensure(thread, CHATGPT_HOME_URL)
+            else:
+                if not thread.startswith(SELECTION_THREAD_PREFIX):
+                    raise PublicError(PublicErrorType.THREAD_NOT_FOUND)
+                if self._browser.state(thread) is None:
+                    raise PublicError(PublicErrorType.THREAD_NOT_FOUND)
+                cleanup = (
+                    None if request.retain else lambda: self._browser.close(thread)
+                )
+            metadata = self._evaluate(
+                thread,
+                prepare_submission_source(
+                    model_query=request.model,
+                    thinking_query=request.thinking,
+                    allow_logged_out=False,
+                ),
+            )
+            state = metadata["state"]
+            if state in {"login_required", "challenge"}:
+                action = (
+                    "complete_login"
+                    if state == "login_required"
+                    else "complete_challenge"
+                )
+                return CommandOutcome.failure(
+                    PublicError(PublicErrorType.HUMAN_INTERVENTION_REQUIRED),
+                    public_fields={"handoff": {"action": action, "thread": thread}},
+                )
+            pre_send_error = {
+                "model_unavailable": PublicErrorType.MODEL_UNAVAILABLE,
+                "ui_changed": PublicErrorType.UI_CHANGED,
+                "rate_limited": PublicErrorType.RATE_LIMITED,
+            }.get(state)
+            if pre_send_error is not None:
+                raise PublicError(pre_send_error)
+            if state != "ready":
+                raise PublicError(PublicErrorType.INSPECTION_FAILED)
+            selection = _selection(metadata)
+            requested_dimensions = {
+                key
+                for key, query in {
+                    "model": request.model,
+                    "thinking": request.thinking,
+                }.items()
+                if query is not None
+            }
+            if selection.keys() != requested_dimensions:
+                raise PublicError(PublicErrorType.INSPECTION_FAILED)
+            fields: JsonObject = {"selection": selection}
+            if request.retain:
+                fields["thread"] = thread
+            return CommandOutcome.success(
+                fields,
+                post_output_cleanup=cleanup,
+            )
+        except PublicError as error:
+            return CommandOutcome.failure(
+                error,
+                public_fields=retained_fields,
+                post_output_cleanup=cleanup,
+            )
+        except Exception as error:
+            return CommandOutcome.failure(
+                _public_browser_error(error),
+                public_fields=retained_fields,
+                post_output_cleanup=cleanup,
+            )
 
     def _submission_context(self, request: AskRequest) -> _SubmissionContext:
         if request.session is not None:
@@ -774,6 +863,10 @@ def _public_browser_error(error: Exception) -> PublicError:
 
 def _new_submission_thread() -> str:
     return f"{SUBMISSION_THREAD_PREFIX}{secrets.token_hex(12)}"
+
+
+def _new_selection_thread() -> str:
+    return f"{SELECTION_THREAD_PREFIX}{secrets.token_urlsafe(9)}"
 
 
 def _new_discovery_thread() -> str:

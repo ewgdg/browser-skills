@@ -87,6 +87,21 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--allow-logged-out", action="store_true")
     ask.add_argument("prompt", nargs="?", metavar="PROMPT")
 
+    selection = subparsers.add_parser("selection", help="Run model-picker diagnostics.")
+    selection_subparsers = selection.add_subparsers(
+        dest="selection_command",
+        required=True,
+        parser_class=JsonArgumentParser,
+    )
+    inspect_selection = selection_subparsers.add_parser(
+        "inspect",
+        help="Select and affirm picker choices without sending a prompt.",
+    )
+    inspect_selection.add_argument("--model", metavar="QUERY")
+    inspect_selection.add_argument("--thinking", metavar="QUERY")
+    inspect_selection.add_argument("--thread", metavar="SURF_THREAD")
+    inspect_selection.add_argument("--retain", action="store_true")
+
     session = subparsers.add_parser("session", help="Inspect or recover a durable session.")
     session_subparsers = session.add_subparsers(
         dest="session_command",

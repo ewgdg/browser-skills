@@ -45,6 +45,27 @@ Every non-help invocation emits one compact JSON object. Parse failures and empt
 thread-addressed browser operations. AXI remains available for generic Surf browser
 work. Camoufox is not supported.
 
+## Model and thinking selection
+
+Use `--model` and `--thinking` with `ask` to select the two picker dimensions
+independently before submission. `--model` searches the nested model rows;
+`--thinking` searches the top-level thinking modes. Queries match visible labels
+without depending on capitalization or punctuation.
+
+```bash
+surf-chatgpt ask --thinking pro 'Review this design.'
+surf-chatgpt ask --model '5.6 sol' 'Review this design.'
+surf-chatgpt ask --model '5.6 sol' --thinking pro 'Review this design.'
+```
+
+Selection is fail-closed. If a requested choice cannot be found and affirmed as
+selected, `ask` returns `model_unavailable` without sending the prompt. A successful
+submission reports the resolved visible labels:
+
+```json
+{"ok":true,"session":{"id":"abc123"},"selection":{"model":"GPT-5.6 Sol","thinking":"Pro"}}
+```
+
 ## Resumable workflow
 
 Use this sequence. Do not keep a caller blocked unless waiting is useful.

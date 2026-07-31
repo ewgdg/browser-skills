@@ -1015,6 +1015,37 @@ def test_live_chatgpt_compatibility_gate(
                 "unrelated Surf page did not become observable",
             )
 
+            focused_window_before_selection = _focused_niri_window_id()
+            heartbeat_before_selection = unrelated_page.heartbeat_count
+            selection_inspection = authenticated_runner.chatgpt(
+                "inspect live model and thinking selection",
+                "selection",
+                "inspect",
+                "--model",
+                "latest",
+                "--thinking",
+                "latest",
+                timeout=ASK_TIMEOUT_SECONDS,
+            )
+            selection = selection_inspection.get("selection")
+            _require(
+                selection_inspection.get("ok") is True
+                and isinstance(selection, dict)
+                and set(selection) == {"model", "thinking"}
+                and all(
+                    isinstance(label, str) and label for label in selection.values()
+                ),
+                "selection inspection did not affirm both picker dimensions",
+            )
+            _require(
+                _focused_niri_window_id() == focused_window_before_selection,
+                "selection inspection activated a different desktop window",
+            )
+            _require(
+                unrelated_page.wait_for_heartbeat_after(heartbeat_before_selection),
+                "selection inspection closed or stalled the unrelated Surf page",
+            )
+
             prompt = f"{LIVE_GATE_PROMPT_PREFIX} {uuid.uuid4().hex}"
             ask_exit, ask = authenticated_runner.chatgpt_outcome(
                 "submit disposable prompt",

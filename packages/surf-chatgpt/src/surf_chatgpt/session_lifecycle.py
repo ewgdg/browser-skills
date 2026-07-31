@@ -14,11 +14,17 @@ from .contracts import (
     ObservationRequest,
     ProcessExitCode,
     RecentSessionsRequest,
+    SelectionInspectionRequest,
 )
 
 
 class SessionLifecycle(Protocol):
     def ask(self, request: AskRequest) -> CommandOutcome: ...
+
+    def inspect_selection(
+        self,
+        request: SelectionInspectionRequest,
+    ) -> CommandOutcome: ...
 
     def interruption_outcome(
         self,

@@ -14,6 +14,7 @@ from .contracts import (
     ObservationRequest,
     Pace,
     RecentSessionsRequest,
+    SelectionInspectionRequest,
 )
 from .errors import PublicError, PublicErrorType
 from .session_lifecycle import SessionLifecycle, create_session_lifecycle
@@ -27,6 +28,19 @@ def execute_command(
     if args.command == "ask":
         request = _ask_request(args, stdin)
         return _lifecycle(lifecycle).ask(request)
+
+    if args.command == "selection" and args.selection_command == "inspect":
+        model = _optional_text(args.model)
+        thinking = _optional_text(args.thinking)
+        if model is None and thinking is None:
+            raise PublicError(PublicErrorType.INVALID_ARGS)
+        request = SelectionInspectionRequest(
+            model=model,
+            thinking=thinking,
+            thread=_optional_text(args.thread),
+            retain=args.retain,
+        )
+        return _lifecycle(lifecycle).inspect_selection(request)
 
     if args.command == "session":
         if args.session_command == "current":
