@@ -3,8 +3,7 @@ from __future__ import annotations
 import pytest
 from patchright.sync_api import sync_playwright
 
-from surf_agent.owned_pages import OwnedPageInspectionState
-from surf_chatgpt.dom.readiness import CURRENT_SESSION_CLASSIFIER
+from surf_chatgpt.dom.readiness import current_session_classifier_source
 
 
 @pytest.fixture(scope="module")
@@ -27,8 +26,8 @@ def test_current_session_classifier_rejects_hidden_challenge_markers(
             f'<form id="challenge-form" {hidden_attribute}>Verify you are human</form>'
         )
 
-        metadata = page.evaluate(CURRENT_SESSION_CLASSIFIER.source)
+        metadata = page.evaluate(current_session_classifier_source())
 
-        assert metadata == {"state": OwnedPageInspectionState.UNRECOGNIZED.value}
+        assert metadata == {"state": "unrecognized"}
     finally:
         page.close()

@@ -73,7 +73,7 @@ def test_patchright_requests_shutdown_only_after_final_close_response() -> None:
     context = Context([page])
     runtime = PatchrightRuntime(profile_dir=Path("/tmp/patchright-idle"))
     runtime.browser_or_context = context
-    runtime.pages["thread"] = __import__("surf_agent.backends.bridge_common", fromlist=["PageSlot"]).PageSlot(page=page, page_token=1)
+    runtime.pages["thread"] = __import__("surf_agent.backends.bridge_common", fromlist=["PageSlot"]).PageSlot(page=page, page_id=1)
 
     assert runtime.call("close", {"thread": "thread"}) == "closed\n"
     assert runtime.shutdown_requested is False
@@ -88,7 +88,7 @@ def test_patchright_final_close_keeps_bridge_when_visible_page_remains() -> None
     context = Context([page])
     runtime = PatchrightRuntime(profile_dir=Path("/tmp/patchright-idle"))
     runtime.browser_or_context = context
-    runtime.pages["thread"] = __import__("surf_agent.backends.bridge_common", fromlist=["PageSlot"]).PageSlot(page=page, page_token=1)
+    runtime.pages["thread"] = __import__("surf_agent.backends.bridge_common", fromlist=["PageSlot"]).PageSlot(page=page, page_id=1)
 
     runtime.call("close", {"thread": "thread"})
     context.pages.append(Page())

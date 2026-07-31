@@ -8,18 +8,14 @@ from typing import Any, Final
 class PublicErrorType(StrEnum):
     INVALID_ARGS = "invalid_args"
     EMPTY_PROMPT = "empty_prompt"
-    UNSUPPORTED_BROWSER_CAPABILITY = "unsupported_browser_capability"
     BROWSER_IDENTITY_UNPROVEN = "browser_identity_unproven"
     BROWSER_UNAVAILABLE = "browser_unavailable"
-    CAPACITY_EXCEEDED = "capacity_exceeded"
     HUMAN_INTERVENTION_REQUIRED = "human_intervention_required"
     RATE_LIMITED = "rate_limited"
     SUBMISSION_OUTCOME_INDETERMINATE = "submission_outcome_indeterminate"
     SESSION_REBIND_FAILED = "session_rebind_failed"
     SESSION_NOT_FOUND = "session_not_found"
     THREAD_NOT_FOUND = "thread_not_found"
-    OWNERSHIP_CONFLICT = "ownership_conflict"
-    AMBIGUOUS_SESSION_PAGE = "ambiguous_session_page"
     INSPECTION_FAILED = "inspection_failed"
     UI_CHANGED = "ui_changed"
     MODEL_UNAVAILABLE = "model_unavailable"
@@ -58,20 +54,12 @@ _PUBLIC_ERROR_DESCRIPTIONS: Final[dict[PublicErrorType, _PublicErrorDescription]
         "The prompt is empty.",
         "Pass a non-empty prompt argument or provide one on stdin.",
     ),
-    PublicErrorType.UNSUPPORTED_BROWSER_CAPABILITY: _PublicErrorDescription(
-        "The selected browser backend cannot provide the required owned-page guarantees.",
-        "Select the Patchright backend before retrying.",
-    ),
     PublicErrorType.BROWSER_IDENTITY_UNPROVEN: _PublicErrorDescription(
         "The dedicated browser profile identity could not be proven.",
     ),
     PublicErrorType.BROWSER_UNAVAILABLE: _PublicErrorDescription(
-        "The browser bridge or owned page is unavailable.",
+        "The browser bridge or page is unavailable.",
         "Start or repair the dedicated Surf browser bridge, then retry.",
-    ),
-    PublicErrorType.CAPACITY_EXCEEDED: _PublicErrorDescription(
-        "The browser bridge already owns the maximum number of protected surf-chatgpt pages.",
-        "Resolve or release one retained page before allocating another.",
     ),
     PublicErrorType.HUMAN_INTERVENTION_REQUIRED: _PublicErrorDescription(
         "The browser requires user intervention.",
@@ -94,13 +82,6 @@ _PUBLIC_ERROR_DESCRIPTIONS: Final[dict[PublicErrorType, _PublicErrorDescription]
     ),
     PublicErrorType.THREAD_NOT_FOUND: _PublicErrorDescription(
         "The preserved Surf thread could not be resolved.",
-    ),
-    PublicErrorType.OWNERSHIP_CONFLICT: _PublicErrorDescription(
-        "The owned browser page no longer matches the requested operation.",
-    ),
-    PublicErrorType.AMBIGUOUS_SESSION_PAGE: _PublicErrorDescription(
-        "More than one browser page matches the requested ChatGPT session.",
-        "Inspect the browser manually and remove the ambiguity before retrying.",
     ),
     PublicErrorType.INSPECTION_FAILED: _PublicErrorDescription(
         "The browser page state could not be safely classified.",

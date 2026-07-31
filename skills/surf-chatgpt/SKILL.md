@@ -41,9 +41,9 @@ surf-chatgpt login
 
 Every non-help invocation emits one compact JSON object. Parse failures and empty prompts exit `2`; operational failures exit `1`; valid domain outcomes exit `0`.
 
-Patchright is Surf's default backend and the only backend supported by
-`surf-chatgpt`. AXI is available only for generic Surf browser work and is rejected
-by `surf-chatgpt` before browser activity. Camoufox is not supported.
+`surf-chatgpt` connects to Surf's Patchright bridge and composes its generic
+thread-addressed browser operations. AXI remains available for generic Surf browser
+work. Camoufox is not supported.
 
 ## Resumable workflow
 
@@ -55,7 +55,7 @@ Use this sequence. Do not keep a caller blocked unless waiting is useful.
 4. Send follow-ups with `ask --session ID`; never reconstruct a conversation from a Surf thread.
 5. If identity is lost, try `session current` on the preserved thread, then `session recent` and explicitly choose one candidate.
 6. Use `session handoff` only when the user must inspect the browser.
-7. Explicitly `abandon` retained or active pages when they are no longer needed.
+7. Explicitly `abandon` open or active pages when they are no longer needed.
 
 ## Submit and observe
 
@@ -125,8 +125,8 @@ known, the outcome remains `submission_outcome_indeterminate` with a `rate_limit
 cause and preserved thread. Never retry that prompt automatically. Once a session is
 known, status and result report `{"attempt":{"state":"rate_limited"},"result":null}`.
 
-After terminal JSON is written and flushed, the unprotected page closes through a
-guarded best-effort cleanup. Use `--retain` when the terminal page must remain open.
+After terminal JSON is written and flushed, the page closes through best-effort
+cleanup. Use `--retain` when the terminal page must remain open.
 
 ## Follow up and recover
 
@@ -140,12 +140,12 @@ surf-chatgpt ask --session abc123 'Check one more constraint.'
 {"ok":true,"session":{"id":"abc123"}}
 ```
 
-Separate callers may reuse the same ID. A live exact deterministic binding is reused;
-after a browser-bridge restart, Surf adopts one restored exact-URL page or creates a
-dedicated unfocused page at that canonical session URL. Ambiguous exact matches fail
-without adopting or changing any page.
+Separate callers may reuse the same ID. The deterministic session thread is reused
+while live; otherwise `surf-chatgpt` opens its canonical session URL in that thread.
 
-`--thread` is only for an exact preserved pre-session page returned after login or challenge intervention. It is not a conversation address.
+`thread` is the live bridge address of one browser page. It is not durable ChatGPT
+conversation identity. Use `--thread` only to continue on a page that
+`surf-chatgpt` returned after login, challenge, or an indeterminate submission.
 
 Use `session current --thread THREAD` to discover whether a preserved pre-session page has acquired a durable session ID:
 
@@ -200,7 +200,7 @@ Tell the user what action is required and wait for confirmation. Do not focus, r
 surf-agent --thread '<thread>' focus
 ```
 
-For manual inspection of a durable session, establish live retained protection first:
+For manual inspection of a durable session, ensure its page and request a handoff:
 
 ```bash
 surf-chatgpt session handoff abc123
@@ -210,9 +210,8 @@ surf-chatgpt session handoff abc123
 {"ok":true,"session":{"id":"abc123"},"handoff":{"action":"inspect_browser","thread":"surf-chatgpt-session-abc123"}}
 ```
 
-Handoff does not focus or inspect conversation content. Its protection lasts only for
-the current bridge lifetime and ends on explicit abandonment, manual page closure, or
-bridge restart.
+Handoff does not focus or inspect conversation content. It returns the live thread so
+the user can choose whether to focus or inspect that page.
 
 Use proactive login when needed:
 
@@ -224,7 +223,7 @@ surf-chatgpt login
 {"ok":true,"handoff":{"action":"complete_login","thread":"surf-chatgpt-login"}}
 ```
 
-`login` creates or reuses an unfocused protected page. Wait for the user to complete
+`login` creates or reuses an unfocused page. Wait for the user to complete
 the action. For a discovery login or challenge gate, retry only the exact returned
 discovery thread after the user confirms completion:
 
@@ -241,8 +240,9 @@ only after its JSON has been flushed.
 
 ## Retention and abandonment
 
-Generating and human-blocked pages remain protected. `--retain` explicitly protects
-a page during terminal observation. Release it only through explicit abandonment:
+Generating and human-blocked pages remain open. `--retain` leaves a terminal page
+open after observation. Close it with explicit abandonment when it is no longer
+needed:
 
 ```bash
 surf-chatgpt abandon abc123
@@ -258,20 +258,10 @@ surf-chatgpt abandon --thread surf-chatgpt-login
 ```
 
 Abandonment is the only automatic path allowed to stop an active response attempt.
-It requests stop exactly once, affirms `stopped`, then closes. Terminal attempts and
-affirmed non-generating login or challenge pages close directly. If ownership, page
-scope, classification, stop, or closure cannot be affirmed, abandonment fails and
-preserves the page. Age, inactivity, observation timeout, caller exit, and process
-death never authorize abandonment.
+It requests stop once, waits for generation to end, then closes the addressed thread.
+Terminal and non-generating pages close directly. If classification, stop, or closure
+fails, abandonment reports `abandonment_failed`. Age, inactivity, observation timeout,
+caller exit, and process death never authorize abandonment.
 
-Before each owned-page allocation, the live bridge performs one metadata-only sweep
-of surf-chatgpt pages. Explicitly retained and human-protected pages are not DOM
-inspected. Other pages are inspected at most once and close only when terminal state,
-ownership, scope, protection, and identity are all affirmed. Sweeps never navigate,
-recover, poll, stop generation, or emit browser UI events.
-
-The bridge retains at most ten surf-chatgpt-owned pages. If ten protected pages remain,
-allocation fails with `capacity_exceeded` and a bounded `capacity.retained` list. Each
-entry contains only a session ID or necessary pre-session thread plus one reason:
-`generating`, `human_intervention`, `inspection_failed`, or `explicitly_retained`.
-Resolve the blocker or explicitly abandon one listed page before allocating another.
+There is no automatic page sweep or surf-chatgpt page capacity. The caller is
+responsible for abandoning pages it deliberately keeps open.

@@ -31,7 +31,7 @@ def test_failure_outcome_uses_safe_error_projection_and_exit_code() -> None:
         "ok": False,
         "error": {
             "type": "browser_unavailable",
-            "message": "The browser bridge or owned page is unavailable.",
+            "message": "The browser bridge or page is unavailable.",
             "hint": "Start or repair the dedicated Surf browser bridge, then retry.",
         },
     }

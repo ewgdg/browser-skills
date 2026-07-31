@@ -350,20 +350,6 @@ def test_operational_and_unexpected_failures_are_safe_single_objects() -> None:
     assert stderr == ""
 
 
-def test_axi_default_lifecycle_fails_before_owned_page_browser_work(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("SURF_AGENT_BACKEND", "axi")
-    output = io.StringIO()
-    errors = io.StringIO()
-
-    code = cli.main(["login"], stdout=output, stderr=errors)
-
-    assert code == 1
-    assert json.loads(output.getvalue())["error"]["type"] == "unsupported_browser_capability"
-    assert errors.getvalue() == ""
-
-
 class FlushRecordingStream(io.StringIO):
     def __init__(self, events: list[str]) -> None:
         super().__init__()

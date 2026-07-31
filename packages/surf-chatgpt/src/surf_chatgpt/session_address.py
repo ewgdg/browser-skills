@@ -5,11 +5,11 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from surf_agent.owned_pages import CHATGPT_SESSION_ID_PATTERN
-
-
 CANONICAL_SESSION_URL_PREFIX = "https://chatgpt.com/c/"
 SESSION_THREAD_PREFIX = "surf-chatgpt-session-"
+CHATGPT_SESSION_ID_PATTERN = (
+    r"(?=[A-Za-z0-9._~-]*[A-Za-z0-9])[A-Za-z0-9._~-]+"
+)
 _SESSION_ID_PATTERN = re.compile(CHATGPT_SESSION_ID_PATTERN, flags=re.ASCII)
 
 

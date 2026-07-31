@@ -112,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
     recent = session_subparsers.add_parser("recent", help="List rendered recent ChatGPT sessions.")
     recent.add_argument("--thread", metavar="SURF_THREAD")
 
-    abandon = subparsers.add_parser("abandon", help="Stop if needed and release one retained page.")
+    abandon = subparsers.add_parser("abandon", help="Stop if needed and close one ChatGPT page.")
     abandon.add_argument("session", nargs="?", type=_session_address, metavar="SESSION")
     abandon.add_argument("--thread", metavar="SURF_THREAD")
 

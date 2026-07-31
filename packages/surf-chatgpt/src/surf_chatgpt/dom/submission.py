@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 
-from surf_agent.owned_pages import CHATGPT_SESSION_ID_PATTERN
 from surf_agent.pacing import NATURAL_PACING_PROFILE
 
 from surf_chatgpt.dom.readiness import (
@@ -11,6 +10,7 @@ from surf_chatgpt.dom.readiness import (
 )
 from surf_chatgpt.dom.rate_limit import rate_limit_helpers_source
 from surf_chatgpt.dom.selection import picker_selection_source
+from surf_chatgpt.session_address import CHATGPT_SESSION_ID_PATTERN
 
 
 SEND_SELECTORS = (

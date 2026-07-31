@@ -2,11 +2,7 @@ from __future__ import annotations
 
 import json
 
-from surf_agent.owned_pages import (
-    CHATGPT_SESSION_ID_PATTERN,
-    OwnedPageClassifier,
-    OwnedPageInspectionState,
-)
+from ..session_address import CHATGPT_SESSION_ID_PATTERN
 
 
 CHALLENGE_SURFACE_SELECTORS = (
@@ -33,11 +29,8 @@ COMPOSER_SELECTORS = (
     '[contenteditable="true"][data-virtualkeyboard="true"]',
     '[contenteditable="true"]',
 )
-_STATE_VALUES = {state: json.dumps(state.value) for state in OwnedPageInspectionState}
-
-
-CURRENT_SESSION_CLASSIFIER = OwnedPageClassifier(
-    rf"""() => {{
+def current_session_classifier_source() -> str:
+    return rf"""() => {{
   const isVisible = (node) => {{
     if (!node) return false;
     const rect = node.getBoundingClientRect?.();
@@ -50,23 +43,22 @@ CURRENT_SESSION_CLASSIFIER = OwnedPageClassifier(
     );
   }};
   if (/^\/c\/{CHATGPT_SESSION_ID_PATTERN}$/.test(location.pathname)) {{
-    return {{state: {_STATE_VALUES[OwnedPageInspectionState.SESSION]}}};
+    return {{state: 'session'}};
   }}
   const challengeSelectors = {json.dumps(CHALLENGE_SURFACE_SELECTORS)};
   if (challengeSelectors.some((selector) =>
     Array.from(document.querySelectorAll(selector)).some(isVisible)
   )) {{
-    return {{state: {_STATE_VALUES[OwnedPageInspectionState.HUMAN_GATE]}}};
+    return {{state: 'human_gate'}};
   }}
   if (location.pathname === '/auth/login' || location.pathname === '/auth/login/') {{
-    return {{state: {_STATE_VALUES[OwnedPageInspectionState.PRE_SESSION]}}};
+    return {{state: 'pre_session'}};
   }}
   const promptSelectors = {json.dumps(COMPOSER_SELECTORS)};
   if (promptSelectors.some((selector) =>
     Array.from(document.querySelectorAll(selector)).some(isVisible)
   )) {{
-    return {{state: {_STATE_VALUES[OwnedPageInspectionState.PRE_SESSION]}}};
+    return {{state: 'pre_session'}};
   }}
-  return {{state: {_STATE_VALUES[OwnedPageInspectionState.UNRECOGNIZED]}}};
+  return {{state: 'unrecognized'}};
 }}"""
-)

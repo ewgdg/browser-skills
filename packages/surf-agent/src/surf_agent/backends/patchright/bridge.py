@@ -14,9 +14,7 @@ from pathlib import Path
 from platformdirs import PlatformDirs
 from typing import Any
 from ...constants import DEFAULT_PATCHRIGHT_APP_ID, PATCHRIGHT_BACKEND
-from ...owned_pages import OwnedPageProtection
 from .constants import CONTEXT_RESTART_REQUIRED
-from .owned_pages import PatchrightOwnedPageOperations
 from ..bridge_common import (
     CLOSED_TARGET_MESSAGE,
     NATIVE_ARIA_REF_PATTERN,
@@ -54,8 +52,7 @@ class PatchrightRuntime:
         self.manager: Any | None = None
         self.browser_or_context: Any | None = None
         self.pages: dict[str, PageSlot] = {}
-        self.owned_pages = PatchrightOwnedPageOperations(self)
-        self._next_page_token = 1
+        self._next_page_id = 1
         self._runner: asyncio.Runner | None = None
         self.shutdown_requested = False
         self._close_shutdown_pending = False
@@ -152,6 +149,20 @@ class PatchrightRuntime:
         if name == "list":
             rows = [{"thread": key, **(await self._metadata(slot))} for key, slot in sorted(self.pages.items())]
             return json.dumps({"backend": "patchright", "pages": rows}, sort_keys=True) + "\n"
+        if name == "rename-thread":
+            destination_thread = args.get("destination_thread")
+            if not isinstance(destination_thread, str) or not destination_thread:
+                raise RuntimeError("rename-thread requires destination_thread")
+            if thread == destination_thread:
+                if thread not in self.pages:
+                    raise RuntimeError(f"thread not found: {thread}")
+                return f"renamed {destination_thread}\n"
+            if thread not in self.pages:
+                raise RuntimeError(f"thread not found: {thread}")
+            if destination_thread in self.pages:
+                raise RuntimeError(f"thread already exists: {destination_thread}")
+            self.pages[destination_thread] = self.pages.pop(thread)
+            return f"renamed {destination_thread}\n"
         if name == "close":
             old = self.pages.pop(thread, None)
             if old:
@@ -167,7 +178,7 @@ class PatchrightRuntime:
             for managed_thread, slot in sorted(self.pages.items()):
                 if not fnmatch.fnmatchcase(managed_thread, pattern):
                     continue
-                item = {"thread": managed_thread, "page_id": slot.page_token}
+                item = {"thread": managed_thread, "page_id": slot.page_id}
                 try:
                     await self._maybe_await(slot.page.close())
                 except Exception:
@@ -179,34 +190,6 @@ class PatchrightRuntime:
             if not result["failed"]:
                 self._close_shutdown_pending = True
             return json.dumps(result, sort_keys=True) + "\n"
-        if name == "owned-inspect":
-            return await self.owned_pages.inspect(args)
-        if name == "owned-resolve":
-            return await self.owned_pages.resolve(args)
-        if name == "owned-rebind":
-            return self.owned_pages.rebind(args)
-        if name == "owned-protect":
-            return self.owned_pages.protect(args)
-        if name == "owned-allocate":
-            return await self.owned_pages.allocate(args)
-        if name == "owned-prepare-submission":
-            return await self.owned_pages.prepare_submission(args)
-        if name == "owned-submit-prompt":
-            return await self.owned_pages.submit_prompt(args)
-        if name == "owned-observe-assignment":
-            return await self.owned_pages.observe_assignment(args)
-        if name == "owned-classify-attempt":
-            return await self.owned_pages.classify_attempt(args)
-        if name == "owned-extract-result":
-            return await self.owned_pages.extract_result(args)
-        if name == "owned-discover-sessions":
-            return await self.owned_pages.discover_sessions(args)
-        if name == "owned-close-discovery":
-            return await self.owned_pages.close_discovery(args)
-        if name == "owned-close-terminal":
-            return await self.owned_pages.close_terminal(args)
-        if name == "owned-abandon":
-            return await self.owned_pages.abandon(args)
         if name == "scroll" and str(args.get("direction") or "down") not in {"up", "down", "top", "bottom"}:
             raise RuntimeError("scroll requires direction: up, down, top, or bottom")
         await self._start_async()
@@ -325,55 +308,6 @@ class PatchrightRuntime:
             return self.browser_or_context
         return self.browser_or_context.new_context()
 
-    # Owned-page transactions validate guards first, then call these synchronously so
-    # the runtime remains the sole authority over bindings, tokens, and protection.
-    def _owned_page_slot(self, thread: str) -> PageSlot | None:
-        return self.pages.get(thread)
-
-    def _owned_page_bindings(self) -> list[tuple[str, PageSlot]]:
-        return list(self.pages.items())
-
-    def _page_is_bound(self, page: Any) -> bool:
-        return any(slot.page is page for slot in self.pages.values())
-
-    def _discard_owned_page_binding(self, thread: str) -> None:
-        self.pages.pop(thread, None)
-
-    def _bind_owned_page(
-        self,
-        thread: str,
-        page: Any,
-        owner: str,
-        protection: OwnedPageProtection | None,
-    ) -> PageSlot:
-        slot = PageSlot(
-            page=page,
-            page_token=self._next_page_token,
-            owner=owner,
-            protection=protection,
-        )
-        self._next_page_token += 1
-        self.pages[thread] = slot
-        return slot
-
-    def _rebind_owned_page(
-        self,
-        source_thread: str,
-        destination_thread: str,
-        slot: PageSlot,
-    ) -> None:
-        if source_thread == destination_thread:
-            return
-        self.pages.pop(source_thread)
-        self.pages[destination_thread] = slot
-
-    def _set_owned_page_protection(
-        self,
-        slot: PageSlot,
-        protection: OwnedPageProtection | None,
-    ) -> None:
-        slot.protection = protection
-
     async def _page(self, thread: str) -> PageSlot:
         slot = self.pages.get(thread)
         if slot and self._page_is_open(slot.page):
@@ -401,13 +335,13 @@ class PatchrightRuntime:
             # Manual window close can close the whole persistent context; recreate it.
             await self._restart_closed_context()
             page = await create_page()
-        slot = PageSlot(page=page, page_token=self._next_page_token)
-        self._next_page_token += 1
+        slot = PageSlot(page=page, page_id=self._next_page_id)
+        self._next_page_id += 1
         self.pages[thread] = slot
         return slot
 
     async def _adopt_initial_page(self, url: str) -> Any | None:
-        if self._open_owned_pages():
+        if self._open_managed_pages():
             return None
         context = self._context()
         open_pages = [page for page in list(context.pages) if self._page_is_open(page)]
@@ -416,7 +350,7 @@ class PatchrightRuntime:
         # The first thread reuses one launch page to avoid a visible window swap; later
         # threads require CDP target IDs so concurrent windows cannot be misidentified.
         page = next((page for page in open_pages if self._page_url(page) in STARTUP_PAGE_URLS), open_pages[0])
-        await self._close_unowned_pages(context, keep_ids={id(page)})
+        await self._close_unmanaged_pages(context, keep_ids={id(page)})
         if not self._page_is_open(page):
             raise RuntimeError(CLOSED_TARGET_MESSAGE)
         try:
@@ -432,12 +366,12 @@ class PatchrightRuntime:
     async def _create_new_window_page(self, url: str) -> Any:
         context = self._context()
         anchor_page, close_anchor = await self._cdp_anchor_page(context)
-        excluded_page_ids = {id(page) for page in self._open_owned_pages()}
+        excluded_page_ids = {id(page) for page in self._open_managed_pages()}
         excluded_page_ids.add(id(anchor_page))
         session = None
         target_id: str | None = None
         try:
-            await self._close_unowned_pages(context, keep_ids={id(anchor_page)})
+            await self._close_unmanaged_pages(context, keep_ids={id(anchor_page)})
             session = await self._maybe_await(context.new_cdp_session(anchor_page))
             response = await self._maybe_await(
                 session.send("Target.createTarget", {"url": url, "newWindow": True, "background": False})
@@ -456,9 +390,9 @@ class PatchrightRuntime:
                 await self._best_effort_close_page(anchor_page)
 
     async def _cdp_anchor_page(self, context: Any) -> tuple[Any, bool]:
-        owned_pages = self._open_owned_pages()
-        if owned_pages:
-            return owned_pages[0], False
+        managed_pages = self._open_managed_pages()
+        if managed_pages:
+            return managed_pages[0], False
         for page in list(context.pages):
             if self._page_is_open(page):
                 return page, True
@@ -466,14 +400,14 @@ class PatchrightRuntime:
         # the controlled thread page; it is closed after Target.createTarget finishes.
         return await self._maybe_await(context.new_page()), True
 
-    def _open_owned_pages(self) -> list[Any]:
+    def _open_managed_pages(self) -> list[Any]:
         return [slot.page for slot in self.pages.values() if self._page_is_open(slot.page)]
 
-    async def _close_unowned_pages(self, context: Any, *, keep_ids: set[int] | None = None) -> None:
+    async def _close_unmanaged_pages(self, context: Any, *, keep_ids: set[int] | None = None) -> None:
         keep_ids = keep_ids or set()
-        owned_ids = {id(page) for page in self._open_owned_pages()}
+        managed_ids = {id(page) for page in self._open_managed_pages()}
         for page in list(context.pages):
-            if id(page) in keep_ids or id(page) in owned_ids or not self._page_is_open(page):
+            if id(page) in keep_ids or id(page) in managed_ids or not self._page_is_open(page):
                 continue
             try:
                 await self._maybe_await(page.close())
@@ -654,7 +588,7 @@ class PatchrightRuntime:
 
     async def _metadata(self, slot: PageSlot) -> dict[str, str | int]:
         page = slot.page
-        return {"page_id": slot.page_token, "url": str(getattr(page, "url", "") or ""), "title": await self._title(page)}
+        return {"page_id": slot.page_id, "url": str(getattr(page, "url", "") or ""), "title": await self._title(page)}
 
     async def _title(self, page: Any) -> str:
         try:

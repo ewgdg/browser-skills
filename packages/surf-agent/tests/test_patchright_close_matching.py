@@ -80,7 +80,7 @@ def health_response(payload: dict[str, object]) -> MagicMock:
 def runtime_with_pages(tmp_path: Path, pages: dict[str, tuple[Page, int]]) -> PatchrightRuntime:
     runtime = PatchrightRuntime(profile_dir=tmp_path / "profile")
     runtime.pages = {
-        thread: PageSlot(page=page, page_token=page_id)
+        thread: PageSlot(page=page, page_id=page_id)
         for thread, (page, page_id) in pages.items()
     }
     return runtime
@@ -195,7 +195,7 @@ def test_patchright_health_proves_the_configured_profile_identity(
             bridge_response("inspected\n"),
         ],
     ):
-        assert client.call_tool_if_running("owned-inspect", {}) == "inspected\n"
+        assert client.call_tool_if_running("state", {}) == "inspected\n"
 
 
 def test_patchright_health_rejects_a_mismatched_bridge_identity(
@@ -220,7 +220,7 @@ def test_patchright_health_rejects_a_mismatched_bridge_identity(
         ),
         pytest.raises(BridgeIdentityUnproven),
     ):
-        client.call_tool_if_running("owned-inspect", {})
+        client.call_tool_if_running("state", {})
 
 
 def test_close_matching_closes_matching_managed_threads_in_sorted_order(tmp_path: Path) -> None:

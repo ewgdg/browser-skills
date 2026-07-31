@@ -9,8 +9,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from ..owned_pages import OwnedPageProtection
-
 STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
 CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
 STARTUP_PAGE_URLS = {"", "about:blank", "about:home", "about:newtab", "chrome://newtab/"}
@@ -23,12 +21,7 @@ NATIVE_ARIA_REF_PATTERN = re.compile(r"^(?:f\d+)?e\d+$")
 @dataclass
 class PageSlot:
     page: Any
-    page_token: int
-    owner: str | None = None
-    protection: OwnedPageProtection | None = None
-    # This is an irreversible uncertainty barrier, not a claim that ChatGPT
-    # accepted the prompt. It prevents a lost caller response from causing resend.
-    send_may_have_occurred: bool = False
+    page_id: int
 
 
 class BridgeRequestHandler(BaseHTTPRequestHandler):

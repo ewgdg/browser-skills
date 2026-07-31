@@ -125,13 +125,6 @@ class HandoffAction(StrEnum):
     INSPECT_BROWSER = "inspect_browser"
 
 
-class CapacityReason(StrEnum):
-    GENERATING = "generating"
-    HUMAN_INTERVENTION = "human_intervention"
-    INSPECTION_FAILED = "inspection_failed"
-    EXPLICITLY_RETAINED = "explicitly_retained"
-
-
 @dataclass(frozen=True)
 class AskRequest:
     prompt: str
@@ -374,7 +367,7 @@ def _validate_attempt_relationships(value: JsonObject) -> None:
 
 
 def _validate_failure_contract(value: JsonObject) -> None:
-    _require_allowed_keys(value, {"ok", "error", "session", "thread", "handoff", "capacity"})
+    _require_allowed_keys(value, {"ok", "error", "session", "thread", "handoff"})
     if "error" not in value:
         raise ValueError("Failure outcomes require a safe public error.")
     _validate_public_error(value["error"])
@@ -384,8 +377,6 @@ def _validate_failure_contract(value: JsonObject) -> None:
         _require_string(value["thread"], "thread")
     if "handoff" in value:
         _validate_handoff(value["handoff"])
-    if "capacity" in value:
-        _validate_capacity(value["capacity"])
 
 
 def _validate_public_error(value: JsonValue) -> None:
@@ -433,29 +424,6 @@ def _validate_handoff(value: JsonValue) -> None:
     _require_exact_keys(handoff, {"action", "thread"})
     _require_enum_value(handoff["action"], HandoffAction, "handoff action")
     _require_string(handoff["thread"], "handoff thread")
-
-
-def _validate_capacity(value: JsonValue) -> None:
-    capacity = _require_object(value, "capacity")
-    _require_exact_keys(capacity, {"limit", "retained"})
-    limit = capacity["limit"]
-    if not isinstance(limit, int) or isinstance(limit, bool) or limit <= 0:
-        raise ValueError("Capacity limit must be a positive integer.")
-    retained = _require_list(capacity["retained"], "capacity retained pages")
-    for item in retained:
-        retained_page = _require_object(item, "retained page")
-        _require_allowed_keys(retained_page, {"session", "thread", "reason"})
-        if ("session" in retained_page) == ("thread" in retained_page):
-            raise ValueError("Retained pages require exactly one recovery identity.")
-        if "session" in retained_page:
-            _validate_session(retained_page["session"], allow_none=False)
-        else:
-            _require_string(retained_page["thread"], "retained page thread")
-        _require_enum_value(
-            retained_page.get("reason"),
-            CapacityReason,
-            "retained page reason",
-        )
 
 
 def _require_object(value: JsonValue, name: str) -> JsonObject:

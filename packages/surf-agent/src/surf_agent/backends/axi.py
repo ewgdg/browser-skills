@@ -390,12 +390,12 @@ class AxiBackend:
         self._open_chrome_window(surf_agent_app_url())
         pages = self._wait_for_new_axi_page(before_ids)
         new_pages = [page for page in pages if page.page_id not in before_ids]
-        owned_page = self._find_owned_new_axi_page(new_pages)
-        if owned_page is None:
+        created_page = self._find_created_axi_page(new_pages)
+        if created_page is None:
             raise SurfAgentError(f"could not find new browser page titled {SURF_AGENT_WINDOW_TITLE!r}; before={sorted(before_ids)} after={[page.page_id for page in pages]}")
-        return merge_page(AgentPage(owned_page.page_id, title=SURF_AGENT_WINDOW_TITLE), owned_page)
+        return merge_page(AgentPage(created_page.page_id, title=SURF_AGENT_WINDOW_TITLE), created_page)
 
-    def _find_owned_new_axi_page(self, candidates: Sequence[Any]) -> Any | None:
+    def _find_created_axi_page(self, candidates: Sequence[Any]) -> Any | None:
         matches: list[Any] = []
         for page in candidates:
             self._select_axi_page(page.page_id)

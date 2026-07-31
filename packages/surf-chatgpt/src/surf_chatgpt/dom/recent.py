@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import json
 
-from surf_agent.owned_pages import CHATGPT_SESSION_ID_PATTERN
-
 from .readiness import CHALLENGE_SURFACE_SELECTORS
+from ..session_address import CHATGPT_SESSION_ID_PATTERN
 
 
 LOGIN_SURFACE_SELECTORS = (

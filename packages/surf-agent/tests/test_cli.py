@@ -633,8 +633,8 @@ class AxiBackendTests(unittest.TestCase):
         context = FakeContext([anchor])
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
         runtime.browser_or_context = context
-        runtime.pages["owned"] = patchright_bridge.PageSlot(page=anchor, page_token=1)
-        runtime._next_page_token = 2
+        runtime.pages["owned"] = patchright_bridge.PageSlot(page=anchor, page_id=1)
+        runtime._next_page_id = 2
 
         slot = runtime._run(runtime._new_page("thread", url="https://welcome.test/"))
 
@@ -822,7 +822,7 @@ class AxiBackendTests(unittest.TestCase):
         context = FakeContext([dead])
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
         runtime.browser_or_context = context
-        runtime.pages["thread"] = patchright_bridge.PageSlot(page=dead, page_token=1)
+        runtime.pages["thread"] = patchright_bridge.PageSlot(page=dead, page_id=1)
 
         self.assertEqual(runtime.call("open", {"thread": "thread", "url": "https://example.test/"}), "opened https://example.test/\n")
         self.assertEqual(runtime.pages["thread"].page.url, "https://example.test/")
@@ -993,6 +993,20 @@ class AxiBackendTests(unittest.TestCase):
         listing = json.loads(runtime.call("list", {}))
         self.assertEqual(listing, {"backend": "patchright", "pages": [{"thread": "thread", "page_id": 1, "url": "https://example.test/", "title": "Example"}]})
 
+    def test_patchright_runtime_renames_a_thread_without_replacing_its_page(self):
+        runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
+        live_page_slot = object()
+        runtime.pages["temporary"] = live_page_slot  # type: ignore[assignment]
+
+        result = runtime.call(
+            "rename-thread",
+            {"thread": "temporary", "destination_thread": "session"},
+        )
+
+        self.assertEqual(result, "renamed session\n")
+        self.assertNotIn("temporary", runtime.pages)
+        self.assertIs(runtime.pages["session"], live_page_slot)
+
     def test_patchright_actions_delegate_iframe_refs_and_reject_stale_refs(self):
         class FakeNativeRefLocator:
             def __init__(self, count):
@@ -1026,7 +1040,7 @@ class AxiBackendTests(unittest.TestCase):
         page = FakePage()
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
         runtime.browser_or_context = object()
-        runtime.pages["thread"] = PageSlot(page=page, page_token=1)
+        runtime.pages["thread"] = PageSlot(page=page, page_id=1)
 
         self.assertEqual(runtime.call("click", {"thread": "thread", "uid": "f1e2"}), "clicked\n")
         self.assertTrue(page.iframe_button.clicked)
@@ -1050,7 +1064,7 @@ class AxiBackendTests(unittest.TestCase):
         page = FakePage()
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
         runtime.browser_or_context = object()
-        runtime.pages["thread"] = patchright_bridge.PageSlot(page=page, page_token=1)
+        runtime.pages["thread"] = patchright_bridge.PageSlot(page=page, page_id=1)
 
         self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/viewport.png"}), "screenshot: /tmp/viewport.png\n")
         self.assertEqual(runtime.call("screenshot", {"thread": "thread", "path": "/tmp/string-false.png", "fullPage": "false"}), "screenshot: /tmp/string-false.png\n")
@@ -1067,7 +1081,7 @@ class AxiBackendTests(unittest.TestCase):
                 return '- button "[ref=e999]" [ref=e188]\n- paragraph [ref=e189]: Hello [ref=e777]'
 
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
-        slot = patchright_bridge.PageSlot(page=FakePage(), page_token=1)
+        slot = patchright_bridge.PageSlot(page=FakePage(), page_id=1)
 
         snapshot = runtime._run(runtime._snapshot(slot))
 
@@ -1088,7 +1102,7 @@ class AxiBackendTests(unittest.TestCase):
 
         page = FakePage()
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
-        slot = patchright_bridge.PageSlot(page=page, page_token=1)
+        slot = patchright_bridge.PageSlot(page=page, page_id=1)
 
         with patch.object(patchright_bridge, "SNAPSHOT_DEPTH", 4), patch.object(patchright_bridge, "SNAPSHOT_BOXES", True):
             snapshot = runtime._run(runtime._snapshot(slot))
@@ -1107,7 +1121,7 @@ class AxiBackendTests(unittest.TestCase):
 
         page = FakePage()
         runtime = PatchrightRuntime(profile_dir=Path("/tmp/surf-patchright-test"))
-        runtime._run(runtime._snapshot(patchright_bridge.PageSlot(page=page, page_token=1)))
+        runtime._run(runtime._snapshot(patchright_bridge.PageSlot(page=page, page_id=1)))
 
         self.assertEqual(page.calls, [{"mode": "ai", "timeout": patchright_bridge.SNAPSHOT_ARIA_TIMEOUT_MS, "depth": None, "boxes": False}])
 
