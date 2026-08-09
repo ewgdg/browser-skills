@@ -1,0 +1,13 @@
+[project]
+name = "surf-google-search"
+version = "0.1.0"
+description = "Structured Google Search through surf-agent"
+requires-python = ">=3.11"
+dependencies = ["surf-agent"]
+
+[project.scripts]
+surf-google-search = "surf_google_search.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

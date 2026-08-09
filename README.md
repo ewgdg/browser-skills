@@ -5,6 +5,7 @@ Pi package for browser automation skills used by agents.
 Currently included:
 
 - `surf`: generic browser-control skill using an agent-owned one-tab window through `surf-agent`.
+- `surf-google-search`: retrieve compact structured organic results from rendered Google Search pages.
 - `surf-chatgpt`: consult logged-in web ChatGPT through browser automation.
 
 ## Install
@@ -21,27 +22,41 @@ Install the browser helper CLIs separately:
 uv tool install "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
 uv tool install \
   --with "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
+  "surf-google-search @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-google-search"
+uv tool install \
+  --with "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
   "surf-chatgpt @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-chatgpt"
 ```
 
-`surf-chatgpt` depends on the latest available `surf-agent`.
+The site-specific CLIs depend on the latest available `surf-agent`.
 
 ## Browser backends
 
-Patchright is Surf's default backend and the only backend supported by
-`surf-chatgpt`. AXI remains available only for generic `surf-agent` browser work;
-`surf-chatgpt` rejects AXI before starting or inspecting a browser. Camoufox is not
-supported.
+Patchright is Surf's default backend. `surf-google-search` honors the selected
+Patchright or AXI backend. `surf-chatgpt` supports only Patchright and rejects AXI
+before starting or inspecting a browser. Camoufox is not supported.
 
 ## Develop
 
 ```bash
 uv --directory packages/surf-agent run surf-agent --help
 uv --directory packages/surf-agent run python -m unittest discover -s tests
+uv run pytest packages/surf-google-search/tests
 uv --directory packages/surf-chatgpt run python -m unittest discover -s tests
 ```
 
 Skill payload lives under `skills/<skill>/`. Python packages live under `packages/<dist-name>/`.
+
+## Google Search
+
+`surf-google-search` returns compact JSON containing primary organic results from one to three consecutive rendered Google Search pages:
+
+```bash
+surf-google-search "latest Patchright documentation"
+surf-google-search --page 2 --page-count 2 "latest Patchright documentation"
+```
+
+Searches sharing one Surf profile run one at a time with randomized natural pacing. Ads and Google answer modules are excluded; duplicate destinations are removed only within one invocation, without compacting their nominal rank slots. A Google challenge preserves one browser thread and blocks queued searches from repeatedly navigating until the challenge is resolved or its page is closed.
 
 ## Live cookie import
 

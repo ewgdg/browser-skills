@@ -10,7 +10,8 @@ addopts = ["--import-mode=importlib"]
 testpaths = ["packages"]
 
 [tool.uv.workspace]
-members = ["packages/surf-agent", "packages/surf-chatgpt"]
+members = ["packages/surf-agent", "packages/surf-chatgpt", "packages/surf-google-search"]
 
 [tool.uv.sources]
 surf-agent = { workspace = true }
+surf-google-search = { workspace = true }

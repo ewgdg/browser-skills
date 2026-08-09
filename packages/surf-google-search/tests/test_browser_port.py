@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+
+import pytest
+
+from surf_google_search.browser_port import (
+    PageObservationError,
+    SearchPageKind,
+    SurfBrowserPagePort,
+)
+
+
+@dataclass
+class FakeSurfAgent:
+    evaluation: dict[str, object]
+    calls: list[list[str]] = field(default_factory=list)
+    close_calls: int = 0
+
+    def execute_in_window(self, args: list[str]) -> str:
+        self.calls.append(args)
+        if args[0] == "eval":
+            return json.dumps(self.evaluation)
+        return ""
+
+    def print_state(self, *, thread: str) -> None:
+        print(json.dumps({"thread": thread, "open": True}))
+
+    def close(self) -> int:
+        self.close_calls += 1
+        print("closed")
+        return 0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        {"kind": "results", "results": [], "next_url": None},
+        {
+            "kind": "results",
+            "results": [
+                {
+                    "title": f"Result {position}",
+                    "url": f"https://example.com/{position}",
+                    "snippet": None,
+                    "displayed_date": None,
+                }
+                for position in range(11)
+            ],
+            "next_url": None,
+        },
+        {
+            "kind": "exhausted",
+            "results": [
+                {
+                    "title": "Unexpected",
+                    "url": "https://example.com/unexpected",
+                    "snippet": None,
+                    "displayed_date": None,
+                }
+            ],
+            "next_url": None,
+        },
+        {
+            "kind": "unknown",
+            "results": [],
+            "next_url": "https://www.google.com/search?q=query&start=10",
+        },
+    ),
+)
+def test_surf_adapter_rejects_inconsistent_observation_states(
+    payload: dict[str, object],
+) -> None:
+    browser = SurfBrowserPagePort(agent_factory=lambda thread: FakeSurfAgent(payload))
+
+    with pytest.raises(PageObservationError):
+        browser.observe("thread-1")
+
+
+def test_surf_adapter_parses_axi_evaluation_envelope() -> None:
+    payload = {
+        "kind": "exhausted",
+        "results": [],
+        "next_url": None,
+    }
+
+    class AxiAgent(FakeSurfAgent):
+        def execute_in_window(self, args: list[str]) -> str:
+            self.calls.append(args)
+            if args[0] == "eval":
+                encoded = json.dumps(json.dumps(payload, separators=(",", ":")))
+                return f"Result: {encoded}\n"
+            return ""
+
+    browser = SurfBrowserPagePort(agent_factory=lambda thread: AxiAgent(payload))
+
+    observation = browser.observe("thread-1")
+
+    assert observation.kind is SearchPageKind.EXHAUSTED
+
+
+def test_surf_adapter_exposes_one_backend_agnostic_page_observation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    agent = FakeSurfAgent(
+        {
+            "kind": "results",
+            "results": [
+                {
+                    "title": "Patchright",
+                    "url": "https://example.com/patchright",
+                    "snippet": "Browser automation.",
+                    "displayed_date": "Jun 23, 2026",
+                }
+            ],
+            "next_url": "https://www.google.com/search?q=patchright&start=10&num=10",
+        }
+    )
+    created_threads: list[str] = []
+
+    def create_agent(thread: str) -> FakeSurfAgent:
+        created_threads.append(thread)
+        return agent
+
+    browser = SurfBrowserPagePort(agent_factory=create_agent)
+
+    assert browser.is_open("thread-1") is True
+    browser.open("thread-1", "https://www.google.com/search?q=patchright&start=0&num=10")
+    observation = browser.observe("thread-1")
+    browser.close("thread-1")
+
+    assert created_threads == ["thread-1"]
+    assert agent.calls[0] == [
+        "open",
+        "https://www.google.com/search?q=patchright&start=0&num=10",
+    ]
+    assert agent.calls[1][0] == "eval"
+    assert "data-snf" in agent.calls[1][1]
+    assert observation.kind is SearchPageKind.RESULTS
+    assert observation.results[0].title == "Patchright"
+    assert observation.results[0].displayed_date == "Jun 23, 2026"
+    assert observation.next_url == "https://www.google.com/search?q=patchright&start=10&num=10"
+    assert agent.close_calls == 1
+    assert capsys.readouterr().out == ""

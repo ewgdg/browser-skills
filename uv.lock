@@ -10,6 +10,7 @@ resolution-markers = [
 members = [
     "surf-agent",
     "surf-chatgpt",
+    "surf-google-search",
 ]
 
 [manifest.dependency-groups]
@@ -391,6 +392,17 @@ provides-extras = ["patchright"]
 name = "surf-chatgpt"
 version = "0.1.0"
 source = { editable = "packages/surf-chatgpt" }
+dependencies = [
+    { name = "surf-agent" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "surf-agent", editable = "packages/surf-agent" }]
+
+[[package]]
+name = "surf-google-search"
+version = "0.1.0"
+source = { editable = "packages/surf-google-search" }
 dependencies = [
     { name = "surf-agent" },
 ]
