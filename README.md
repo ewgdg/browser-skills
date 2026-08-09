@@ -56,7 +56,7 @@ surf-google-search "latest Patchright documentation"
 surf-google-search --page 2 --page-count 2 "latest Patchright documentation"
 ```
 
-Searches sharing one Surf profile run one at a time with randomized natural pacing. Ads and Google answer modules are excluded; duplicate destinations are removed only within one invocation, without compacting their nominal rank slots. A Google challenge preserves one browser thread and blocks queued searches from repeatedly navigating until the challenge is resolved or its page is closed.
+Searches sharing one Surf profile run one at a time with randomized natural pacing. Ads and Google answer modules are excluded. Every result carries its Search page and one-based page-local position; duplicate destinations are removed only within one invocation without compacting those positions. A Google challenge preserves one browser thread and blocks queued searches from repeatedly navigating until the challenge is resolved or its page is closed.
 
 ## Live cookie import
 

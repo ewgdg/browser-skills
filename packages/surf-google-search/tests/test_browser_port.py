@@ -38,19 +38,6 @@ class FakeSurfAgent:
     (
         {"kind": "results", "results": [], "next_url": None},
         {
-            "kind": "results",
-            "results": [
-                {
-                    "title": f"Result {position}",
-                    "url": f"https://example.com/{position}",
-                    "snippet": None,
-                    "displayed_date": None,
-                }
-                for position in range(11)
-            ],
-            "next_url": None,
-        },
-        {
             "kind": "exhausted",
             "results": [
                 {
@@ -76,6 +63,27 @@ def test_surf_adapter_rejects_inconsistent_observation_states(
 
     with pytest.raises(PageObservationError):
         browser.observe("thread-1")
+
+
+def test_surf_adapter_preserves_more_than_ten_observed_results() -> None:
+    payload = {
+        "kind": "results",
+        "results": [
+            {
+                "title": f"Result {position}",
+                "url": f"https://example.com/{position}",
+                "snippet": None,
+                "displayed_date": None,
+            }
+            for position in range(1, 12)
+        ],
+        "next_url": None,
+    }
+    browser = SurfBrowserPagePort(agent_factory=lambda thread: FakeSurfAgent(payload))
+
+    observation = browser.observe("thread-1")
+
+    assert len(observation.results) == 11
 
 
 def test_surf_adapter_parses_axi_evaluation_envelope() -> None:

@@ -17,7 +17,8 @@ SUCCESS = CommandOutcome.success(
         "pages": {"start": 1, "requested": 1, "visited": 1},
         "results": [
             {
-                "rank": 1,
+                "page": 1,
+                "position": 1,
                 "title": "patchright",
                 "url": "https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python",
                 "snippet": "Undetected Python version of Playwright.",

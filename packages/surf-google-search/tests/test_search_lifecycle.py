@@ -125,7 +125,8 @@ def test_one_page_search_returns_structured_results_and_closes_after_output() ->
         "pages": {"start": 1, "requested": 1, "visited": 1},
         "results": [
             {
-                "rank": 1,
+                "page": 1,
+                "position": 1,
                 "title": "patchright",
                 "url": "https://github.com/Kaliiiiiiiiii-Vinyzu/patchright-python",
                 "snippet": "Undetected Python version of Playwright.",
@@ -149,7 +150,7 @@ def test_one_page_search_returns_structured_results_and_closes_after_output() ->
     assert browser.calls[-1] == ("close", "surf-google-search-random123", None)
 
 
-def test_page_span_follows_google_next_and_deduplicates_without_compacting_rank_slots() -> None:
+def test_page_span_follows_google_next_and_preserves_page_local_position_gaps() -> None:
     duplicate = ObservedOrganicResult(
         title="A",
         url="https://example.com/a",
@@ -190,9 +191,9 @@ def test_page_span_follows_google_next_and_deduplicates_without_compacting_rank_
         "query": "query",
         "pages": {"start": 1, "requested": 2, "visited": 2},
         "results": [
-            {"rank": 1, "title": "A", "url": "https://example.com/a", "snippet": "first", "displayed_date": None},
-            {"rank": 2, "title": "B", "url": "https://example.com/b", "snippet": "second", "displayed_date": None},
-            {"rank": 12, "title": "C", "url": "https://example.com/c", "snippet": "third", "displayed_date": None},
+            {"page": 1, "position": 1, "title": "A", "url": "https://example.com/a", "snippet": "first", "displayed_date": None},
+            {"page": 1, "position": 2, "title": "B", "url": "https://example.com/b", "snippet": "second", "displayed_date": None},
+            {"page": 2, "position": 2, "title": "C", "url": "https://example.com/c", "snippet": "third", "displayed_date": None},
         ],
         "exhausted": True,
     }
@@ -249,6 +250,52 @@ def test_interruption_closes_the_search_thread_and_releases_the_lease() -> None:
         raise AssertionError("expected interruption")
 
     assert events == ["close:thread-1", "release"]
+
+
+def test_two_page_search_preserves_more_than_ten_results_from_the_first_page() -> None:
+    first_page = tuple(
+        ObservedOrganicResult(
+            f"First page {position}",
+            f"https://example.com/first/{position}",
+            None,
+            None,
+        )
+        for position in range(1, 12)
+    )
+    second_page = tuple(
+        ObservedOrganicResult(
+            f"Second page {position}",
+            f"https://example.com/second/{position}",
+            None,
+            None,
+        )
+        for position in range(1, 3)
+    )
+    lifecycle = BrowserSearchLifecycle(
+        SequenceBrowser(
+            observations=[
+                SearchPageObservation(
+                    kind=SearchPageKind.RESULTS,
+                    results=first_page,
+                    next_url="https://www.google.com/search?q=query&start=10&num=10",
+                ),
+                SearchPageObservation(
+                    kind=SearchPageKind.RESULTS,
+                    results=second_page,
+                    next_url=None,
+                ),
+            ]
+        ),
+        pacer=RecordingPacer(),
+        thread_factory=lambda: "thread-1",
+    )
+
+    outcome = lifecycle.search(SearchRequest(query="query", page_count=2))
+    results = outcome.to_public_json()["results"]
+
+    assert len(results) == 13
+    assert (results[10]["page"], results[10]["position"]) == (1, 11)
+    assert (results[11]["page"], results[11]["position"]) == (2, 1)
 
 
 def test_browser_unavailability_returns_terminal_operational_failure() -> None:
@@ -593,7 +640,8 @@ def test_destination_urls_are_cleaned_before_invocation_scoped_deduplication() -
 
     assert outcome.to_public_json()["results"] == [
         {
-            "rank": 1,
+            "page": 1,
+            "position": 1,
             "title": "First",
             "url": "https://example.com/docs?topic=search#install",
             "snippet": "first",

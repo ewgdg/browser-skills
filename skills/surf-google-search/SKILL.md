@@ -25,7 +25,7 @@ surf-google-search --page 2 --page-count 2 "latest Patchright documentation"
 
 `--page` is one-based. `--page-count` accepts 1–3 and defaults to 1. One invocation processes one query and returns every unique primary organic result from the requested consecutive Google pages.
 
-Successful output contains `query`, requested/visited pages, ordered `results`, and `exhausted`. Each result contains `rank`, `title`, cleaned destination `url`, nullable `snippet`, and nullable `displayed_date`. Rank gaps are intentional when Google omits standard organic slots or a repeated destination is removed.
+Successful output contains `query`, requested/visited pages, ordered `results`, and `exhausted`. Each result contains one-based Search `page`, one-based page-local `position`, `title`, cleaned destination `url`, nullable `snippet`, and nullable `displayed_date`. Position gaps are intentional when a repeated destination is removed.
 
 Use returned destination URLs with the appropriate browsing or research workflow. Search output does not preserve Google referrer behavior; that requires clicking a rendered result in a retained Search page.
 

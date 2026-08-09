@@ -157,8 +157,8 @@ class BrowserSearchLifecycle:
             if observation.kind is not SearchPageKind.RESULTS:
                 raise PublicError(PublicErrorType.UI_CHANGED)
 
-            rank_base = (request.start_page + page_index - 1) * GOOGLE_PAGE_SIZE
-            for index, result in enumerate(observation.results, start=1):
+            page = request.start_page + page_index
+            for position, result in enumerate(observation.results, start=1):
                 try:
                     destination_url = clean_destination_url(result.url)
                 except InvalidDestinationUrl as error:
@@ -168,7 +168,8 @@ class BrowserSearchLifecycle:
                 seen_urls.add(destination_url)
                 results.append(
                     {
-                        "rank": rank_base + index,
+                        "page": page,
+                        "position": position,
                         "title": result.title,
                         "url": destination_url,
                         "snippet": result.snippet,

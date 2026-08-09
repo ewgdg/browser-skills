@@ -166,8 +166,8 @@ def _parse_observation(value: Any) -> SearchPageObservation:
     next_url = value.get("next_url")
     if next_url is not None and not isinstance(next_url, str):
         raise TypeError("next URL must be a string or null")
-    if kind is SearchPageKind.RESULTS and not 1 <= len(results) <= 10:
-        raise ValueError("results pages must contain between one and ten results")
+    if kind is SearchPageKind.RESULTS and not results:
+        raise ValueError("results pages must contain at least one result")
     if kind is not SearchPageKind.RESULTS and (results or next_url is not None):
         raise ValueError("non-result pages must not contain results or pagination")
     return SearchPageObservation(kind=kind, results=tuple(results), next_url=next_url)
@@ -225,10 +225,6 @@ GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
       snippet,
       displayed_date: displayedDate,
     });
-  }
-
-  if (results.length > 10) {
-    return serialize({kind: 'unknown', results: [], next_url: null});
   }
 
   const next = document.querySelector('a#pnnext, a[aria-label="Next page"]');

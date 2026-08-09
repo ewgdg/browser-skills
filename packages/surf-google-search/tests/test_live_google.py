@@ -30,6 +30,13 @@ def test_live_google_search_returns_only_the_compact_public_schema() -> None:
     assert payload["results"], "the stable compatibility query should return an organic result"
     assert len(output.getvalue().encode()) < 12_000
     for result in payload["results"]:
-        assert set(result) == {"rank", "title", "url", "snippet", "displayed_date"}
+        assert set(result) == {
+            "page",
+            "position",
+            "title",
+            "url",
+            "snippet",
+            "displayed_date",
+        }
         assert result["url"].startswith(("http://", "https://"))
         assert ":~:text=" not in result["url"]

@@ -151,7 +151,7 @@ def test_multiple_primary_headings_in_one_slot_fail_closed(browser: Browser) -> 
     assert observation == {"kind": "unknown", "results": [], "next_url": None}
 
 
-def test_more_than_ten_organic_slots_fail_closed(browser: Browser) -> None:
+def test_page_preserves_more_than_ten_organic_results(browser: Browser) -> None:
     results = "".join(
         f'<div data-rpos="{position}"><div data-snf><a href="https://example.com/{position}"><h3>Result {position}</h3></a></div></div>'
         for position in range(1, 12)
@@ -166,7 +166,9 @@ def test_more_than_ten_organic_slots_fail_closed(browser: Browser) -> None:
         """,
     )
 
-    assert observation == {"kind": "unknown", "results": [], "next_url": None}
+    assert observation["kind"] == "results"
+    assert len(observation["results"]) == 11
+    assert observation["next_url"] == "https://www.google.com/search?q=fixture&start=10"
 
 
 def test_results_without_recognized_pagination_fail_closed(browser: Browser) -> None:
