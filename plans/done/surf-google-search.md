@@ -31,6 +31,8 @@ Review remediation is deliberately narrow: make exhaustion classification fail c
 
 The result schema is page-based: each record carries `page` and one-based page-local `position`. There is no fixed upper bound on organic records from a rendered page and no global rank field.
 
+Visible top-level rich results with one external titled link, such as a standalone video result, are eligible. Hidden or nested answer sources and multi-link Google modules remain excluded.
+
 1. Add the package skeleton and a failing CLI contract test for the default one-page successful search.
 2. Implement the small public contracts, CLI parsing, browser-page port, and one-page lifecycle sufficient for the tracer test.
 3. Add vertical slices for page spans, Next validation, page-local position gaps, invocation-scoped URL deduplication, exhaustion, and cleanup.
@@ -58,7 +60,8 @@ The result schema is page-based: each record carries `page` and one-based page-l
 - [x] Skill and package integration complete.
 - [x] Independent-review remediation complete.
 - [x] Page-local result identity implemented and documented.
-- [x] Final validation after page-local schema change complete.
+- [x] Visible top-level rich result extraction fixed and regression-tested.
+- [x] Final validation after rich-result fix complete.
 
 ## Surprises and discoveries
 
@@ -80,8 +83,9 @@ The result schema is page-based: each record carries `page` and one-based page-l
 - Added the `surf-google-search` package, CLI, and model-invoked skill.
 - The CLI returns compact structured organic results, supports one-to-three-page spans, honors Surf backend selection, and keeps Google-specific DOM knowledge out of generic `surf-agent`.
 - Profile-scoped `fcntl.flock` serialization, natural pacing, and one retained challenge marker prevent cooperating search processes from concurrently hammering Google.
-- Final deterministic validation passes: 429 tests, 2 skipped opt-in tests, and 28 subtests. Ruff, all Python builds, npm package dry-run, skill discovery, and the opt-in live Patchright smoke test pass.
+- Final deterministic validation passes: 430 tests, 2 skipped opt-in tests, and 28 subtests. Ruff, all Python builds, npm package dry-run, skill discovery, and the opt-in live Patchright smoke test pass.
 - Live probes affirmed standard result extraction, AI-source exclusion, text-fragment removal, page-local position gaps, compact single-object JSON, and affirmed no-results behavior.
 - Independent-review remediation replaced generic no-results inference with an explicit rendered card, requires recognizable pagination before treating a result page as terminal, executes the extraction script against deterministic headless-browser fixtures, enforces result-state cardinality, rejects direct Google navigation destinations, and guarantees cleanup after output or interruption failures.
 - Exact pagination arithmetic, resolved-marker close ordering, and malformed-marker recovery remain intentionally excluded: rendered Next is the product seam, and those marker failures are recoverable.
 - The final result schema uses Search `page` plus page-local `position`, allowing every rendered organic record to survive even when a page contains more than ten. A deterministic two-page test covers eleven first-page results without collision or loss.
+- Live DOM inspection showed two candidate links were hidden People Also Ask sources, while a YouTube video was a visible independently positioned rich result. Extraction now includes the YouTube card, continues to exclude the hidden sources, and deterministically excludes multi-link rich modules.

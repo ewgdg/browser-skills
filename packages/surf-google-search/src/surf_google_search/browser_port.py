@@ -188,40 +188,60 @@ GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
   const searchShell = document.querySelector('textarea[name="q"], input[name="q"]');
   if (!isGoogleSearch || !searchShell) return serialize({kind: 'unknown', results: [], next_url: null});
 
-  const results = [];
-  const resultContainers = new Set();
+  const candidateGroups = new Map();
   for (const heading of document.querySelectorAll('a h3')) {
     const link = heading.closest('a');
-    const metadata = link?.closest('[data-snf]');
     const container = link?.closest('[data-rpos]');
-    if (!link?.href || !metadata || !container || metadata.hasAttribute('data-sncf')) continue;
-    if (link.closest('[data-text-ad]')) continue;
-    if (resultContainers.has(container)) {
+    if (!link?.href || !container) continue;
+    if (link.closest('[data-text-ad], [data-sncf], [data-q], .related-question-pair')) continue;
+    const visible = link.checkVisibility
+      ? link.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})
+      : link.getClientRects().length > 0;
+    if (!visible) continue;
+
+    const candidates = candidateGroups.get(container) || [];
+    candidates.push({
+      heading,
+      link,
+      metadata: link.closest('[data-snf]'),
+    });
+    candidateGroups.set(container, candidates);
+  }
+
+  const results = [];
+  for (const [container, candidates] of candidateGroups) {
+    const standardCandidates = candidates.filter(candidate => candidate.metadata);
+    if (standardCandidates.length > 1) {
       return serialize({kind: 'unknown', results: [], next_url: null});
     }
-    resultContainers.add(container);
+    // A multi-link rich module is not one independently positioned result card.
+    const candidate = standardCandidates[0] || (candidates.length === 1 ? candidates[0] : null);
+    if (!candidate) continue;
 
-    const snippetNode = container.querySelector('[data-sncf="1"]');
-    let snippet = normalize(snippetNode?.innerText) || null;
+    let snippet = null;
     let displayedDate = null;
-    if (snippetNode) {
-      const dateMarker = [...snippetNode.querySelectorAll('span')].find(node => {
-        const ownText = [...node.childNodes]
-          .filter(child => child.nodeType === Node.TEXT_NODE)
-          .map(child => child.textContent)
-          .join('');
-        return node.querySelector(':scope > span') && normalize(ownText) === '—';
-      });
-      displayedDate = normalize(dateMarker?.querySelector(':scope > span')?.innerText) || null;
-      if (displayedDate && snippet.startsWith(`${displayedDate} —`)) {
-        snippet = normalize(snippet.slice(`${displayedDate} —`.length)) || null;
+    if (candidate.metadata) {
+      const snippetNode = container.querySelector('[data-sncf="1"]');
+      snippet = normalize(snippetNode?.innerText) || null;
+      if (snippetNode) {
+        const dateMarker = [...snippetNode.querySelectorAll('span')].find(node => {
+          const ownText = [...node.childNodes]
+            .filter(child => child.nodeType === Node.TEXT_NODE)
+            .map(child => child.textContent)
+            .join('');
+          return node.querySelector(':scope > span') && normalize(ownText) === '—';
+        });
+        displayedDate = normalize(dateMarker?.querySelector(':scope > span')?.innerText) || null;
+        if (displayedDate && snippet.startsWith(`${displayedDate} —`)) {
+          snippet = normalize(snippet.slice(`${displayedDate} —`.length)) || null;
+        }
+        if (snippet) snippet = normalize(snippet.replace(/\s*Read more\s*$/i, '')) || null;
       }
-      if (snippet) snippet = normalize(snippet.replace(/\s*Read more\s*$/i, '')) || null;
     }
 
     results.push({
-      title: normalize(heading.innerText),
-      url: link.href,
+      title: normalize(candidate.heading.innerText),
+      url: candidate.link.href,
       snippet,
       displayed_date: displayedDate,
     });

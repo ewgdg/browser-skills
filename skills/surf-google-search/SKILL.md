@@ -23,7 +23,7 @@ surf-google-search --page 2 "latest Patchright documentation"
 surf-google-search --page 2 --page-count 2 "latest Patchright documentation"
 ```
 
-`--page` is one-based. `--page-count` accepts 1–3 and defaults to 1. One invocation processes one query and returns every unique primary organic result from the requested consecutive Google pages.
+`--page` is one-based. `--page-count` accepts 1–3 and defaults to 1. One invocation processes one query and returns every unique eligible result from the requested consecutive Google pages. Eligible results include standard organic records and visible, independently positioned rich result cards; hidden or nested answer sources and multi-link Google modules are excluded.
 
 Successful output contains `query`, requested/visited pages, ordered `results`, and `exhausted`. Each result contains one-based Search `page`, one-based page-local `position`, `title`, cleaned destination `url`, nullable `snippet`, and nullable `displayed_date`. Position gaps are intentional when a repeated destination is removed.
 

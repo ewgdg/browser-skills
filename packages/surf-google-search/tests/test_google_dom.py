@@ -98,6 +98,10 @@ def test_primary_organic_extraction_excludes_ads_and_answer_sources(browser: Bro
           <div data-snf data-sncf><a href="https://ai.example/source"><h3>AI source</h3></a></div>
         </div>
         <a href="https://answer.example/source"><h3>Featured answer source</h3></a>
+        <div data-rpos="4">
+          <a href="https://module.example/one"><h3>Module card one</h3></a>
+          <a href="https://module.example/two"><h3>Module card two</h3></a>
+        </div>
         <div role="navigation"><table role="presentation"><tr><td>
           <a id="pnnext" href="https://www.google.com/search?q=fixture&amp;start=10">Next</a>
         </td></tr></table></div>
@@ -112,6 +116,47 @@ def test_primary_organic_extraction_excludes_ads_and_answer_sources(browser: Bro
                 "url": "https://example.com/organic",
                 "snippet": "Useful description.",
                 "displayed_date": "Jun 23, 2026",
+            }
+        ],
+        "next_url": "https://www.google.com/search?q=fixture&start=10",
+    }
+
+
+def test_visible_top_level_rich_result_excludes_nested_answer_sources(
+    browser: Browser,
+) -> None:
+    observation = observe_fixture(
+        browser,
+        """
+        <div data-rpos="10">
+          <div data-q="Does Elon Musk have children?">
+            <a style="display:none" href="https://www.instyle.com/hidden-source">
+              <h3>Hidden answer source</h3>
+            </a>
+            <a href="https://nchstats.com/nested-source">
+              <h3>Nested answer source</h3>
+            </a>
+          </div>
+        </div>
+        <div data-rpos="16">
+          <div><a href="https://www.youtube.com/watch?v=cnb-uNTo28w">
+            <h3>Elon Musk Family Tree</h3>
+          </a></div>
+        </div>
+        <div role="navigation"><table role="presentation"><tr><td>
+          <a id="pnnext" href="https://www.google.com/search?q=fixture&amp;start=10">Next</a>
+        </td></tr></table></div>
+        """,
+    )
+
+    assert observation == {
+        "kind": "results",
+        "results": [
+            {
+                "title": "Elon Musk Family Tree",
+                "url": "https://www.youtube.com/watch?v=cnb-uNTo28w",
+                "snippet": None,
+                "displayed_date": None,
             }
         ],
         "next_url": "https://www.google.com/search?q=fixture&start=10",
