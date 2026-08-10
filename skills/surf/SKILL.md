@@ -207,7 +207,7 @@ Symptoms and fixes:
 
 ## Session cleanup
 
-Close temporary sessions when done:
+Dispose of every Surf Agent thread you opened before finishing the task:
 
 ```bash
 surf-agent --thread main close
