@@ -85,7 +85,12 @@ def build_parser() -> argparse.ArgumentParser:
     ask.add_argument("--retain", action="store_true")
     ask.add_argument("--pace", choices=("natural", "none"), default="natural")
     ask.add_argument("--allow-logged-out", action="store_true")
-    ask.add_argument("prompt", nargs="?", metavar="PROMPT")
+    ask.add_argument(
+        "prompt",
+        nargs="?",
+        metavar="PROMPT",
+        help="Prompt text. Omit PROMPT or use - to read stdin.",
+    )
 
     selection = subparsers.add_parser("selection", help="Run model-picker diagnostics.")
     selection_subparsers = selection.add_subparsers(

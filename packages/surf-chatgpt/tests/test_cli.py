@@ -165,12 +165,23 @@ def test_selection_inspect_dispatches_one_typed_request() -> None:
     ]
 
 
-def test_ask_uses_stdin_only_when_the_positional_prompt_is_absent() -> None:
-    _, _, _, stdin_lifecycle = invoke(["ask"], stdin="from stdin\n")
-    _, _, _, positional_lifecycle = invoke(["ask", "argument"], stdin="ignored")
+@pytest.mark.parametrize("argv", [["ask"], ["ask", "-"]])
+def test_ask_reads_stdin_when_prompt_is_absent_or_dash(argv: list[str]) -> None:
+    _, _, _, lifecycle = invoke(argv, stdin="from stdin\n")
 
-    assert stdin_lifecycle.calls[0][1] == AskRequest(prompt="from stdin\n", pace=Pace.NATURAL)
-    assert positional_lifecycle.calls[0][1] == AskRequest(prompt="argument", pace=Pace.NATURAL)
+    assert lifecycle.calls[0][1] == AskRequest(
+        prompt="from stdin\n",
+        pace=Pace.NATURAL,
+    )
+
+
+def test_ask_prefers_other_positional_prompts_over_stdin() -> None:
+    _, _, _, lifecycle = invoke(["ask", "argument"], stdin="ignored")
+
+    assert lifecycle.calls[0][1] == AskRequest(
+        prompt="argument",
+        pace=Pace.NATURAL,
+    )
 
 
 def test_ask_normalizes_addressing_and_all_specified_options_before_dispatch() -> None:
@@ -598,3 +609,13 @@ def test_help_remains_human_readable_and_emits_no_json() -> None:
     assert raised.value.code == 0
     assert output.getvalue().startswith("usage: surf-chatgpt")
     assert not output.getvalue().lstrip().startswith("{")
+
+
+def test_ask_help_explains_how_to_read_stdin() -> None:
+    output = io.StringIO()
+
+    with contextlib.redirect_stdout(output), pytest.raises(SystemExit) as raised:
+        cli.main(["ask", "--help"])
+
+    assert raised.value.code == 0
+    assert "Omit PROMPT or use - to read stdin." in output.getvalue()

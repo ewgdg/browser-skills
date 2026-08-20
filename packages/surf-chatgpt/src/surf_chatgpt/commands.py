@@ -88,7 +88,7 @@ def execute_command(
 
 
 def _ask_request(args: argparse.Namespace, stdin: IO[str]) -> AskRequest:
-    prompt = args.prompt if args.prompt is not None else stdin.read()
+    prompt = stdin.read() if args.prompt in (None, "-") else args.prompt
     if not prompt.strip():
         raise PublicError(PublicErrorType.EMPTY_PROMPT)
 

@@ -25,7 +25,7 @@ surf-chatgpt ask [--session ID_OR_URL | --thread SURF_THREAD]
                  [--model QUERY] [--thinking QUERY]
                  [--wait[=SECONDS]] [--retain]
                  [--pace natural|none] [--allow-logged-out]
-                 [PROMPT]
+                 [PROMPT|-]
 
 surf-chatgpt session current --thread SURF_THREAD
 surf-chatgpt session status  SESSION [--retain]
@@ -90,7 +90,13 @@ surf-chatgpt ask 'Review this design.'
 {"ok":true,"session":{"id":"abc123"}}
 ```
 
-Use stdin for multiline prompts. The positional prompt takes precedence when both are present.
+Use stdin for multiline prompts by omitting `PROMPT` or passing `-`:
+
+```bash
+printf 'Review this design.' | surf-chatgpt ask -
+```
+
+Any other positional prompt takes precedence over stdin.
 
 Bare `--wait` uses the default observation deadline. `--wait=SECONDS` requires a positive number and observes through the same result path used later:
 
