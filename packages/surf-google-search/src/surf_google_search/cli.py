@@ -56,22 +56,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--page", type=_positive_page, default=1, metavar="N")
     parser.add_argument("--page-count", type=_page_count, default=1, metavar="N")
     parser.add_argument("--thread", type=_thread, metavar="SURF_THREAD")
-    parser.add_argument("query", metavar="QUERY")
+    parser.add_argument(
+        "query",
+        metavar="QUERY",
+        help="Search query. Use - to read stdin.",
+    )
     return parser
 
 
 def main(
     argv: list[str] | None = None,
     *,
+    stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     stderr: IO[str] | None = None,
     lifecycle: SearchLifecycle | None = None,
 ) -> int:
+    input_stream = sys.stdin if stdin is None else stdin
     output_stream = sys.stdout if stdout is None else stdout
     _ = stderr
     try:
         args = build_parser().parse_args(argv)
-        query = args.query.strip()
+        query_input = input_stream.read() if args.query == "-" else args.query
+        query = query_input.strip()
         if not query:
             raise PublicError(PublicErrorType.INVALID_REQUEST)
         if lifecycle is None:

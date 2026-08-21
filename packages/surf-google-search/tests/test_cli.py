@@ -44,12 +44,14 @@ def invoke(
     argv: list[str],
     *,
     lifecycle: RecordingLifecycle | None = None,
+    stdin: str = "",
 ) -> tuple[int, dict[str, Any], str, RecordingLifecycle]:
     active_lifecycle = lifecycle or RecordingLifecycle()
     stdout = io.StringIO()
     stderr = io.StringIO()
     code = cli.main(
         argv,
+        stdin=io.StringIO(stdin),
         stdout=stdout,
         stderr=stderr,
         lifecycle=active_lifecycle,
@@ -66,6 +68,12 @@ def test_default_runtime_constructs_the_production_lifecycle(monkeypatch: pytest
 
     assert code == 0
     assert lifecycle.calls == [SearchRequest(query="query")]
+
+
+def test_dash_query_reads_stdin() -> None:
+    _, _, _, lifecycle = invoke(["-"], stdin="site:github.com patchright\n")
+
+    assert lifecycle.calls == [SearchRequest(query="site:github.com patchright")]
 
 
 def test_default_search_dispatches_one_typed_request_and_one_compact_json_object() -> None:
@@ -205,3 +213,7 @@ def test_invalid_search_requests_return_one_content_free_json_error(argv: list[s
     }
     assert stderr == ""
     assert lifecycle.calls == []
+
+
+def test_help_explains_how_to_read_stdin() -> None:
+    assert "Use - to read stdin." in cli.build_parser().format_help()

@@ -21,7 +21,10 @@ uv tool install \
 surf-google-search "latest Patchright documentation"
 surf-google-search --page 2 "latest Patchright documentation"
 surf-google-search --page 2 --page-count 2 "latest Patchright documentation"
+printf 'latest Patchright documentation\n' | surf-google-search -
 ```
+
+`QUERY` is required. Pass exact `-` to read it from stdin; omitting `QUERY` remains invalid.
 
 `--page` is one-based. `--page-count` accepts 1–3 and defaults to 1. One invocation processes one query and returns every unique eligible result from the requested consecutive Google pages. Eligible results include standard organic records and visible, independently positioned rich result cards; hidden or nested answer sources and multi-link Google modules are excluded.
 

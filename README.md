@@ -54,7 +54,10 @@ Skill payload lives under `skills/<skill>/`. Python packages live under `package
 ```bash
 surf-google-search "latest Patchright documentation"
 surf-google-search --page 2 --page-count 2 "latest Patchright documentation"
+printf 'latest Patchright documentation\n' | surf-google-search -
 ```
+
+Pass exact `-` as the required query to read it from stdin.
 
 Searches sharing one Surf profile run one at a time with randomized natural pacing. Standard organic and visible top-level rich results are included; ads, hidden or nested answer sources, and multi-link Google modules are excluded. Every result carries its Search page and one-based page-local position; duplicate destinations are removed only within one invocation without compacting those positions. A Google challenge preserves one browser thread and blocks queued searches from repeatedly navigating until the challenge is resolved or its page is closed.
 
