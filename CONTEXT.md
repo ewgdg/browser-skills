@@ -24,8 +24,6 @@ _Avoid_: Page offset, page limit
 **Displayed date** — The optional date label Google visibly associates with an organic result. It is preserved as shown and is not an independently verified publication date.
 _Avoid_: Publication date, inferred date
 
-**Abandonment** — An explicit user-authorized operation that stops an active response attempt when necessary, affirms the resulting state, and closes its browser thread.
-
 **Browser thread** — The live bridge address of one managed browser page. A thread is process-local page identity, not durable website identity.
 
 **Cookie import** — A one-way refresh that adds or updates selected cookies from a normal browser profile in the Surf profile. It does not remove cookies that exist only in Surf.
@@ -33,7 +31,5 @@ _Avoid_: Publication date, inferred date
 **Cookie source** — The explicitly configured normal browser profile from which Surf imports cookies.
 
 **Cookie scope** — The set of website domains whose cookies a cookie import may expose to Surf. A scope is either an explicit domain allowlist or explicit all-domain consent.
-
-**ChatGPT session** — A durable ChatGPT conversation identity represented by its canonical `https://chatgpt.com/c/<id>` URL. `surf-chatgpt` maps it to a deterministic browser thread when browser work is needed.
 
 **User-visible page** — A normal browser tab or window that may contain user work, whether or not Surf remembers it as a managed thread. Background targets and extension workers are not user-visible pages.

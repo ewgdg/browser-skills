@@ -6,7 +6,6 @@ Currently included:
 
 - `surf`: generic browser-control skill using an agent-owned one-tab window through `surf-agent`.
 - `surf-google-search`: retrieve compact structured organic results from rendered Google Search pages.
-- `surf-chatgpt`: consult logged-in web ChatGPT through browser automation.
 
 ## Install
 
@@ -23,18 +22,14 @@ uv tool install "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-s
 uv tool install \
   --with "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
   "surf-google-search @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-google-search"
-uv tool install \
-  --with "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
-  "surf-chatgpt @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-chatgpt"
 ```
 
-The site-specific CLIs depend on the latest available `surf-agent`.
+The Google Search CLI depends on the latest available `surf-agent`.
 
 ## Browser backends
 
 Patchright is Surf's default backend. `surf-google-search` honors the selected
-Patchright or AXI backend. `surf-chatgpt` supports only Patchright and rejects AXI
-before starting or inspecting a browser. Camoufox is not supported.
+Patchright or AXI backend. Camoufox is not supported.
 
 ## Develop
 
@@ -42,7 +37,6 @@ before starting or inspecting a browser. Camoufox is not supported.
 uv --directory packages/surf-agent run surf-agent --help
 uv --directory packages/surf-agent run python -m unittest discover -s tests
 uv run pytest packages/surf-google-search/tests
-uv --directory packages/surf-chatgpt run python -m unittest discover -s tests
 ```
 
 Skill payload lives under `skills/<skill>/`. Python packages live under `packages/<dist-name>/`.

@@ -9,7 +9,6 @@ resolution-markers = [
 [manifest]
 members = [
     "surf-agent",
-    "surf-chatgpt",
     "surf-google-search",
 ]
 
@@ -387,17 +386,6 @@ requires-dist = [
     { name = "tldextract", specifier = ">=5.3" },
 ]
 provides-extras = ["patchright"]
-
-[[package]]
-name = "surf-chatgpt"
-version = "0.1.0"
-source = { editable = "packages/surf-chatgpt" }
-dependencies = [
-    { name = "surf-agent" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "surf-agent", editable = "packages/surf-agent" }]
 
 [[package]]
 name = "surf-google-search"
