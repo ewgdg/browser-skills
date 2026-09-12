@@ -1,14 +1,14 @@
 """Agent-scoped surf wrapper."""
 
-__all__ = ["__version__", "Thread", "run_cli"]
+__all__ = ["__version__", "Snapshot", "Thread", "run_cli"]
 __version__ = "0.1.0"
 
 
 def __getattr__(name: str):
-    if name == "Thread":
-        from .thread import Thread
+    if name in {"Snapshot", "Thread"}:
+        from .thread import Snapshot, Thread
 
-        return Thread
+        return {"Snapshot": Snapshot, "Thread": Thread}[name]
     raise AttributeError(name)
 
 

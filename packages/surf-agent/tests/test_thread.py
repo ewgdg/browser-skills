@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import io
 
 import pytest
 
@@ -13,24 +14,26 @@ from surf_agent.thread import Thread
 class FakeBackend:
     snapshots: list[SnapshotCapture]
     opened: list[str]
+    close_status: int = 0
     closed: int = 0
+    capture_calls: int = 0
 
     def open(self, url: str) -> str:
         self.opened.append(url)
         return f"opened {url}"
 
     def capture_snapshot(self) -> SnapshotCapture:
+        self.capture_calls += 1
         return self.snapshots.pop(0)
 
     def close(self) -> int:
         self.closed += 1
-        return 0
+        return self.close_status
 
 
+@dataclass
 class FakeAgent:
-    def __init__(self, backend: FakeBackend) -> None:
-        self.browser_backend = backend
-        self.thread_names: list[str] = []
+    browser_backend: FakeBackend
 
 
 def capture(text: str, *, page_id: int = 1) -> SnapshotCapture:
@@ -44,53 +47,131 @@ def capture(text: str, *, page_id: int = 1) -> SnapshotCapture:
     )
 
 
-def test_acquire_creates_named_thread_and_open_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
+def use_backend(monkeypatch: pytest.MonkeyPatch, backend: FakeBackend) -> None:
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: FakeAgent(backend))
+
+
+def test_thread_constructs_named_context_and_open_delegates(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = FakeBackend([], [])
-    created: list[tuple[str, dict[str, object]]] = []
+    created: list[str] = []
 
-    class AgentFactory:
-        def __init__(self, *, thread: str, **kwargs: object) -> None:
-            created.append((thread, kwargs))
-            self.browser_backend = backend
+    def create_agent(name: str) -> FakeAgent:
+        created.append(name)
+        return FakeAgent(backend)
 
-    monkeypatch.setattr("surf_agent.thread.SurfAgent", AgentFactory)
+    monkeypatch.setattr("surf_agent.thread._create_agent", create_agent)
 
-    thread = Thread.acquire("research")
+    thread = Thread("research")
 
-    assert created == [("research", {})]
+    assert created == ["research"]
     assert thread.open("https://example.test") == "opened https://example.test"
     assert backend.opened == ["https://example.test"]
 
 
-def test_snapshot_returns_full_value_and_emit_returns_useful_diff() -> None:
-    baseline = "".join(f"stable line {index}\n" for index in range(220))
-    changed = baseline.replace("stable line 100", "changed line 100")
-    full = changed + "new line\n"
-    backend = FakeBackend([capture(baseline), capture(changed), capture(full)], [])
-    thread = Thread("research", agent=FakeAgent(backend))
+def test_snapshot_is_complete_typed_value_and_does_not_advance_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = capture("first\n")
+    second = capture("second\n")
+    backend = FakeBackend([first, second], [])
+    use_backend(monkeypatch, backend)
+    thread = Thread("research")
 
-    assert thread.snapshot() == baseline
-    emitted = thread.emit()
-    assert "+++ current" in emitted
-    assert "+changed line 100" in emitted
-    assert thread.emit(full=True) == full
+    thread.snapshot()  # silent observation must not become an emission baseline
+    observed = thread.snapshot()
+    output = io.StringIO()
+    thread.emit(observed, sink=output)
 
-
-def test_emit_without_baseline_returns_full_value() -> None:
-    backend = FakeBackend([capture("initial\n")], [])
-    thread = Thread("research", agent=FakeAgent(backend))
-
-    assert thread.emit() == "initial\n"
+    assert observed.text == second.text
+    assert output.getvalue() == second.text
+    assert backend.capture_calls == 2
 
 
-def test_close_delegates_to_browser_lifecycle() -> None:
+def test_last_emitted_snapshot_is_baseline_not_last_silent_capture(monkeypatch: pytest.MonkeyPatch) -> None:
+    emitted = capture("".join(f"stable line {index}\n" for index in range(220)))
+    silent = capture(emitted.text.replace("stable line 100", "silent change"))
+    next_emitted = capture(emitted.text.replace("stable line 101", "emitted change"))
+    backend = FakeBackend([silent, next_emitted], [])
+    use_backend(monkeypatch, backend)
+    thread = Thread("research")
+    first_output = io.StringIO()
+
+    thread.emit(emitted, sink=first_output)
+    thread.snapshot()
+    second_output = io.StringIO()
+    thread.emit(next_emitted, sink=second_output)
+
+    assert "+emitted change" in second_output.getvalue()
+    assert "silent change" not in second_output.getvalue()
+
+
+def test_emit_does_not_capture_and_explicit_full_establishes_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = capture("".join(f"stable line {index}\n" for index in range(220)))
+    second = capture(first.text.replace("stable line 100", "changed line 100"))
     backend = FakeBackend([], [])
-    thread = Thread("research", agent=FakeAgent(backend))
+    use_backend(monkeypatch, backend)
+    thread = Thread("research")
 
-    assert thread.close() is None
+    output = io.StringIO()
+    thread.emit(first, full=True, sink=output)
+    thread.emit(second, sink=output)
+
+    assert backend.capture_calls == 0
+    assert output.getvalue().startswith(first.text)
+    assert "+changed line 100" in output.getvalue()
+
+
+def test_output_failure_does_not_advance_baseline(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = capture("".join(f"stable line {index}\n" for index in range(220)))
+    second = capture(first.text.replace("stable line 100", "changed line 100"))
+    third = capture(first.text.replace("stable line 101", "third change"))
+    backend = FakeBackend([], [])
+    use_backend(monkeypatch, backend)
+    thread = Thread("research")
+    thread.emit(first, sink=io.StringIO())
+
+    class FailingSink:
+        def write(self, _value: str) -> int:
+            raise OSError("closed output")
+
+    with pytest.raises(OSError):
+        thread.emit(second, sink=FailingSink())
+    output = io.StringIO()
+    thread.emit(third, sink=output)
+
+    assert "+third change" in output.getvalue()
+    assert "changed line 100" not in output.getvalue()
+
+
+def test_navigation_clears_emission_baseline_and_handles_are_independent(monkeypatch: pytest.MonkeyPatch) -> None:
+    first = capture("".join(f"stable line {index}\n" for index in range(220)))
+    second = capture(first.text.replace("stable line 1", "new page line 1"), page_id=2)
+    first_backend = FakeBackend([], [])
+    second_backend = FakeBackend([], [])
+    backends = {"first": first_backend, "second": second_backend}
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda name: FakeAgent(backends[name]))
+    first_thread = Thread("first")
+    second_thread = Thread("second")
+    first_thread.emit(first, sink=io.StringIO())
+
+    first_thread.open("https://example.test/new")
+    output = io.StringIO()
+    first_thread.emit(second, sink=output)
+    independent = io.StringIO()
+    second_thread.emit(second, sink=independent)
+
+    assert output.getvalue() == second.text
+    assert independent.getvalue() == second.text
+
+
+def test_close_raises_on_backend_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = FakeBackend([], [], close_status=1)
+    use_backend(monkeypatch, backend)
+    thread = Thread("research")
+
+    with pytest.raises(SurfAgentError, match="close"):
+        thread.close()
     assert backend.closed == 1
 
 
-def test_acquire_rejects_unsafe_thread_names() -> None:
+def test_thread_rejects_unsafe_names(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SurfAgentError):
-        Thread.acquire("../shared")
+        Thread("../shared")
