@@ -24,7 +24,7 @@ _Avoid_: Page offset, page limit
 **Displayed date** — The optional date label Google visibly associates with an organic result. It is preserved as shown and is not an independently verified publication date.
 _Avoid_: Publication date, inferred date
 
-**Browser thread** — The live bridge address of one managed browser page. A thread is process-local page identity, not durable website identity.
+**Browser thread** — A named browser interaction context managed by Surf, presented as a window or tab. The thread is the caller's unit of browser interaction and ownership, not the underlying browser page identifier or bridge address.
 
 **Cookie import** — A one-way refresh that adds or updates selected cookies from a normal browser profile in the Surf profile. It does not remove cookies that exist only in Surf.
 
