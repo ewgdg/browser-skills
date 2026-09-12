@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import io
+from pathlib import Path
 
 import pytest
 
+from surf_agent.backends.local_bridge import LocalBridgeBackend
 from surf_agent.cli import SnapshotCapture
 from surf_agent.errors import SurfAgentError
 from surf_agent.thread import Thread
@@ -29,6 +31,9 @@ class FakeBackend:
     def close(self) -> int:
         self.closed += 1
         return self.close_status
+
+    def close_silently(self) -> int:
+        return self.close()
 
 
 @dataclass
@@ -170,6 +175,36 @@ def test_close_raises_on_backend_failure(monkeypatch: pytest.MonkeyPatch) -> Non
     with pytest.raises(SurfAgentError, match="close"):
         thread.close()
     assert backend.closed == 1
+
+
+def test_close_is_silent_through_real_local_backend(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+    class StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def call_tool(self, name: str, args: dict[str, object]) -> str:
+            self.calls.append((name, args))
+            return "closed by bridge\n"
+
+    class Agent:
+        state_file = Path("research.json")
+
+    client = StubClient()
+    agent = Agent()
+    agent.stub_client = client
+    backend = LocalBridgeBackend(agent, client=client, welcome_url=lambda: "about:blank")
+    backend.client_attr = "stub_client"
+    backend.display_name = "Stub"
+    agent.browser_backend = backend
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
+
+    Thread("research").close()
+
+    assert client.calls == [("close", {"thread": "research"})]
+    assert capsys.readouterr().out == ""
+
+    backend.close()
+    assert capsys.readouterr().out == "closed by bridge\n"
 
 
 def test_thread_rejects_unsafe_names(monkeypatch: pytest.MonkeyPatch) -> None:

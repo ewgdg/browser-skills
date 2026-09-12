@@ -171,6 +171,9 @@ class AxiBackend:
     def close(self) -> int:
         return self._close_remembered_axi_page()
 
+    def close_silently(self) -> int:
+        return self.close()
+
     def focus(self) -> int:
         page = self._require_current_axi_page()
         return self._select_axi_page(page.page_id, bring_to_front=True).returncode

@@ -20,7 +20,7 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 1. Establish `Thread` as the public interaction seam and cover behavior at that seam (complete for the first slice).
 2. Move remaining browser actions behind object methods without CLI parsing or print capture.
 3. Inventory and migrate all skill workflows before removing the action-command entrypoint: backend setup/default selection, manual login/unblock, profile open/show, cookie-source configuration and import, bridge stop/cleanup, and thread cleanup.
-4. Migrate `surf-google-search` consumers from CLI subprocess calls to the object interface (preserving its one-thread-at-a-time coordination and challenge handling), then remove obsolete command parsing.
+4. Migrate `surf-google-search` consumers from its direct `SurfAgent` dependency (`execute_in_window`, `print_state` with stdout redirection, and `close`) to the object interface (preserving its one-thread-at-a-time coordination and challenge handling), then remove obsolete command parsing.
 5. Add a thin skill-local launcher that installs a commit-pinned Git dependency and executes ordinary Python from file/stdin.
 6. Update skill instructions and installation/release documentation; only pin published/reachable commits.
 
@@ -37,13 +37,14 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 
 ## Surprises & discoveries
 - Existing `SurfAgent` already centralizes backend selection, lifecycle startup, profile safety, and snapshot diff gating. The new interface can stay small by delegating to those seams.
+- `surf-google-search` does not shell out to the CLI today; `SurfBrowserPagePort` directly calls `SurfAgent.execute_in_window`, redirects stdout for `print_state`, and redirects stdout around `close`.
 - Existing `capture_snapshot` returns metadata plus text (`SnapshotCapture`), allowing diff identity/origin safeguards without exposing metadata in the public value.
 
 ## Decisions
 - `snapshot()` returns an immutable `Snapshot` value (the existing `SnapshotCapture` shape, including identity metadata) and never changes emission state.
 - `emit(snapshot, full=False, sink=None)` writes the already captured value/diff and never recaptures. Its baseline is the last successfully emitted snapshot; baseline advances only after a successful write.
 - `open()` clears the emission baseline because navigation changes page identity/content. A new handle has independent in-memory state.
-- `close()` returns `None` on status 0/None and raises `SurfAgentError` for nonzero backend status.
+- `close()` uses the backend's silent close seam, returns `None` on status 0/None, and raises `SurfAgentError` for nonzero backend status. The CLI-facing backend close method retains its existing formatted output.
 
 ## Outcomes & remaining gates
 The first tested vertical slice is implemented and corrected to separate capture from emission. Remaining work is the staged action-method migration, setup/login/profile/cookie workflow migration, `surf-google-search` consumer migration, CLI removal, launcher, skill migration, and distribution release gate; none are part of this slice.

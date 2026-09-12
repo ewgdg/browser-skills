@@ -58,7 +58,7 @@ class Thread:
 
     def close(self) -> None:
         """Close this thread's managed browser page."""
-        status = self._agent.browser_backend.close()
+        status = self._agent.browser_backend.close_silently()
         if status not in (None, 0):
             raise SurfAgentError(f"close failed for thread {self.name}: backend returned status {status}")
         self._baseline = None

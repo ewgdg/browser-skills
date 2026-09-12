@@ -195,9 +195,16 @@ class LocalBridgeBackend:
         print(self.client.call_tool("list", {}), end="")
 
     def close(self) -> int:
-        output = self._call("close")
+        output = self.close_page()
         self._print_output(output)
         return 0
+
+    def close_silently(self) -> int:
+        self.close_page()
+        return 0
+
+    def close_page(self) -> str:
+        return self._call("close")
 
     def focus(self) -> int:
         output = self._call("focus")
