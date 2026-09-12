@@ -28,4 +28,6 @@ finally:
 - `thread.emit(snapshot, full=False, sink=None) -> None` writes an already captured observation to `sink` (stdout by default), without recapturing. Automatic emission compares against the last successfully emitted snapshot; before one exists it writes the full value. `full=True` always writes the complete value. The baseline advances only after a successful write.
 - `thread.close() -> None` closes the managed page and raises `SurfAgentError` if the backend reports a nonzero status.
 
+Emission baselines belong to the handle, not persistent thread storage. Reacquiring the same named thread in another script retains the browser context but starts with full output. Use a separate handle for each observation consumer rather than sending dependent diffs to unrelated destinations.
+
 This is intentionally a bounded first vertical slice. Other browser actions remain on the existing staged implementation until their object methods and tests are ready. Interpreter persistence, CLI replacement, and the skill-local file/stdin launcher are planned but not implemented yet. The launcher will use a commit-pinned Git dependency only after that commit is reachable; release pinning is an explicit gate.
