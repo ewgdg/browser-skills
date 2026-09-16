@@ -1,5 +1,7 @@
 # Surf Python replacement
 
+Tracking issue: [#21 — Replace Surf command CLI with a Python-first skill and Thread handles](https://github.com/ewgdg/browser-skills/issues/21). Keep the issue open until installation, skill migration, and CLI removal are verified; implementation slices are not completion.
+
 ## Goal
 Replace the action-command `surf-agent` CLI with a small importable Python interface. Keep browser lifecycle and backend implementations behind a deep module interface; a thin skill-local launcher will later provide file/stdin execution for ordinary Python scripts.
 
