@@ -27,7 +27,7 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 ## Validation
 - Current slice: targeted Thread and Google browser-port tests plus existing backend/lifecycle tests.
 - Tests fail fast and observe only `Thread`'s public interface; fakes stand in for the existing backend seam.
-- Independent verification: `uv run --package surf-agent pytest -q packages/surf-agent/tests/test_thread.py packages/surf-agent/tests/test_chrome_lifecycle.py packages/surf-agent/tests/test_cli.py` passed (130 tests, 28 subtests). Ruff on changed Python files and `git diff --check` passed.
+- Independent verification: targeted Thread/CLI/Google browser-port/search-lifecycle tests passed (146 tests, 28 subtests); Ruff and `git diff --check` passed.
 - A real Patchright/Chrome smoke run used a unique thread and a local HTTP page: open, capture, emit, observe a dynamic page change, emit a diff, request full output, and close. Complete text was 8,103 characters; incremental output was 306 characters. This is one character-count observation, not a model-token benchmark. Cleanup removed the smoke thread state.
 - Full suite only after the staged replacement is complete.
 
@@ -42,6 +42,7 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 - `surf-google-search` does not shell out to the CLI today; `SurfBrowserPagePort` directly calls `SurfAgent.execute_in_window`, redirects stdout for `print_state`, and redirects stdout around `close`.
 - Existing `capture_snapshot` returns metadata plus text (`SnapshotCapture`), allowing diff identity/origin safeguards while `.text` remains the complete accessibility text.
 - The object consumer can query `is_open()` without starting a missing bridge; evaluation decoding now stays in backend implementations.
+- `SurfBrowserPagePort` now depends on Thread-shaped methods and accepts decoded Python evaluation values; its remaining JSON handling is backend-neutral nested serialization handling.
 
 ## Decisions
 - `snapshot()` returns an immutable `Snapshot` value (the existing `SnapshotCapture` shape, including identity metadata) and never changes emission state.
