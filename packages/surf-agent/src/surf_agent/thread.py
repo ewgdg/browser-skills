@@ -37,7 +37,11 @@ class Thread:
         return self._agent.browser_backend.open(url)
 
     def is_open(self) -> bool:
-        """Return whether this thread is already open without starting a backend."""
+        """Return managed-open state without starting a backend.
+
+        AXI reports remembered local state; local bridge backends query only a
+        running bridge. Neither path creates a missing browser window.
+        """
         return self._agent.browser_backend.is_open()
 
     def click(self, target: str) -> str:
@@ -61,10 +65,10 @@ class Thread:
         if isinstance(target, int):
             if target < 0:
                 raise ValueError("wait milliseconds must not be negative")
-            return self._agent.browser_backend.wait(str(target))
+            return self._agent.browser_backend.wait_ms(target)
         if not isinstance(target, str) or not target:
             raise ValueError("wait text target must not be empty")
-        return self._agent.browser_backend.wait(target)
+        return self._agent.browser_backend.wait_for_text(target)
 
     def back(self) -> str:
         self._baseline = None

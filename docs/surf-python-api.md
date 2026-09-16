@@ -27,10 +27,10 @@ finally:
 
 - `Thread(name="default") -> Thread` creates the named context using the existing Surf backend and browser lifecycle setup. `name` must be a safe thread name.
 - `thread.open(url) -> str` navigates the context's page and returns backend navigation output. Navigation starts a fresh emission baseline.
-- `thread.is_open() -> bool` checks managed state without starting a bridge or opening a missing window.
+- `thread.is_open() -> bool` checks managed-open state without starting a bridge or opening a missing window. AXI uses remembered local state; the local bridge queries only a running bridge.
 - `thread.click(target) -> str`, `thread.fill(target, text) -> str`, `thread.type_text(text) -> str`, and `thread.press(key) -> str` perform interaction actions using backend targets/keys.
 - `thread.scroll(direction) -> str` accepts `up`, `down`, `top`, or `bottom`.
-- `thread.wait(target) -> str` accepts an integer number of milliseconds or a non-empty visible-text string; it does not infer between the two.
+- `thread.wait(target) -> str` accepts an integer number of milliseconds or a non-empty visible-text string; it does not infer between the two. Numeric strings remain text. AXI requires its running bridge for numeric visible-text waits because its legacy CLI duration syntax is ambiguous.
 - `thread.back() -> str` navigates back and starts a fresh emission baseline. `thread.text() -> str` returns visible body text.
 - `thread.screenshot(path, full_page=False) -> str` saves a viewport or full-page screenshot.
 - `thread.evaluate(code) -> object` returns the browser's decoded JavaScript result as a Python value (including nested objects/arrays, strings, numbers, booleans, and null).

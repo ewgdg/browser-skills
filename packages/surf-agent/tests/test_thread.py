@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from surf_agent.backends.local_bridge import LocalBridgeBackend
+from surf_agent.backends.axi import parse_axi_eval_value
 from surf_agent.cli import SnapshotCapture
 from surf_agent.errors import SurfAgentError
 from surf_agent.thread import Thread
@@ -221,7 +222,7 @@ def test_actions_use_real_local_backend_without_stdout(monkeypatch: pytest.Monke
         def call_tool(self, name: str, args: dict[str, object]) -> str:
             self.calls.append((name, args))
             if name == "eval":
-                return '{"ready": true}\n'
+                return json.dumps({"ready": True}) + "\n"
             return f"{name} ok\n"
 
         def call_tool_if_running(self, name: str, args: dict[str, object]) -> str | None:
@@ -262,6 +263,107 @@ def test_actions_use_real_local_backend_without_stdout(monkeypatch: pytest.Monke
     assert client.calls[6][1]["target"] == 250
     assert client.calls[7][1]["target"] == "Loaded"
     assert capsys.readouterr().out == ""
+
+
+def test_wait_string_that_looks_numeric_is_text_not_duration(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def call_tool(self, name: str, args: dict[str, object]) -> str:
+            self.calls.append((name, args))
+            return "waited\n"
+
+    class Agent:
+        state_file = tmp_path / "research.json"
+
+    client = StubClient()
+    agent = Agent()
+    agent.stub_client = client
+    backend = LocalBridgeBackend(agent, client=client, welcome_url=lambda: "about:blank")
+    backend.client_attr = "stub_client"
+    backend.display_name = "Stub"
+    agent.browser_backend = backend
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
+
+    Thread("research").wait("123")
+
+    assert client.calls == [("wait", {"thread": "research", "target": "123"})]
+
+
+def test_evaluate_preserves_scalar_string_types_and_rejects_malformed_local_value(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    values = iter([json.dumps("123"), json.dumps("true"), json.dumps("null"), json.dumps({"x": 1}), "not-json"])
+
+    class StubClient:
+        def call_tool(self, name: str, args: dict[str, object]) -> str:
+            return next(values) + "\n"
+
+    class Agent:
+        state_file = tmp_path / "research.json"
+
+    client = StubClient()
+    agent = Agent()
+    agent.stub_client = client
+    backend = LocalBridgeBackend(agent, client=client, welcome_url=lambda: "about:blank")
+    backend.client_attr = "stub_client"
+    backend.display_name = "Stub"
+    agent.browser_backend = backend
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
+    thread = Thread("research")
+
+    assert thread.evaluate("1") == "123"
+    assert thread.evaluate("2") == "true"
+    assert thread.evaluate("3") == "null"
+    assert thread.evaluate("4") == {"x": 1}
+    with pytest.raises(SurfAgentError, match="invalid"):
+        thread.evaluate("5")
+
+
+def test_malformed_local_state_is_not_treated_as_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class StubClient:
+        def call_tool_if_running(self, name: str, args: dict[str, object]) -> str:
+            return "not-json"
+
+    class Agent:
+        state_file = tmp_path / "research.json"
+
+    client = StubClient()
+    agent = Agent()
+    agent.stub_client = client
+    backend = LocalBridgeBackend(agent, client=client, welcome_url=lambda: "about:blank")
+    backend.client_attr = "stub_client"
+    backend.display_name = "Stub"
+    agent.browser_backend = backend
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
+
+    with pytest.raises(SurfAgentError, match="invalid state"):
+        Thread("research").is_open()
+
+
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        ('result: "123"\n', "123"),
+        ('result: "true"\n', "true"),
+        ('result: "null"\n', "null"),
+        ('result: {"x": 1}\n', {"x": 1}),
+        ("result: true\n", True),
+        ("result: null\n", None),
+    ],
+)
+def test_axi_eval_value_decodes_transport_once(output: str, expected: object) -> None:
+    assert parse_axi_eval_value(output) == expected
+
+
+def test_axi_eval_value_rejects_malformed_transport() -> None:
+    with pytest.raises(SurfAgentError, match="invalid AXI evaluation"):
+        parse_axi_eval_value("not an AXI result")
 
 
 def test_is_open_does_not_start_missing_local_bridge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

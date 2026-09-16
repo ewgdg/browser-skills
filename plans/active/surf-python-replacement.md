@@ -43,6 +43,8 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 - Existing `capture_snapshot` returns metadata plus text (`SnapshotCapture`), allowing diff identity/origin safeguards while `.text` remains the complete accessibility text.
 - The object consumer can query `is_open()` without starting a missing bridge; evaluation decoding now stays in backend implementations.
 - `SurfBrowserPagePort` now depends on Thread-shaped methods and accepts decoded Python evaluation values; its remaining JSON handling is backend-neutral nested serialization handling.
+- Typed waits now use separate duration/text backend seams, preserving numeric strings as text; AXI rejects numeric-text fallback when its bridge is unavailable rather than silently treating it as milliseconds.
+- Malformed local state/evaluation transport raises `SurfAgentError` instead of being converted to a closed state or raw string.
 
 ## Decisions
 - `snapshot()` returns an immutable `Snapshot` value (the existing `SnapshotCapture` shape, including identity metadata) and never changes emission state.
@@ -50,6 +52,8 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 - `open()` clears the emission baseline because navigation changes page identity/content. A new handle has independent in-memory state.
 - Baselines are handle-local, not persisted across script invocations. Use one handle per observation consumer; a fresh handle starts with full output.
 - `close()` uses the backend's silent close seam, returns `None` on status 0/None, and raises `SurfAgentError` for nonzero backend status. The CLI-facing backend close method retains its existing formatted output.
+- `wait(int)` means milliseconds and `wait(str)` means visible text. Backend adapters expose separate typed seams; the staged CLI's string conversion remains unchanged.
+- `evaluate()` returns transport-decoded Python values without coercing string scalars; malformed transport is an error.
 
 ## Outcomes & remaining gates
-The first two tested slices are implemented: capture/emission and object actions plus the Google consumer migration. Remaining work is setup/login/profile/cookie workflow migration, CLI removal, launcher, skill migration, and distribution release gate; none are part of this slice.
+The first two tested slices plus contract hardening are implemented: capture/emission, object actions/Google consumer migration, and typed wait/evaluation/state semantics. Remaining work is setup/login/profile/cookie workflow migration, CLI removal, launcher, skill migration, and distribution release gate; none are part of this slice.

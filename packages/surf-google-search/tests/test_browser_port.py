@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 
 import pytest
@@ -87,7 +86,7 @@ def test_surf_adapter_preserves_more_than_ten_observed_results() -> None:
     assert len(observation.results) == 11
 
 
-def test_surf_adapter_parses_nested_serialized_evaluation() -> None:
+def test_surf_adapter_consumes_typed_evaluation_value() -> None:
     payload = {
         "kind": "exhausted",
         "results": [],
@@ -97,7 +96,7 @@ def test_surf_adapter_parses_nested_serialized_evaluation() -> None:
     class AxiAgent(FakeSurfAgent):
         def evaluate(self, code: str) -> object:
             self.calls.append(["eval", code])
-            return json.dumps(payload, separators=(",", ":"))
+            return payload
 
     browser = SurfBrowserPagePort(agent_factory=lambda thread: AxiAgent(payload))
 

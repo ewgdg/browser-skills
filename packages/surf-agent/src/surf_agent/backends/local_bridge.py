@@ -200,8 +200,10 @@ class LocalBridgeBackend:
             return False
         try:
             data = json.loads(output)
-        except json.JSONDecodeError:
-            return False
+        except json.JSONDecodeError as exc:
+            raise SurfAgentError(f"{self.display_name} bridge returned invalid state JSON") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("open"), bool):
+            raise SurfAgentError(f"{self.display_name} bridge returned invalid state JSON")
         return isinstance(data, dict) and data.get("open") is True
 
     def close(self) -> int:
@@ -281,6 +283,12 @@ class LocalBridgeBackend:
         value: str | int = int(target) if target.isdigit() else target
         return self._call("wait", {"target": value})
 
+    def wait_ms(self, milliseconds: int) -> str:
+        return self._call("wait", {"target": milliseconds})
+
+    def wait_for_text(self, text: str) -> str:
+        return self._call("wait", {"target": text})
+
     def back(self) -> str:
         return self._call("back")
 
@@ -294,8 +302,8 @@ class LocalBridgeBackend:
         output = self.evaluate(code)
         try:
             return json.loads(output)
-        except json.JSONDecodeError:
-            return output.rstrip("\n")
+        except json.JSONDecodeError as exc:
+            raise SurfAgentError(f"{self.display_name} bridge returned invalid evaluation JSON") from exc
 
     def _call(self, name: str, payload: dict[str, Any] | None = None) -> str:
         return self.client.call_tool(name, {"thread": self.agent.state_file.stem, **(payload or {})})

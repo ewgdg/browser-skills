@@ -270,6 +270,20 @@ class AxiBackend:
     def wait(self, target: str) -> str:
         return self._run_current(["wait", target])
 
+    def wait_ms(self, milliseconds: int) -> str:
+        return self._run_current(["wait", str(milliseconds)])
+
+    def wait_for_text(self, text: str) -> str:
+        if text.isdigit():
+            try:
+                self.agent.bridge_client.call_tool("wait_for", {"text": [text]})
+            except AxiBridgeUnavailable as exc:
+                raise SurfAgentError(
+                    "AXI cannot wait for numeric visible text when its bridge is unavailable"
+                ) from exc
+            return f"waited: {text}\n"
+        return self._run_current(["wait", text])
+
     def back(self) -> str:
         return self._run_current(["back"])
 
@@ -283,7 +297,7 @@ class AxiBackend:
         return self._run_current(["eval", code])
 
     def evaluate_value(self, code: str) -> Any:
-        return parse_axi_eval_string(self.evaluate(code))
+        return parse_axi_eval_value(self.evaluate(code))
 
     def _run_current(self, axi_args: Sequence[str]) -> str:
         self._require_current_axi_page()
@@ -712,6 +726,19 @@ def parse_axi_eval_string(output: str) -> Any:
             value = decoded
         return value
     return None
+
+
+def parse_axi_eval_value(output: str) -> Any:
+    """Decode one AXI result transport payload without coercing strings."""
+    for line in output.splitlines():
+        if not line.strip().lower().startswith("result:"):
+            continue
+        raw = line.split(":", 1)[1].strip()
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise SurfAgentError("invalid AXI evaluation result") from exc
+    raise SurfAgentError("invalid AXI evaluation result")
 
 
 def parse_axi_user_visible_pages(output: str) -> list[AgentPage]:

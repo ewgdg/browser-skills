@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -87,8 +86,8 @@ class SurfBrowserPagePort:
         except SurfAgentError as error:
             raise BrowserUnavailable from error
         try:
-            return _parse_observation(_decode_evaluation(raw))
-        except (json.JSONDecodeError, TypeError, ValueError, KeyError) as error:
+            return _parse_observation(raw)
+        except (TypeError, ValueError, KeyError) as error:
             raise PageObservationError("browser returned an invalid Search page observation") from error
 
     def close(self, thread: str) -> None:
@@ -119,21 +118,6 @@ def selected_surf_profile_path() -> Path:
 
 def _create_surf_agent(thread: str) -> SurfAgentPort:
     return Thread(thread)
-
-
-def _decode_evaluation(raw: Any) -> Any:
-    if not isinstance(raw, str):
-        return raw
-    try:
-        value = json.loads(raw)
-        if not isinstance(value, str):
-            return value
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return value
-    except json.JSONDecodeError:
-        return raw
 
 
 def _parse_observation(value: Any) -> SearchPageObservation:
@@ -171,17 +155,16 @@ def _parse_observation(value: Any) -> SearchPageObservation:
 GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
 (() => {
   const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
-  const serialize = value => JSON.stringify(value);
   const hostname = location.hostname.toLowerCase();
   const challenge = hostname === 'consent.google.com'
     || location.pathname.startsWith('/sorry')
     || Boolean(document.querySelector('#captcha-form, input[name="captcha"], iframe[src*="recaptcha"], form[action*="/sorry/"]'));
-  if (challenge) return serialize({kind: 'human_intervention', results: [], next_url: null});
+  if (challenge) return {kind: 'human_intervention', results: [], next_url: null};
 
   const isGoogleSearch = (hostname === 'google.com' || hostname === 'www.google.com')
     && location.pathname === '/search';
   const searchShell = document.querySelector('textarea[name="q"], input[name="q"]');
-  if (!isGoogleSearch || !searchShell) return serialize({kind: 'unknown', results: [], next_url: null});
+  if (!isGoogleSearch || !searchShell) return {kind: 'unknown', results: [], next_url: null};
 
   const candidateGroups = new Map();
   for (const heading of document.querySelectorAll('a h3')) {
@@ -207,7 +190,7 @@ GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
   for (const [container, candidates] of candidateGroups) {
     const standardCandidates = candidates.filter(candidate => candidate.metadata);
     if (standardCandidates.length > 1) {
-      return serialize({kind: 'unknown', results: [], next_url: null});
+      return {kind: 'unknown', results: [], next_url: null};
     }
     // A multi-link rich module is not one independently positioned result card.
     const candidate = standardCandidates[0] || (candidates.length === 1 ? candidates[0] : null);
@@ -248,17 +231,17 @@ GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
   const pagination = [...document.querySelectorAll('div[role="navigation"]')]
     .find(node => node.querySelector('table[role="presentation"]'));
   if (results.length && (nextUrl || pagination)) {
-    return serialize({kind: 'results', results, next_url: nextUrl});
+    return {kind: 'results', results, next_url: nextUrl};
   }
   if (results.length) {
-    return serialize({kind: 'unknown', results: [], next_url: null});
+    return {kind: 'unknown', results: [], next_url: null};
   }
 
   // Generic top/bottom text also hosts corrections and modules; require the no-results card.
   const noResults = document.querySelector(
     '#botstuff .mnr-c .JPMJ2c > p[role="heading"]'
   );
-  if (noResults) return serialize({kind: 'exhausted', results: [], next_url: null});
-  return serialize({kind: 'unknown', results: [], next_url: null});
+  if (noResults) return {kind: 'exhausted', results: [], next_url: null};
+  return {kind: 'unknown', results: [], next_url: null};
 })()
 """.strip()
