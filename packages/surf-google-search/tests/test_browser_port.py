@@ -87,7 +87,7 @@ def test_surf_adapter_preserves_more_than_ten_observed_results() -> None:
     assert len(observation.results) == 11
 
 
-def test_surf_adapter_parses_axi_evaluation_envelope() -> None:
+def test_surf_adapter_parses_nested_serialized_evaluation() -> None:
     payload = {
         "kind": "exhausted",
         "results": [],
@@ -97,8 +97,7 @@ def test_surf_adapter_parses_axi_evaluation_envelope() -> None:
     class AxiAgent(FakeSurfAgent):
         def evaluate(self, code: str) -> object:
             self.calls.append(["eval", code])
-            encoded = json.dumps(json.dumps(payload, separators=(",", ":")))
-            return f"Result: {encoded}\n"
+            return json.dumps(payload, separators=(",", ":"))
 
     browser = SurfBrowserPagePort(agent_factory=lambda thread: AxiAgent(payload))
 

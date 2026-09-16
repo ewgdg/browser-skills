@@ -7,7 +7,6 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, Protocol
 
-from surf_agent.backends.axi import parse_axi_eval_json
 from surf_agent.errors import SurfAgentError
 from surf_agent import Thread
 
@@ -127,12 +126,14 @@ def _decode_evaluation(raw: Any) -> Any:
         return raw
     try:
         value = json.loads(raw)
-        return json.loads(value) if isinstance(value, str) else value
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value
     except json.JSONDecodeError:
-        value = parse_axi_eval_json(raw)
-        if value is None:
-            raise
-        return value
+        return raw
 
 
 def _parse_observation(value: Any) -> SearchPageObservation:
