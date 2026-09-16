@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 
 import pytest
@@ -37,7 +36,7 @@ def observe_fixture(browser: Browser, body: str) -> dict[str, object]:
     )
     page.goto("https://www.google.com/search?q=fixture&start=0&num=10")
     try:
-        return json.loads(page.evaluate(GOOGLE_PAGE_OBSERVATION_SCRIPT))
+        return page.evaluate(GOOGLE_PAGE_OBSERVATION_SCRIPT)
     finally:
         page.close()
 
