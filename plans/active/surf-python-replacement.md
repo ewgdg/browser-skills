@@ -39,10 +39,10 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 
 ## Surprises & discoveries
 - Existing `SurfAgent` already centralizes backend selection, lifecycle startup, profile safety, and snapshot diff gating. The new interface can stay small by delegating to those seams.
-- `surf-google-search` does not shell out to the CLI today; `SurfBrowserPagePort` directly calls `SurfAgent.execute_in_window`, redirects stdout for `print_state`, and redirects stdout around `close`.
+- Before migration, `surf-google-search` called `SurfAgent.execute_in_window` directly and redirected stdout around `print_state` and `close`; it did not shell out to the CLI.
 - Existing `capture_snapshot` returns metadata plus text (`SnapshotCapture`), allowing diff identity/origin safeguards while `.text` remains the complete accessibility text.
 - The object consumer can query `is_open()` without starting a missing bridge; evaluation decoding now stays in backend implementations.
-- `SurfBrowserPagePort` now depends on Thread-shaped methods and accepts decoded Python evaluation values; its remaining JSON handling is backend-neutral nested serialization handling.
+- `SurfBrowserPagePort` now depends on Thread-shaped methods and accepts decoded Python evaluation values. Its observation script returns objects directly; the old nested JSON decoding is removed.
 - Typed waits now use separate duration/text backend seams, preserving numeric strings as text; AXI rejects numeric-text fallback when its bridge is unavailable rather than silently treating it as milliseconds.
 - Malformed local state/evaluation transport raises `SurfAgentError` instead of being converted to a closed state or raw string.
 
@@ -57,3 +57,9 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 
 ## Outcomes & remaining gates
 The first two tested slices plus contract hardening are implemented: capture/emission, object actions/Google consumer migration, and typed wait/evaluation/state semantics. Remaining work is setup/login/profile/cookie workflow migration, CLI removal, launcher, skill migration, and distribution release gate; none are part of this slice.
+
+### Second-slice independent validation (2026-09-16)
+- Thread, existing CLI, lifecycle, and all Google Search tests: **191 passed, 1 skipped, 28 subtests passed**. The skipped test is the opt-in live Google test; DOM fixture tests ran. Changed-file Ruff and diff checks passed.
+- Real Chrome with a local fixture passed thread reattachment/state, native-ref fill/click, typing/keys, text/duration waits, full observations, automatic diffs, typed evaluation, scrolling, screenshots, navigation, and silent cleanup. A 7,448-character complete observation emitted a 523-character diff; this is not a model-token benchmark.
+- AXI bridge-transport tests exposed and fixed numeric-text waits skipping owned-page selection and typed evaluation dropping multiline JSON. No real AXI browser was exercised.
+- **Open validation gap:** the first smoke timed out after 15 seconds in the existing Patchright `go_back(wait_until="domcontentloaded")` path. Immediate cleanup was blocked while that operation occupied the bridge; a subsequent close succeeded. The passing smoke excluded back-navigation. No navigation-runtime fix was included; diagnose separately before treating back-navigation as live-validated.
