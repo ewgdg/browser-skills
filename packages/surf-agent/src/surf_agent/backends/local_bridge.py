@@ -194,6 +194,16 @@ class LocalBridgeBackend:
     def print_list(self) -> None:
         print(self.client.call_tool("list", {}), end="")
 
+    def is_open(self) -> bool:
+        output = self.client.call_tool_if_running("state", {"thread": self.agent.state_file.stem})
+        if output is None:
+            return False
+        try:
+            data = json.loads(output)
+        except json.JSONDecodeError:
+            return False
+        return isinstance(data, dict) and data.get("open") is True
+
     def close(self) -> int:
         output = self.close_page()
         self._print_output(output)
@@ -279,6 +289,13 @@ class LocalBridgeBackend:
 
     def evaluate(self, code: str) -> str:
         return self._call("eval", {"code": code})
+
+    def evaluate_value(self, code: str) -> Any:
+        output = self.evaluate(code)
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError:
+            return output.rstrip("\n")
 
     def _call(self, name: str, payload: dict[str, Any] | None = None) -> str:
         return self.client.call_tool(name, {"thread": self.agent.state_file.stem, **(payload or {})})

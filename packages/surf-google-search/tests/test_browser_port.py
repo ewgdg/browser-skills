@@ -18,19 +18,20 @@ class FakeSurfAgent:
     calls: list[list[str]] = field(default_factory=list)
     close_calls: int = 0
 
-    def execute_in_window(self, args: list[str]) -> str:
-        self.calls.append(args)
-        if args[0] == "eval":
-            return json.dumps(self.evaluation)
+    def is_open(self) -> bool:
+        self.calls.append(["is_open"])
+        return True
+
+    def open(self, url: str) -> str:
+        self.calls.append(["open", url])
         return ""
 
-    def print_state(self, *, thread: str) -> None:
-        print(json.dumps({"thread": thread, "open": True}))
+    def evaluate(self, code: str) -> object:
+        self.calls.append(["eval", code])
+        return self.evaluation
 
-    def close(self) -> int:
+    def close(self) -> None:
         self.close_calls += 1
-        print("closed")
-        return 0
 
 
 @pytest.mark.parametrize(
@@ -94,12 +95,10 @@ def test_surf_adapter_parses_axi_evaluation_envelope() -> None:
     }
 
     class AxiAgent(FakeSurfAgent):
-        def execute_in_window(self, args: list[str]) -> str:
-            self.calls.append(args)
-            if args[0] == "eval":
-                encoded = json.dumps(json.dumps(payload, separators=(",", ":")))
-                return f"Result: {encoded}\n"
-            return ""
+        def evaluate(self, code: str) -> object:
+            self.calls.append(["eval", code])
+            encoded = json.dumps(json.dumps(payload, separators=(",", ":")))
+            return f"Result: {encoded}\n"
 
     browser = SurfBrowserPagePort(agent_factory=lambda thread: AxiAgent(payload))
 
@@ -139,12 +138,13 @@ def test_surf_adapter_exposes_one_backend_agnostic_page_observation(
     browser.close("thread-1")
 
     assert created_threads == ["thread-1"]
-    assert agent.calls[0] == [
+    assert agent.calls[0] == ["is_open"]
+    assert agent.calls[1] == [
         "open",
         "https://www.google.com/search?q=patchright&start=0&num=10",
     ]
-    assert agent.calls[1][0] == "eval"
-    assert "data-snf" in agent.calls[1][1]
+    assert agent.calls[2][0] == "eval"
+    assert "data-snf" in agent.calls[2][1]
     assert observation.kind is SearchPageKind.RESULTS
     assert observation.results[0].title == "Patchright"
     assert observation.results[0].displayed_date == "Jun 23, 2026"

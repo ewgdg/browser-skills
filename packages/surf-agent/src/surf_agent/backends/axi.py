@@ -242,6 +242,10 @@ class AxiBackend:
         page = self.ensure_page(force_new=True)
         return f"{page.page_id}\n"
 
+    def is_open(self) -> bool:
+        # State inspection must not invoke AXI startup or create a window.
+        return self._load_axi_state() is not None
+
     def snapshot(self) -> str:
         return self._run_current(["snapshot"])
 
@@ -277,6 +281,9 @@ class AxiBackend:
 
     def evaluate(self, code: str) -> str:
         return self._run_current(["eval", code])
+
+    def evaluate_value(self, code: str) -> Any:
+        return parse_axi_eval_string(self.evaluate(code))
 
     def _run_current(self, axi_args: Sequence[str]) -> str:
         self._require_current_axi_page()

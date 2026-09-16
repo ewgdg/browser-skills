@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import sys
-from typing import TextIO
+from typing import Any, TextIO
 
 from .cli import SnapshotCapture, SurfAgent, choose_snapshot_diff, safe_thread_name
 from .constants import DEFAULT_THREAD
@@ -35,6 +35,51 @@ class Thread:
         """Navigate this thread's page to *url* and return backend output."""
         self._baseline = None
         return self._agent.browser_backend.open(url)
+
+    def is_open(self) -> bool:
+        """Return whether this thread is already open without starting a backend."""
+        return self._agent.browser_backend.is_open()
+
+    def click(self, target: str) -> str:
+        return self._agent.browser_backend.click(target)
+
+    def fill(self, target: str, text: str) -> str:
+        return self._agent.browser_backend.fill(target, text)
+
+    def type_text(self, text: str) -> str:
+        return self._agent.browser_backend.type_text(text)
+
+    def press(self, key: str) -> str:
+        return self._agent.browser_backend.press(key)
+
+    def scroll(self, direction: str) -> str:
+        return self._agent.browser_backend.scroll(direction)
+
+    def wait(self, target: int | str) -> str:
+        if isinstance(target, bool):
+            raise TypeError("wait target must be milliseconds as int or visible text as str")
+        if isinstance(target, int):
+            if target < 0:
+                raise ValueError("wait milliseconds must not be negative")
+            return self._agent.browser_backend.wait(str(target))
+        if not isinstance(target, str) or not target:
+            raise ValueError("wait text target must not be empty")
+        return self._agent.browser_backend.wait(target)
+
+    def back(self) -> str:
+        self._baseline = None
+        return self._agent.browser_backend.back()
+
+    def text(self) -> str:
+        return self._agent.browser_backend.text()
+
+    def screenshot(self, path: str, *, full_page: bool = False) -> str:
+        from .backends.base import ScreenshotOptions
+
+        return self._agent.browser_backend.screenshot(ScreenshotOptions(path=path, full_page=full_page))
+
+    def evaluate(self, code: str) -> Any:
+        return self._agent.browser_backend.evaluate_value(code)
 
     def snapshot(self) -> Snapshot:
         """Capture a complete snapshot value without changing emission state."""

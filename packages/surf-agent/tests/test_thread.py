@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -210,3 +211,86 @@ def test_close_is_silent_through_real_local_backend(monkeypatch: pytest.MonkeyPa
 def test_thread_rejects_unsafe_names(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SurfAgentError):
         Thread("../shared")
+
+
+def test_actions_use_real_local_backend_without_stdout(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    class StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def call_tool(self, name: str, args: dict[str, object]) -> str:
+            self.calls.append((name, args))
+            if name == "eval":
+                return '{"ready": true}\n'
+            return f"{name} ok\n"
+
+        def call_tool_if_running(self, name: str, args: dict[str, object]) -> str | None:
+            self.calls.append((name, args))
+            if name == "state":
+                return json.dumps({"open": True})
+            return None
+
+    class Agent:
+        state_file = tmp_path / "research.json"
+
+    client = StubClient()
+    agent = Agent()
+    agent.stub_client = client
+    backend = LocalBridgeBackend(agent, client=client, welcome_url=lambda: "about:blank")
+    backend.client_attr = "stub_client"
+    backend.display_name = "Stub"
+    agent.browser_backend = backend
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
+    thread = Thread("research")
+
+    assert thread.is_open() is True
+    assert thread.click("@button") == "click ok\n"
+    assert thread.fill("@name", "Ada Lovelace") == "fill ok\n"
+    assert thread.type_text("hello") == "type ok\n"
+    assert thread.press("Enter") == "press ok\n"
+    assert thread.scroll("down") == "scroll ok\n"
+    assert thread.wait(250) == "wait ok\n"
+    assert thread.wait("Loaded") == "wait ok\n"
+    assert thread.back() == "back ok\n"
+    assert thread.text() == "text ok\n"
+    assert thread.screenshot(str(tmp_path / "shot.png"), full_page=True) == "screenshot ok\n"
+    assert thread.evaluate("({ready: true})") == {"ready": True}
+
+    assert [name for name, _args in client.calls] == [
+        "state", "click", "fill", "type", "press", "scroll", "wait", "wait", "back", "text", "screenshot", "eval"
+    ]
+    assert client.calls[6][1]["target"] == 250
+    assert client.calls[7][1]["target"] == "Loaded"
+    assert capsys.readouterr().out == ""
+
+
+def test_is_open_does_not_start_missing_local_bridge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    class StubClient:
+        def __init__(self) -> None:
+            self.running_checks = 0
+            self.started_calls = 0
+
+        def call_tool_if_running(self, name: str, args: dict[str, object]) -> str | None:
+            self.running_checks += 1
+            assert name == "state"
+            return None
+
+        def call_tool(self, name: str, args: dict[str, object]) -> str:
+            self.started_calls += 1
+            raise AssertionError("state query must not start the bridge")
+
+    class Agent:
+        state_file = tmp_path / "research.json"
+
+    client = StubClient()
+    agent = Agent()
+    agent.stub_client = client
+    backend = LocalBridgeBackend(agent, client=client, welcome_url=lambda: "about:blank")
+    backend.client_attr = "stub_client"
+    backend.display_name = "Stub"
+    agent.browser_backend = backend
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
+
+    assert Thread("research").is_open() is False
+    assert client.running_checks == 1
+    assert client.started_calls == 0

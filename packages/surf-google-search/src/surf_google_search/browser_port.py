@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import io
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -11,6 +9,7 @@ from typing import Any, Protocol
 
 from surf_agent.backends.axi import parse_axi_eval_json
 from surf_agent.errors import SurfAgentError
+from surf_agent import Thread
 
 
 class SearchPageKind(StrEnum):
@@ -54,11 +53,13 @@ class PageObservationError(ValueError):
 
 
 class SurfAgentPort(Protocol):
-    def execute_in_window(self, args: list[str]) -> str: ...
+    def is_open(self) -> bool: ...
 
-    def print_state(self, *, thread: str) -> None: ...
+    def open(self, url: str) -> str: ...
 
-    def close(self) -> int: ...
+    def evaluate(self, code: str) -> Any: ...
+
+    def close(self) -> None: ...
 
 
 AgentFactory = Callable[[str], SurfAgentPort]
@@ -70,26 +71,20 @@ class SurfBrowserPagePort:
         self._agents: dict[str, SurfAgentPort] = {}
 
     def is_open(self, thread: str) -> bool:
-        output = io.StringIO()
         try:
-            with contextlib.redirect_stdout(output):
-                self._agent(thread).print_state(thread=thread)
-            value = json.loads(output.getvalue())
+            return self._agent(thread).is_open()
         except SurfAgentError as error:
             raise BrowserUnavailable from error
-        except (json.JSONDecodeError, TypeError) as error:
-            raise PageObservationError("browser returned invalid thread state") from error
-        return isinstance(value, dict) and value.get("open") is True
 
     def open(self, thread: str, url: str) -> None:
         try:
-            self._agent(thread).execute_in_window(["open", url])
+            self._agent(thread).open(url)
         except SurfAgentError as error:
             raise BrowserUnavailable from error
 
     def observe(self, thread: str) -> SearchPageObservation:
         try:
-            raw = self._agent(thread).execute_in_window(["eval", GOOGLE_PAGE_OBSERVATION_SCRIPT])
+            raw = self._agent(thread).evaluate(GOOGLE_PAGE_OBSERVATION_SCRIPT)
         except SurfAgentError as error:
             raise BrowserUnavailable from error
         try:
@@ -102,8 +97,7 @@ class SurfBrowserPagePort:
         if agent is None:
             return
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                agent.close()
+            agent.close()
         except SurfAgentError as error:
             raise BrowserUnavailable from error
 
@@ -125,12 +119,12 @@ def selected_surf_profile_path() -> Path:
 
 
 def _create_surf_agent(thread: str) -> SurfAgentPort:
-    from surf_agent.cli import SurfAgent
-
-    return SurfAgent(thread=thread)
+    return Thread(thread)
 
 
-def _decode_evaluation(raw: str) -> Any:
+def _decode_evaluation(raw: Any) -> Any:
+    if not isinstance(raw, str):
+        return raw
     try:
         value = json.loads(raw)
         return json.loads(value) if isinstance(value, str) else value
