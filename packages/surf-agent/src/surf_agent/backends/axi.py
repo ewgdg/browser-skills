@@ -275,6 +275,8 @@ class AxiBackend:
 
     def wait_for_text(self, text: str) -> str:
         if text.isdigit():
+            # Direct bridge calls must select this thread, not another caller's page.
+            self._require_current_axi_page()
             try:
                 self.agent.bridge_client.call_tool("wait_for", {"text": [text]})
             except AxiBridgeUnavailable as exc:
@@ -730,15 +732,14 @@ def parse_axi_eval_string(output: str) -> Any:
 
 def parse_axi_eval_value(output: str) -> Any:
     """Decode one AXI result transport payload without coercing strings."""
-    for line in output.splitlines():
-        if not line.strip().lower().startswith("result:"):
-            continue
-        raw = line.split(":", 1)[1].strip()
-        try:
-            return json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise SurfAgentError("invalid AXI evaluation result") from exc
-    raise SurfAgentError("invalid AXI evaluation result")
+    marker = re.search(r"^\s*result:\s*", output, flags=re.MULTILINE | re.IGNORECASE)
+    if marker is None:
+        raise SurfAgentError("invalid AXI evaluation result")
+    try:
+        # The bridge formatter can preserve a pretty-printed, multiline JSON value.
+        return json.loads(output[marker.end():])
+    except json.JSONDecodeError as exc:
+        raise SurfAgentError("invalid AXI evaluation result") from exc
 
 
 def parse_axi_user_visible_pages(output: str) -> list[AgentPage]:

@@ -366,6 +366,39 @@ def test_axi_eval_value_rejects_malformed_transport() -> None:
         parse_axi_eval_value("not an AXI result")
 
 
+def test_axi_thread_selects_owned_page_for_numeric_text_wait_and_typed_evaluation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from types import SimpleNamespace
+
+    from surf_agent.backends.axi import AxiBackend
+
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    class Client:
+        def call_tool(self, name: str, args: dict[str, object]) -> str:
+            calls.append((name, args))
+            if name == "evaluate_script":
+                return 'Script ran on page and returned:\n```json\n{\n  "count": 2\n}\n```'
+            return "selected\n" if name == "select_page" else "ok\n"
+
+    state_file = tmp_path / "research.json"
+    state_file.write_text('{"backend": "axi", "page_id": 7}')
+    agent = SimpleNamespace(state_file=state_file, bridge_client=Client())
+    agent.browser_backend = AxiBackend(agent)
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
+    thread = Thread("research")
+
+    thread.wait("123")
+    assert [name for name, _args in calls] == ["select_page", "wait_for"]
+    assert calls[0][1]["pageId"] == 7
+    assert thread.evaluate("({count: 2})") == {"count": 2}
+
+
+def test_axi_eval_value_handles_multiline_json() -> None:
+    assert parse_axi_eval_value('result: {\n  "count": 2\n}\n') == {"count": 2}
+
+
 def test_is_open_does_not_start_missing_local_bridge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     class StubClient:
         def __init__(self) -> None:
