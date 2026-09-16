@@ -101,6 +101,9 @@ class Thread:
             output = snapshot.text
         else:
             output = choose_snapshot_diff(self._baseline, snapshot).output
+        # AXI may return unterminated text; keep consecutive observations separate.
+        if output and not output.endswith("\n"):
+            output += "\n"
         destination = sys.stdout if sink is None else sink
         destination.write(output)
         self._baseline = snapshot

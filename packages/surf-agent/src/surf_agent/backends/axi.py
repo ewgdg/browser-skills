@@ -243,8 +243,20 @@ class AxiBackend:
         return f"{page.page_id}\n"
 
     def is_open(self) -> bool:
-        # State inspection must not invoke AXI startup or create a window.
-        return self._load_axi_state() is not None
+        page = self._load_axi_state()
+        if page is None:
+            return False
+        try:
+            # Bypass startup/selection: observation must not open or switch windows.
+            output = self.agent.bridge_client.call_tool("list_pages", {})
+        except AxiBridgeUnavailable:
+            # An unavailable bridge cannot prove the remembered page is gone.
+            return False
+        pages = parse_axi_user_visible_pages(output)
+        if find_page(pages, page.page_id) is None:
+            _unlink_missing_ok(self.agent.state_file)
+            return False
+        return True
 
     def snapshot(self) -> str:
         return self._run_current(["snapshot"])

@@ -63,3 +63,8 @@ The first two tested slices plus contract hardening are implemented: capture/emi
 - Real Chrome with a local fixture passed thread reattachment/state, native-ref fill/click, typing/keys, text/duration waits, full observations, automatic diffs, typed evaluation, scrolling, screenshots, navigation, and silent cleanup. A 7,448-character complete observation emitted a 523-character diff; this is not a model-token benchmark.
 - AXI bridge-transport tests exposed and fixed numeric-text waits skipping owned-page selection and typed evaluation dropping multiline JSON. No real AXI browser was exercised.
 - **Open validation gap:** the first smoke timed out after 15 seconds in the existing Patchright `go_back(wait_until="domcontentloaded")` path. Immediate cleanup was blocked while that operation occupied the bridge; a subsequent close succeeded. The passing smoke excluded back-navigation. No navigation-runtime fix was included; diagnose separately before treating back-navigation as live-validated.
+
+### Review fixes (2026-09-16)
+- Reproduced AXI false-open state with a remembered page absent from the running bridge's inventory. `is_open()` now checks inventory without starting or selecting a page, discards confirmed stale state, retains state when the bridge is unavailable, and fails on malformed inventory.
+- Reproduced concatenated emissions from unterminated snapshots. Emission now terminates nonempty output while leaving complete snapshot values unchanged.
+- Six new regression cases failed before the fixes and passed afterward. Targeted Thread/CLI/lifecycle/Google suites: **197 passed, 1 skipped, 28 subtests passed**; changed-file Ruff passed. No live AXI browser run; the independent back-navigation gap remains unchanged.
