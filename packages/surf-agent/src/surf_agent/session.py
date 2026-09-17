@@ -953,140 +953,40 @@ def serve(socket_path: Path, idle_timeout_s: float) -> None:
 
 
 _USAGE = """usage:
-  run.py FILE|- [arguments...]
-  run.py --new-session [--name SLUG] [--ttl SECONDS] - [arguments...]
-  run.py --session ID - [arguments...]
-  run.py --session ID --reset
-  run.py --kill-session ID
-  run.py --list-sessions
+  python -m surf_agent.session worker SOCKET IDLE_TIMEOUT_SECONDS
+  python -m surf_agent.session run JSON_REQUEST
 """
 
 
-def _positive_seconds(value: str, option: str) -> float | None:
-    try:
-        seconds = float(value)
-    except ValueError:
-        seconds = 0.0
-    if not math.isfinite(seconds) or seconds <= 0:
-        print(f"surf: {option} expects positive seconds, got {value!r}", file=sys.stderr)
-        return None
-    return seconds
+def _usage_error(message: str) -> int:
+    print(f"surf: {message}", file=sys.stderr)
+    print(_USAGE, file=sys.stderr, end="")
+    return 2
 
 
-def _main_cell(arguments: list[str]) -> int:
-    session_id: str | None = None
-    create = False
-    name: str | None = None
-    idle_timeout_s = DEFAULT_SESSION_IDLE_TIMEOUT_S
-    timeout_s = DEFAULT_CELL_TIMEOUT_S
-    index = 0
-    while index < len(arguments) and arguments[index].startswith("--"):
-        option = arguments[index]
-        if option == "--new-session":
-            create = True
-            index += 1
-        elif option == "--session" and index + 1 < len(arguments):
-            session_id = arguments[index + 1]
-            index += 2
-        elif option == "--name" and index + 1 < len(arguments):
-            name = arguments[index + 1]
-            index += 2
-        elif option == "--ttl" and index + 1 < len(arguments):
-            parsed = _positive_seconds(arguments[index + 1], "--ttl")
-            if parsed is None:
-                return 2
-            idle_timeout_s = parsed
-            index += 2
-        elif option == "--timeout" and index + 1 < len(arguments):
-            parsed = _positive_seconds(arguments[index + 1], "--timeout")
-            if parsed is None:
-                return 2
-            timeout_s = parsed
-            index += 2
-        else:
-            print(_USAGE, file=sys.stderr, end="")
-            return 2
-    argv = arguments[index:]
-    if not argv or argv[0] != "-":
-        print(_USAGE, file=sys.stderr, end="")
-        return 2
-    if create == bool(session_id):
-        print("surf: pass exactly one of --new-session or --session ID", file=sys.stderr)
-        return 2
-    if name is not None and not create:
-        print("surf: --name applies to --new-session", file=sys.stderr)
-        return 2
-    if create:
-        session_id = new_session_id(name)
-    assert session_id is not None
-    try:
-        result = run_cell(
-            session_id,
-            sys.stdin.read(),
-            create=create,
-            idle_timeout_s=idle_timeout_s,
-            argv=tuple(argv),
-            timeout_s=timeout_s,
-        )
-    except SessionError as exc:
-        print(f"surf: {exc}", file=sys.stderr)
-        return 2
-    return 0 if result.status == "ok" else 1
+def _requested_session(request: dict[str, Any]) -> str:
+    session_id = request.get("session")
+    if not isinstance(session_id, str) or not session_id:
+        raise SessionError("the request names no session")
+    return session_id
 
 
-def _main_reset(arguments: list[str]) -> int:
-    session_id: str | None = None
-    index = 0
-    while index < len(arguments) and arguments[index].startswith("--"):
-        if arguments[index] == "--session" and index + 1 < len(arguments):
-            session_id = arguments[index + 1]
-            index += 2
-        else:
-            print(_USAGE, file=sys.stderr, end="")
-            return 2
-    if not session_id or index != len(arguments):
-        print(_USAGE, file=sys.stderr, end="")
-        return 2
-    try:
-        result = reset_bindings(session_id)
-    except SessionError as exc:
-        print(f"surf: {exc}", file=sys.stderr)
-        return 2
-    return 0 if result.status in {"ok", "absent"} else 1
+def _requested_seconds(request: dict[str, Any], key: str, default: float) -> float:
+    value = request.get(key, default)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SessionError(f"request field {key!r} must be a number of seconds")
+    return float(value)
 
 
-def _session_option(arguments: list[str]) -> str | None:
-    if len(arguments) != 2 or arguments[0] != "--session":
-        print(_USAGE, file=sys.stderr, end="")
-        return None
-    return arguments[1]
+def _requested_argv(request: dict[str, Any]) -> tuple[str, ...]:
+    argv = request.get("argv") or ["-"]
+    if not isinstance(argv, list) or not all(isinstance(part, str) for part in argv):
+        raise SessionError("request field 'argv' must be a list of strings")
+    return tuple(argv)
 
 
-def _main_kill(arguments: list[str]) -> int:
-    session_id = _session_option(arguments)
-    if session_id is None:
-        return 2
-    try:
-        stopped = kill_session(session_id)
-    except SessionError as exc:
-        print(f"surf: {exc}", file=sys.stderr)
-        return 2
-    if stopped:
-        print(f"session {session_id} stopped")
-        return 0
-    print(f"no live session {session_id}")
-    return 1
-
-
-def _main_list(arguments: list[str]) -> int:
-    if arguments:
-        print(_USAGE, file=sys.stderr, end="")
-        return 2
-    try:
-        entries = list_sessions()
-    except SessionError as exc:
-        print(f"surf: {exc}", file=sys.stderr)
-        return 2
+def _print_sessions() -> int:
+    entries = list_sessions()
     if not entries:
         print("no live sessions")
         return 0
@@ -1097,6 +997,65 @@ def _main_list(arguments: list[str]) -> int:
             f"ttl {entry.idle_timeout_s:g}s  cwd {entry.cwd}"
         )
     return 0
+
+
+def _requested_cell(request: dict[str, Any]) -> int:
+    mode = request.get("mode")
+    if mode == "new":
+        name = request.get("name")
+        if not isinstance(name, str) and name is not None:
+            raise SessionError("request field 'name' must be a string")
+        session_id = new_session_id(name)
+    elif mode == "reuse":
+        session_id = _requested_session(request)
+    else:
+        raise SessionError(f"unknown cell mode {mode!r}")
+    result = run_cell(
+        session_id,
+        sys.stdin.read(),
+        create=mode == "new",
+        idle_timeout_s=_requested_seconds(request, "ttl", DEFAULT_SESSION_IDLE_TIMEOUT_S),
+        argv=_requested_argv(request),
+        timeout_s=_requested_seconds(request, "timeout", DEFAULT_CELL_TIMEOUT_S),
+    )
+    return 0 if result.status == "ok" else 1
+
+
+def _main_run(arguments: list[str]) -> int:
+    """Execute one launcher request.
+
+    The launcher owns the command-line grammar, so this seam takes a validated
+    request instead of repeating it. Keeping the grammar in one place is why the
+    runtime has no `--new-session`/`--session` parsing of its own.
+    """
+    if len(arguments) != 1:
+        return _usage_error("run takes one JSON request")
+    try:
+        request = json.loads(arguments[0])
+    except ValueError as exc:
+        return _usage_error(f"request is not valid JSON: {exc}")
+    if not isinstance(request, dict):
+        return _usage_error("request must be a JSON object")
+    try:
+        operation = request.get("op")
+        if operation == "cell":
+            return _requested_cell(request)
+        if operation == "reset":
+            result = reset_bindings(_requested_session(request))
+            return 0 if result.status in {"ok", "absent"} else 1
+        if operation == "kill":
+            session_id = _requested_session(request)
+            if kill_session(session_id):
+                print(f"session {session_id} stopped")
+                return 0
+            print(f"no live session {session_id}")
+            return 1
+        if operation == "list":
+            return _print_sessions()
+    except SessionError as exc:
+        print(f"surf: {exc}", file=sys.stderr)
+        return 2
+    return _usage_error(f"unknown request {operation!r}")
 
 
 def _main_worker(arguments: list[str]) -> None:
@@ -1117,14 +1076,8 @@ def main(argv: list[str] | None = None) -> int:
     if command == "worker":
         _main_worker(rest)
         return 0
-    if command == "cell":
-        return _main_cell(rest)
-    if command == "reset":
-        return _main_reset(rest)
-    if command == "kill":
-        return _main_kill(rest)
-    if command == "list":
-        return _main_list(rest)
+    if command == "run":
+        return _main_run(rest)
     print(_USAGE, file=sys.stderr, end="")
     return 2
 

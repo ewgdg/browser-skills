@@ -59,7 +59,7 @@ class Invocation:
     python_arguments: list[str]
 
 
-def positive_seconds(value: str, option: str) -> str | None:
+def positive_seconds(value: str, option: str) -> float | None:
     try:
         seconds = float(value)
     except ValueError:
@@ -67,7 +67,16 @@ def positive_seconds(value: str, option: str) -> str | None:
     if not math.isfinite(seconds) or seconds <= 0:
         print(f"{option} expects positive seconds, got {value!r}.", file=sys.stderr)
         return None
-    return value
+    return seconds
+
+
+def run_request(request: dict) -> list[str]:
+    """The runtime command for one request.
+
+    The launcher owns the command-line grammar; the runtime receives a validated
+    request, so the two never hold separate copies of the same options.
+    """
+    return [*SESSION_COMMAND, "run", json.dumps(request)]
 
 
 def parse_arguments(arguments: list[str]) -> Invocation | None:
@@ -121,12 +130,12 @@ def parse_arguments(arguments: list[str]) -> Invocation | None:
         if extras:
             print(f"--kill-session takes only a session id.\n{USAGE}", file=sys.stderr, end="")
             return None
-        return Invocation(True, [*SESSION_COMMAND, "kill", "--session", kill_target])
+        return Invocation(True, run_request({"op": "kill", "session": kill_target}))
     if mode == "--list-sessions":
         if extras:
             print(f"--list-sessions takes no other options.\n{USAGE}", file=sys.stderr, end="")
             return None
-        return Invocation(True, [*SESSION_COMMAND, "list"])
+        return Invocation(True, run_request({"op": "list"}))
     if mode is None:
         if reset or timeout or idle_timeout or name:
             print(
@@ -141,21 +150,27 @@ def parse_arguments(arguments: list[str]) -> Invocation | None:
         # arguments exactly as an ordinary Python run would receive them.
         return Invocation(False, ["--", *rest])
 
-    if timeout is not None and positive_seconds(timeout, "--timeout") is None:
-        return None
-    if idle_timeout is not None and mode != "--new-session":
-        print("--ttl applies when a session is created.", file=sys.stderr)
-        return None
+    timeout_value = None
+    if timeout is not None:
+        timeout_value = positive_seconds(timeout, "--timeout")
+        if timeout_value is None:
+            return None
+    idle_timeout_value = None
+    if idle_timeout is not None:
+        if mode != "--new-session":
+            print("--ttl applies when a session is created.", file=sys.stderr)
+            return None
+        idle_timeout_value = positive_seconds(idle_timeout, "--ttl")
+        if idle_timeout_value is None:
+            return None
     if name is not None and mode != "--new-session":
         print("--name applies when a session is created.", file=sys.stderr)
-        return None
-    if idle_timeout is not None and positive_seconds(idle_timeout, "--ttl") is None:
         return None
     if mode == "--session" and reset:
         if rest or timeout is not None:
             print("--reset discards bindings and takes no source or timeout.", file=sys.stderr)
             return None
-        return Invocation(True, [*SESSION_COMMAND, "reset", "--session", session])
+        return Invocation(True, run_request({"op": "reset", "session": session}))
     if not rest or rest[0] != "-":
         print(
             "A session cell is read from stdin: pass '-' as the source. "
@@ -163,18 +178,21 @@ def parse_arguments(arguments: list[str]) -> Invocation | None:
             file=sys.stderr,
         )
         return None
-    command = [*SESSION_COMMAND, "cell"]
+    request = {
+        "op": "cell",
+        "mode": "new" if mode == "--new-session" else "reuse",
+        "argv": rest,
+    }
     if mode == "--new-session":
-        command.append("--new-session")
         if name is not None:
-            command += ["--name", name]
-        if idle_timeout is not None:
-            command += ["--ttl", idle_timeout]
+            request["name"] = name
+        if idle_timeout_value is not None:
+            request["ttl"] = idle_timeout_value
     else:
-        command += ["--session", session]
-    if timeout is not None:
-        command += ["--timeout", timeout]
-    return Invocation(True, command + rest)
+        request["session"] = session
+    if timeout_value is not None:
+        request["timeout"] = timeout_value
+    return Invocation(True, run_request(request))
 
 
 def main():

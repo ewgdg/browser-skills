@@ -26,6 +26,7 @@ The interpreter already existed; the complexity came from how sessions were addr
 - `--kill-session ID` kills immediately. A cell in flight dies with it and its side effects are unknown, exactly as with a timeout.
 - `--list-sessions` prints live sessions with id, pid, started, idle for, and working directory. The directory is how an agent recognises its own session after losing the id from context, and it needs no ancestry.
 - The socket files in `$XDG_RUNTIME_DIR/surf-agent` are the registry; listing is a directory scan that skips stale entries by liveness. No separate state file.
+- **One grammar.** `run.py` owns the command-line grammar and hands the runtime a validated JSON request (`python -m surf_agent.session run JSON`, cell source on stdin). The runtime parses no user-facing options of its own, only its internal `worker` spawn target, so the flags cannot drift into two copies that disagree.
 - **Deleted**: `resolve_owner`, `ancestor_chain`, `process_alive`, `read_process`, `OwnerRef`, the owner-watch thread, `session_log_path` and the log-open path, `session_identity`, the identity composition in `session_key`, and the `HARNESS_COMMS`/`SESSION_MANAGER_COMMS`/`DEAD_STATES`/`OWNER_WATCH_INTERVAL_S` constants.
 - **Kept**: `--reset`, per-cell `--timeout`, busy rejection, per-cell byte capture, `emit()` framing (ADR-0003), and the recovery-cell guidance.
 - Interpreter state is not persisted; see the deferred section.

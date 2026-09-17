@@ -353,25 +353,39 @@ def test_launcher_option_scoping():
     assert ordinary.session_mode is False
     assert ordinary.python_arguments == ["--", "script.py", "--session", "x"]
     assert launcher.parse_arguments(["--", "script.py"]).python_arguments == ["--", "--", "script.py"]
+    assert launcher.parse_arguments(["-"]).session_mode is False
 
-    reuse = launcher.parse_arguments(["--session", "workflow", "--timeout", "5", "-", "arg"])
-    assert reuse.session_mode is True
-    assert reuse.python_arguments == [
-        "-m", "surf_agent.session", "cell", "--session", "workflow", "--timeout", "5", "-", "arg"
-    ]
-    create = launcher.parse_arguments(["--new-session", "--name", "demo", "--ttl", "60", "-"])
-    assert create.python_arguments == [
-        "-m", "surf_agent.session", "cell", "--new-session", "--name", "demo", "--ttl", "60", "-"
-    ]
-    assert launcher.parse_arguments(["--kill-session", "abc12345"]).python_arguments == [
-        "-m", "surf_agent.session", "kill", "--session", "abc12345"
-    ]
-    assert launcher.parse_arguments(["--list-sessions"]).python_arguments == [
-        "-m", "surf_agent.session", "list"
-    ]
-    assert launcher.parse_arguments(["--session", "abc12345", "--reset"]).python_arguments == [
-        "-m", "surf_agent.session", "reset", "--session", "abc12345"
-    ]
+
+def runtime_request(launcher, arguments: list[str]) -> dict:
+    """The request the launcher hands the runtime for these arguments."""
+    invocation = launcher.parse_arguments(arguments)
+    assert invocation is not None, arguments
+    assert invocation.session_mode is True
+    assert invocation.python_arguments[:3] == ["-m", "surf_agent.session", "run"]
+    return json.loads(invocation.python_arguments[3])
+
+
+def test_launcher_builds_runtime_requests():
+    launcher = load_launcher()
+    assert runtime_request(launcher, ["--session", "abc12345", "-"]) == {
+        "op": "cell", "mode": "reuse", "session": "abc12345", "argv": ["-"]
+    }
+    assert runtime_request(launcher, ["--session", "abc12345", "--timeout", "5", "-", "arg"]) == {
+        "op": "cell", "mode": "reuse", "session": "abc12345", "timeout": 5.0, "argv": ["-", "arg"]
+    }
+    assert runtime_request(launcher, ["--new-session", "-"]) == {
+        "op": "cell", "mode": "new", "argv": ["-"]
+    }
+    assert runtime_request(launcher, ["--new-session", "--name", "demo", "--ttl", "60", "-"]) == {
+        "op": "cell", "mode": "new", "name": "demo", "ttl": 60.0, "argv": ["-"]
+    }
+    assert runtime_request(launcher, ["--session", "abc12345", "--reset"]) == {
+        "op": "reset", "session": "abc12345"
+    }
+    assert runtime_request(launcher, ["--kill-session", "abc12345"]) == {
+        "op": "kill", "session": "abc12345"
+    }
+    assert runtime_request(launcher, ["--list-sessions"]) == {"op": "list"}
 
 
 def test_launcher_rejects_invalid_session_arguments():

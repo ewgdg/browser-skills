@@ -499,6 +499,23 @@ def test_failing_worker_reports_its_own_output(monkeypatch):
         create("pass")
 
 
+def test_runtime_rejects_a_malformed_request():
+    for request in (
+        "not json",
+        json.dumps(["list"]),
+        json.dumps({"op": "nonsense"}),
+        json.dumps({"op": "cell", "mode": "reuse"}),
+        json.dumps({"op": "cell", "mode": "new", "ttl": "soon"}),
+        json.dumps({"op": "kill"}),
+    ):
+        result = subprocess.run(
+            [sys.executable, "-m", "surf_agent.session", "run", request],
+            input="pass", capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == 2, (request, result.stdout, result.stderr)
+        assert result.stderr.startswith("surf: "), (request, result.stderr)
+
+
 # Files and streams
 
 
@@ -537,8 +554,9 @@ def test_worker_never_inherits_the_callers_stdout():
         "os.write(1, b'raw bytes\\n')\n"
         "print('after raw')\n"
     )
+    request = json.dumps({"op": "cell", "mode": "new", "name": "fd", "argv": ["-"]})
     result = subprocess.run(
-        [sys.executable, "-m", "surf_agent.session", "cell", "--new-session", "--name", "fd", "-"],
+        [sys.executable, "-m", "surf_agent.session", "run", request],
         input=code, capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stderr
