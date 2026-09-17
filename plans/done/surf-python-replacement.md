@@ -1,9 +1,9 @@
 # Surf Python replacement
 
-Tracking issue: [#21 — Replace Surf command CLI with a Python-first skill and Thread handles](https://github.com/ewgdg/browser-skills/issues/21). Keep the issue open until installation, skill migration, and CLI removal are verified; implementation slices are not completion.
+Tracking issue: [#21 — Replace Surf command CLI with a Python-first skill and Thread handles](https://github.com/ewgdg/browser-skills/issues/21). Installation, skill migration, CLI removal and the published pinned runtime are verified.
 
 ## Goal
-Replace the action-command `surf-agent` CLI with an importable Python interface and a thin skill-local launcher for ordinary file/stdin scripts. Runtime publication and no-override pinned installation are verified; skill publication and the final installed-copy refresh are underway.
+Replace the action-command `surf-agent` CLI with an importable Python interface and a thin skill-local launcher for ordinary file/stdin scripts. Implementation, publication and installed-copy validation are complete.
 
 ## Intention
 Callers should hold a named `Thread` interaction/ownership context representing Surf's dedicated browser window. They should not parse command strings or capture CLI output to use browser operations.
@@ -24,7 +24,7 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 3. Completed: `skills/surf/scripts/run.py`, file/stdin/argument/error handling, wheel validation override and fail-closed release marker.
 4. Completed: maintained skill/docs migration; distribution includes launcher and references without bundled runtime source.
 5. Completed: full tests, independent review, real Chrome navigation and installed-artifact acceptance outside checkout.
-6. Runtime publication, immutable pin and no-override packaged-skill acceptance passed. Publish the updated skill, refresh the installed copy and verify that exact installation before closing #21.
+6. Completed: runtime publication, immutable pin, updated skill publication, installed-copy refresh and browser acceptance without the wheel override.
 
 ## Validation
 - `uv run pytest -q`: **227 passed, 4 skipped, 3 subtests**. Skips: opt-in live Google, two live navigation cases, and installed-browser acceptance.
@@ -36,10 +36,11 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 - Separate agent shell tool invocations against the extracted skill also passed setup/profile inspection, browser continuity, back-navigation and cleanup without a prestarted bridge. All browser profiles and ports used for validation were isolated; no user login/cookies were accessed.
 - Real AXI and live credential login were not exercised. Retained backend/profile/cookie lifecycle behavior has regression coverage; these are not claims of live AXI/auth validation.
 - Release validation: a fresh uv cache fetched the pinned runtime directly from GitHub; distribution metadata confirmed the expected full commit and Python 3.11, without borrowing Google Search's interpreter. Packaged-skill browser acceptance passed with `SURF_AGENT_DEPENDENCY` and `PYTHONPATH` unset. Launcher/distribution tests: **10 passed**, including a new red-before-green guard rejecting an unpinned shipped skill.
+- Published release commit `e2e204f`, then ran `npx skills update surf surf-google-search -g -y`. Surf updated; Google Search already matched. Installed skill, launcher and launcher guide match the checkout. Browser acceptance against the actual global installation passed again (**1 passed**), and a direct launcher invocation from a sandbox directory returned `launcher ready` with no dependency override, correct Git provenance and no borrowed interpreter. Google Search CLI help still works.
 
 ## Progress
 - Completed the replacement, including administrative operations, the fresh-script launcher, installed skill documentation and CLI removal. Removed obsolete DSL tests while migrating retained lifecycle/backend/cookie coverage.
-- Release authorization received after the sandbox session exposed the unfinished marker. Verified runtime `aa3e8d455c8c0bb26dd13a903c16e43e9c9cfdaf` is reachable at origin/main; pinning the skill to that tested runtime and validating without the local-wheel override.
+- Release authorization received after the sandbox session exposed the unfinished marker. Verified runtime `aa3e8d455c8c0bb26dd13a903c16e43e9c9cfdaf` was reachable at origin/main, pinned the skill to that tested runtime and validated without the local-wheel override.
 - Added `surf_agent.thread.Thread` with open/state, interaction, observation, evaluation, screenshot, and close methods; construction is `Thread(name=...)` and uses a private backend factory seam.
 - Added test-first coverage for silent snapshots, last-emitted baselines, no recapture during emission, explicit full emission, output failure, navigation/independent handles, close failure, delegation, and unsafe names.
 - Exported `Thread` from the package root.
@@ -71,8 +72,10 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 - AXI `reset()` forgets local ownership without closing the window. Patchright rejects reset before mutation instead of preserving the old silent no-op for bridge-held ownership.
 - `runtime-revision` selects a verified reachable runtime commit. A new distribution regression test rejects UNRELEASED/invalid shipped pins. The wheel override remains explicit development-only; ordinary browsing reports installation defects instead of searching for alternate interpreters or cached wheels.
 
-## Outcomes & remaining gates
-The implementation, runtime publication, pinning and no-override packaged-skill workflow are validated. Skill publication and actual installed-copy refresh are the remaining steps. The plan stays active and #21 stays open until those checks finish.
+## Outcomes & retrospective
+The replacement is published and the installed skill works through its default launcher. No wheel override, source checkout or Google Search interpreter is needed for normal use. Interpreter persistence remains deferred to #22; no live AXI or credential-login claims are added.
+
+The sandbox trial showed why a local wheel passing tests was not enough: agents spent time searching for an alternate runtime while the installed marker remained UNRELEASED. Release verification now includes an immutable-pin regression guard and an actual no-override install. Runtime code is published first, then its tested full commit is shipped in the skill pin; users update the skill rather than manage runtime versions themselves.
 
 ### Earlier checkpoints (superseded by complete-replacement validation above)
 - Thread, existing CLI, lifecycle, and all Google Search tests: **191 passed, 1 skipped, 28 subtests passed**. The skipped test is the opt-in live Google test; DOM fixture tests ran. Changed-file Ruff and diff checks passed.
