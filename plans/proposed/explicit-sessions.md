@@ -24,7 +24,7 @@ The interpreter already existed; the complexity came from how sessions were addr
 - `--kill-session ID` kills immediately. A cell in flight dies with it and its side effects are unknown, exactly as with a timeout.
 - `--list-sessions` prints live sessions with id, pid, started, idle for, and working directory. The directory is how an agent recognises its own session after losing the id from context, and it needs no ancestry.
 - The socket files in `$XDG_RUNTIME_DIR/surf-agent` are the registry; listing is a directory scan that skips stale entries by liveness. No separate state file.
-- **Deleted**: `resolve_owner`, `ancestor_chain`, `process_alive`, `read_process`, `OwnerRef`, the owner-watch thread, `session_identity`, the identity composition in `session_key`, and the `HARNESS_COMMS`/`SESSION_MANAGER_COMMS`/`DEAD_STATES`/`OWNER_WATCH_INTERVAL_S` constants.
+- **Deleted**: `resolve_owner`, `ancestor_chain`, `process_alive`, `read_process`, `OwnerRef`, the owner-watch thread, `session_log_path` and the log-open path, `session_identity`, the identity composition in `session_key`, and the `HARNESS_COMMS`/`SESSION_MANAGER_COMMS`/`DEAD_STATES`/`OWNER_WATCH_INTERVAL_S` constants.
 - **Kept**: `--reset`, per-cell `--timeout`, busy rejection, per-cell byte capture, `emit()` framing (ADR-0003), and the recovery-cell guidance.
 - Interpreter state is not persisted; see the deferred section.
 
@@ -35,7 +35,7 @@ The interpreter already existed; the complexity came from how sessions were addr
 3. **Discovery is required** (`--list-sessions`), because an opaque id cannot be re-derived from memory the way a name could. Working directory plus idle time is the identification hint.
 4. **Kill is immediate and documented as such**; clean shutdown removes the socket, and the listing skips sockets with no listener.
 5. **One metadata block, create call only**: the id is reported once, as a delimited key-value block appended to stdout at the end of the create call. No later call and no stderr frame repeats it.
-6. **No session log file.** The worker's own stdout and stderr point at `/dev/null`; a file exists only when a worker fails to start, so the launcher can report why.
+6. **No session log file, and no other artifact.** The worker's stdout and stderr start on a pipe the launcher owns and drains during the readiness window, then point at `/dev/null` once the interpreter is listening.
 
 ### Metadata block
 
@@ -56,9 +56,12 @@ idle_timeout_s: 1800
 
 ### Why the log file goes away
 
-The log exists for one hard reason and two soft ones. Hard: a detached worker must never hold the per-call stdout pipe, or the caller never sees EOF and the tool call hangs until the session ends — this was observed, not deduced. Pointing fd 1 and 2 at `/dev/null` satisfies that requirement with no file. Soft: raw `os.write(1, …)` and subprocess output, and the worker's own note when it exits on a deadline, currently land there rather than being lost.
+The log exists for one hard reason and two soft ones. Hard: a detached worker must never hold the per-call stdout pipe, or the caller never sees EOF and the tool call hangs until the session ends — this was observed, not deduced. Pointing fd 1 and 2 at `/dev/null` once the worker is listening satisfies that requirement with no file, and a startup pipe keeps a failure explainable. Soft: raw `os.write(1, …)` and subprocess output, and the worker's own note when it exits on a deadline, currently land there rather than being lost.
 
-Consequences to document rather than hide: only Python-level `print()` and `emit()` output reaches the agent; a cell that shells out or writes to fd 1 produces nothing visible, and the deadline note becomes invisible — the client's replacement report stays the only signal, which is the contract anyway. The failure-only file keeps startup failures debuggable: the worker writes the reason only if it cannot start, and the launcher reads it, prints it, and removes it when readiness times out.
+Neither is worth a file:
+
+- **Startup diagnostics live in memory, not on disk.** The launcher spawns the worker with a pipe for stdout and stderr, drains it during the readiness window, and the worker re-points its own fd 1 and 2 at `/dev/null` immediately after it starts listening. That pipe is a fresh one the launcher owns, not the caller's capture pipe, so nothing can hang; releasing it is still required, or a later write from the worker would fail against a pipe whose reader is gone. When the worker fails, the launcher kills it if needed, reads whatever the pipe holds, and puts that text into the error it raises. No file is created on success or on failure.
+- **Everything else is dropped, deliberately.** Only Python-level `print()` and `emit()` output reaches the agent. A cell that shells out or writes to fd 1 produces nothing visible, and the worker's deadline note disappears with the log; the client's replacement report stays the only signal, which is the contract anyway. If fd-level output ever matters, the answer is capturing it into the cell's own output, which risks flooding a tool result when a cell shells out — not a file.
 
 ## Rejected
 
@@ -74,7 +77,7 @@ Consequences to document rather than hide: only Python-level `print()` and `emit
    - a reusing call writes no metadata block and nothing extra to stdout, so cell output stays pipeable;
    - a cell that prints its own lookalike `--- BEGIN session metadata ---` block does not change the rule: the final block is the launcher's;
    - no log file is created in the runtime directory, and a cell that writes with `os.write(1, …)` or runs a subprocess produces no agent-visible output and leaves nothing behind;
-   - a worker that cannot start leaves its failure file, which the launcher reports and removes;
+   - a worker that cannot start puts its own startup text into the launcher's error, and leaves no file behind;
    - reusing that id attaches and the cell counter continues;
    - an unknown id errors and lists live sessions;
    - idle past the TTL → the interpreter is gone and the id is unknown;
@@ -99,7 +102,7 @@ Consequences to document rather than hide: only Python-level `print()` and `emit
 - **TTL expiry during a human handoff**: the recovery cell covers it, at the cost of one cell. `--ttl` exists for tasks that involve a human.
 - **Leak bounded by TTL rather than by owner death**: a crashed agent leaves one interpreter until it idles out. Accepted, bounded and measured.
 - **fd-level output is discarded**: subprocess output and raw fd writes no longer reach the agent or a file. Documented, and the deliberate cost of dropping the log; the deferred alternative is capturing fd writes into the cell's output, which risks flooding a tool result when a cell shells out.
-- **Startup diagnostics** now depend on the failure-only file. If the worker dies before writing it, the launcher can only report that the interpreter did not become ready.
+- **Startup diagnostics are in-memory only**: if the worker dies before writing anything to the pipe, the launcher can only report that the interpreter did not become ready. Accepted — nothing is kept on disk.
 - **Migration**: every existing name-keyed session becomes unreachable; those interpreters expire on their own, and no cleanup step is needed because deleting a live session's socket would break it.
 
 ## Trigger to revisit checkpoints
