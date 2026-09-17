@@ -28,17 +28,20 @@ Today every script is a fresh interpreter: each call re-imports, reattaches by t
 5. **No automatic replay.** After a timeout or lost response, an action may already have taken effect; inspect first, never blind-retry a submission.
 6. **One isolated interpreter per agent session**, sequential cells.
 
-## Decisions settled in the replay review
+## Decisions settled in design review
 
-One constraint settled these: **a cell whose outcome is uncertain must be reportable from outside the cell.** Anything that times, executes or dies inside the cell cannot report its own fault.
+Two constraints settled these. First: **a cell whose outcome is uncertain must be reportable from outside the cell.** Anything that times, executes or dies inside the cell cannot report its own fault. Second: **a cell behaves exactly like a script.** No second dialect that breaks when the same code moves to `run.py FILE`, a project import, or a different kernel.
 
 - **Runtime (was open decision 1): out-of-process supervisor, `ipykernel` + thin client as the default.** The launcher that started the cell must survive it, because it is the only component able to report "your interpreter is gone". An in-process worker cannot: a timer fires inside the very code it is timing, and a crash takes the report with it. `benchmarks/persistent.py` is excluded by this rule on its own (in-process `exec` plus `SIGALRM`), independently of its other problems. A hand-rolled *out-of-process* worker remains an acceptable fallback if kernel stream/`display_data` semantics fight the observation framing.
 - **Busy and timeout behaviour (was open decision 3): per-cell, caller-set timeout that destroys the interpreter.** Not a background continuation, and never a rollback. A blocked cell makes new cells fail fast rather than interleave. The caller raises the limit for a long operation, as Codex's per-call `timeout_ms` does.
 - **Session lifecycle (was open decision 4): the interpreter lives exactly as long as the session that created it.** Established by an owner-process reference, not a heartbeat and not an idle timer. The interpreter records the process that created it and exits once that process is gone — liveness by `/proc/<pid>/cmdline` with the process start time as a pid-reuse guard, the technique `packages/surf-agent/src/surf_agent/chrome_lifecycle.py` already uses to resolve live Chrome roots. A heartbeat asks "is anyone there" when the question is "is my owner alive", and the only party that could send one would spend cells doing it. A long idle backstop may remain for pathologies. Consequence: a session restart always yields a new interpreter, which is predictable and cheap to recover from.
 - **Environment pinning (was open decision 5): fixed at interpreter creation and not re-read per cell.** `SURF_AGENT_HOME`, backend selection and bridge port cannot drift onto a different profile mid-task, and reset discards bindings without discarding configuration. Codex keeps added module directories across reset for the same reason.
 - **Reset contract (was open decision 6): Python bindings only.** Browser threads, pages and files survive untouched. This is decision 4 of "Decisions already made", and matches Codex's `js_reset`: "All JavaScript bindings are discarded… This does not close browser tabs or native apps, or erase their state."
+- **Cell result convention (was open decision 2): explicit `print()`/`emit()` only, never REPL echo.** Echo is a second dialect, which the explicit-imports decision in "Decisions already made" already rejects: code that depends on it stops working the moment it becomes `run.py FILE` or a project import. It also bypasses the observation framing — a cell ending in `thread.snapshot()` would print raw text with no `--- BEGIN observation N ---` boundary and advance no baseline, which is where stale-baseline bugs come from. And it couples the runtime to the kernel, since REPL echo is an `ipykernel` feature; choosing it would force the out-of-process fallback to reimplement REPL semantics, leaving that fallback nominal rather than real. `emit()` stays the only writer, so code behaves identically in a cell, a file and an import. The token saving is unmeasured — the pilot that suggested it carries the contradictory-instruction defect — and belongs in the retention benchmark rerun if it is ever wanted; it can be added later without disturbing the framing contract, whereas retrofitting framing discipline onto echo would be breaking. Codex shows the hazard from the other side: its observation APIs emit internally and warn that wrapping them in `nodeRepl.write` duplicates output, which is why it needs a separate `{ emit: false }` control.
 
 Long jobs that must outlive the session are not the session interpreter's problem; they need their own process or files on disk.
+
+No open decisions remain before implementation.
 
 ## Replay contract
 
@@ -58,10 +61,6 @@ Rules:
 - Rebind before acting; inspect before repeating. Replaying a pure observation is harmless and replaying a submission is not, and a cell cannot be classified reliably enough to tell them apart.
 
 Design reference, not an implementation dependency: installed Codex bundle `26.908.61612`, package label `0.1.0-premerge-…`. Its `js` tool takes an optional per-call `timeout_ms` (default 30000), and any execution fault destroys the kernel and says so — `js execution timed out; kernel reset, rerun your request`, `trusted Node process exited unexpectedly; kernel reset, rerun your request`, `js sandbox changed; kernel reset, rerun your request`. Replay stays a fresh model decision rather than an automatic resend, and the fault text never states whether effects landed. Its workflow compensates structurally: `getAXState()` after every action batch, element indices re-derived from fresh text, and idempotent getters (`getTab`, `getState`) as the rebind path. Read from `/usr/lib/chatgpt/resources/cua_node/bin/node_repl` (strings) and the shipped markdown under `.../@oai/cua/docs/` and `.../@oai/cua-repl/instructions/`.
-
-## Still open
-
-1. **Cell result convention.** Require explicit `print()`/`emit()`, or echo the final expression like a REPL? REPL echo reduces tokens but can double-emit next to `emit()`.
 
 ## Evidence from the first benchmark
 
