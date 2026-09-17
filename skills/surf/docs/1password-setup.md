@@ -1,6 +1,6 @@
 # 1Password autofill setup
 
-One-time. Run once per Surf profile.
+Read once when enabling the 1Password extension in a Surf profile, or when its native messaging connection fails.
 
 Linux and macOS only. Windows uses registry-based native messaging host discovery, not profile-local file manifests.
 

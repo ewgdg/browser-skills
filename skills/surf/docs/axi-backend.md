@@ -1,6 +1,6 @@
 # AXI backend
 
-AXI is an explicitly selected alternative to Patchright. Through the [skill launcher](../SKILL.md):
+Read this when enabling AXI or diagnosing its bridge, debug port, or profile settings. AXI is an explicitly selected alternative to Patchright. Through the [skill launcher](../SKILL.md):
 
 ```python
 from surf_agent import Browser
@@ -33,9 +33,7 @@ export SURF_AGENT_AXI_TIMEOUT=15
 
 Internal AXI defaults are `CHROME_DEVTOOLS_AXI_PORT=9335` and `CHROME_DEVTOOLS_AXI_BROWSER_URL=http://127.0.0.1:9336`. Normal browser operations use the local HTTP bridge.
 
-If the bridge or debug port is unavailable, operations raise a browser-control error. For manual login, close automation windows and call `Browser().open_profile("https://example.com/login")`; close manual Chrome before resuming automation.
-
-`Browser().stop_bridge()` explicitly stops the persistent bridge and its automation-owned Chrome process. Next use starts runtime again. After a failed action, inspect state before deciding to repeat it.
+If the bridge or debug port is unavailable, operations raise a browser-control error. `Browser().stop_bridge()` stops both the bridge and its automation-owned Chrome process. Use the main skill's [manual login](../SKILL.md#login-and-human-unblock) and [recovery](../SKILL.md#recovery) workflows.
 
 ## Cookies and idle stop
 

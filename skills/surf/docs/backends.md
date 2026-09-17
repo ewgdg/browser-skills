@@ -1,6 +1,6 @@
 # Surf backends
 
-Surf supports one active backend at a time: Patchright by default, AXI as an explicit alternative.
+Read this when selecting a backend or diagnosing an unexpected selection. Surf supports one active backend at a time: Patchright by default, AXI as an explicit alternative.
 
 Selection priority:
 1. `SURF_AGENT_BACKEND`

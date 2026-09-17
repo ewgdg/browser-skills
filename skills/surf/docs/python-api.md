@@ -1,25 +1,10 @@
 # Surf Python API
 
-`surf_agent.Thread` owns a named browser page/window; `surf_agent.Browser` administers runtime and profile configuration. Import them with `Snapshot` and `SurfAgentError` from `surf_agent`. The Surf action CLI is removed; `surf-google-search` remains a separate CLI.
+Reference for method signatures, return values and state contracts. For execution, human handoff, recovery and cleanup policy, follow [SKILL.md](../SKILL.md). For dependency or release problems, read [launcher setup](launcher.md).
 
-Use the [skill-local launcher](../SKILL.md) for fresh Python scripts. It accepts a file or stdin and forwards script arguments. There is no persistent Python interpreter: each call imports and initializes handles again. Browser state persists separately, so `Thread("research")` reattaches to the same named context without navigating. Only call `open()` when navigation is intended.
+`surf_agent.Thread` owns a named browser page/window; `surf_agent.Browser` administers runtime and profile configuration. Import them with `Snapshot` and `SurfAgentError` from `surf_agent`.
 
 ## Thread
-
-```python
-from surf_agent import Thread
-
-thread = Thread("research")
-try:
-    thread.open("https://example.com")
-    observed = thread.snapshot()  # complete value; silent
-    thread.emit(observed)        # first emission: full text
-    print(thread.evaluate("document.title"))
-finally:
-    thread.close()
-```
-
-For a multi-call task, close at task completion instead of closing after each script. Preserve the thread during an explicit pending human handoff. Names must be safe thread names; use a unique task namespace for parallel agents.
 
 | Method | Result and behavior |
 | --- | --- |
@@ -80,12 +65,10 @@ Construct `Browser()` without opening a window. Methods are silent; print their 
 | `threads()` | List of `ThreadInfo(name, page_id, url, title)` from Patchright's running bridge or AXI's local records; does not start a bridge or scan every browser page. |
 | `close_matching(pattern)` | Closes remembered pages whose thread names match the glob; returns `None`. |
 
-Use task-owned cleanup patterns; `close_matching("*")` affects every remembered thread. Successful closing removes the remembered thread: Patchright's bridge-held entry or AXI's local state file. An unavailable Patchright bridge yields an empty inventory, not proof that every browser page is closed.
+Successful closing removes the remembered thread: Patchright's bridge-held entry or AXI's local state file. An unavailable Patchright bridge yields an empty inventory, not proof that every browser page is closed.
 
 Backend/profile guidance: [selection](backends.md), [manual 1Password setup](1password-setup.md), [cookie consent and failures](cookie-import.md).
 
-## Failure and release boundaries
+## Errors
 
-`SurfAgentError` signals Surf operational failures; invalid Python argument types/values can raise normal Python exceptions. A timeout or lost response does not establish that an action failed: inspect the same named page before deciding to repeat any side effect. Restarting runtime does not make replay safe.
-
-The launcher resolves the full reachable Git commit recorded in `../runtime-revision`. While it is `UNRELEASED`, default launch fails deliberately. `SURF_AGENT_DEPENDENCY=/absolute/path/to/surf_agent-....whl` permits local built-wheel validation, not a production release claim. Pinning remains gated on an authorized push and validation of that remote revision.
+`SurfAgentError` signals Surf operational failures; invalid Python argument types/values can raise normal Python exceptions. For uncertain outcomes after transport failures, follow the [recovery workflow](../SKILL.md#recovery).

@@ -2,7 +2,6 @@
 
 The maintained API reference ships with the installed skill:
 
-- [Python API](../skills/surf/docs/python-api.md): Thread, Browser, snapshot output, failure boundaries.
+- [Python API](../skills/surf/docs/python-api.md): Thread, Browser, snapshot output and errors.
 - [Surf workflow](../skills/surf/SKILL.md): fresh Python scripts, launcher, human handoff, cleanup.
-
-Surf's action CLI is removed; the separate `surf-google-search` CLI remains supported. Production launcher pinning remains gated while `skills/surf/runtime-revision` is `UNRELEASED`; local built-wheel validation is not a remote release.
+- [Launcher setup](../skills/surf/docs/launcher.md): dependency failures, release pin and local-wheel validation.

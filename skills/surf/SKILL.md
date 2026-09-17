@@ -5,13 +5,15 @@ description: Real browser control for web research, documentation lookup, testin
 
 # Surf
 
+Follow the workflow below; open linked `docs/` only when the stated task or problem applies.
+
 Run ordinary Python through `scripts/run.py`. Each call starts a fresh interpreter: import and initialize handles each time. Named browser threads persist between calls; Python variables and emission baselines do not. Save intermediate data to files when needed across calls.
 
 ## Prepare
 
 Set `SURF_SKILL` to the absolute directory containing this installed `SKILL.md`, not the working directory. Requires Python 3, `uv`, and Google Chrome; the launcher manages Python dependencies.
 
-If `runtime-revision` is `UNRELEASED`, stop normal setup and follow the [release/validation instructions](docs/python-api.md#failure-and-release-boundaries).
+If `runtime-revision` is `UNRELEASED`, stop normal setup. For dependency failures or local-wheel validation, read [launcher setup](docs/launcher.md).
 
 Run setup once, or after installation changes:
 

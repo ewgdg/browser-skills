@@ -1,6 +1,6 @@
 # 1Password autofill
 
-Agent workflow. One-time setup: [1Password setup](1password-setup.md).
+Use this when filling a login form with the configured 1Password extension. For initial configuration, read [1Password setup](1password-setup.md).
 
 Pre-condition: 1Password desktop app unlocked.
 

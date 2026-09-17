@@ -72,6 +72,12 @@ Skill payloads live under `skills/<skill>/`; Python packages under `packages/<di
 
 Projects import the same `surf_agent` package directly, without the launcher. Install the built wheel with the Patchright extra for local development; after publication, use `uv add` with the same commit-pinned Git requirement recorded by the launcher.
 
+### Documentation boundaries
+
+- `skills/<skill>/SKILL.md`: the agent's operating workflow—when to use it, minimal execution examples, decisions, safety rules and completion/cleanup. Link to details at the point they become relevant.
+- `skills/<skill>/docs/`: shipped, on-demand references and specialized procedures. Each document states when to read it; it owns its detailed contracts or procedure rather than repeating the main workflow. These files are not separate skills.
+- Root `docs/`: project architecture, research and validation. Link to shipped skill references instead of duplicating them; installed skill docs must not depend on files outside the skill payload.
+
 ## Installed acceptance and release
 
 Build a wheel and skill archive (`npm pack --pack-destination /tmp/surf-release`), then extract the archive outside this checkout. With Chrome available, run:
