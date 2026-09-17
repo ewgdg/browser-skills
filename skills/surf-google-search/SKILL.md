@@ -5,57 +5,32 @@ description: Search the web through rendered Google Search and return compact st
 
 # surf-google-search
 
-Use the installed `surf-google-search` CLI. It serializes searches sharing one Surf profile, uses natural pacing, and returns one compact JSON object.
+Use the installed `surf-google-search` CLI for retrieval, then use the results for the requested research. Follow this workflow; open linked `docs/` only when the stated task or problem applies.
 
-## Prerequisite
-
-```bash
-uv tool install \
-  --with "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
-  "surf-google-search @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-google-search"
-```
+If the command is missing or needs updating, read [installation](docs/cli.md#installation). For browser startup or backend-selection problems, read [Surf backends](../surf/docs/backends.md).
 
 ## Search
 
 ```bash
 surf-google-search "latest Patchright documentation"
-surf-google-search --page 2 "latest Patchright documentation"
 surf-google-search --page 2 --page-count 2 "latest Patchright documentation"
 printf 'latest Patchright documentation\n' | surf-google-search -
 ```
 
-`QUERY` is required. Pass exact `-` to read it from stdin; omitting `QUERY` remains invalid.
-
-`--page` is one-based. `--page-count` accepts 1–3 and defaults to 1. One invocation processes one query and returns every unique eligible result from the requested consecutive Google pages. Eligible results include standard organic records and visible, independently positioned rich result cards; hidden or nested answer sources and multi-link Google modules are excluded.
-
-Successful output contains `query`, requested/visited pages, ordered `results`, and `exhausted`. Each result contains one-based Search `page`, one-based page-local `position`, `title`, cleaned destination `url`, nullable `snippet`, and nullable `displayed_date`. Position gaps are intentional when a repeated destination is removed.
-
-Use returned destination URLs with the appropriate browsing or research workflow. Search output does not preserve Google referrer behavior; that requires clicking a rendered result in a retained Search page.
+Read the returned JSON before continuing. On success, use its ordered results and destination URLs for browsing or research. For pagination limits, field meanings, result eligibility, or exit codes, consult the [CLI contract](docs/cli.md#request-and-output).
 
 ## Human intervention
 
-A Google challenge returns `human_intervention_required` and preserves one browser thread. Tell the user what action is required and wait for explicit confirmation. Never focus the page automatically. If useful, show the user:
+A `human_intervention_required` error preserves a browser thread. Tell the user what action is needed and wait for explicit confirmation. Preserve the page while waiting; queued searches share this handoff rather than bypassing it. Focus the window only on request, following [window focus](docs/cli.md#window-focus).
 
-```python
-from surf_agent import Thread
-
-Thread("<thread>").focus()
-```
-
-Run that only on request, through the [Surf Python launcher](../surf/SKILL.md), replacing `<thread>` with the returned name. Its runtime release gate applies independently of the installed Google Search CLI.
-
-After confirmation, retry the exact search with the returned thread:
+After confirmation, retry the original query and pagination options with `--thread` set to `handoff.thread`. For a default-page search:
 
 ```bash
 surf-google-search --thread '<thread>' "same query"
 ```
 
-Queued searches sharing that Surf profile return the same handoff until the challenge is resolved or its page is closed.
-
 ## Outcomes
 
-- Exit `0`: valid search, including affirmed zero results or exhaustion.
-- Exit `1`: browser, Google-interface, challenge, or internal operational failure.
-- Exit `2`: invalid command input.
+Report affirmed zero results as a valid result. Treat `ui_changed` as a compatibility failure, not an empty result set or permission to substitute another provider. For other errors, report the returned type and hint; do not present failed retrieval as a completed search.
 
-Treat `ui_changed` as a compatibility failure. Do not reinterpret it as an empty result set or fall back to another search provider.
+The CLI cleans up ordinary search threads automatically. A challenge thread remains open for the human handoff; when abandoning it, use [Surf cleanup](../surf/SKILL.md#cleanup) for that thread only.

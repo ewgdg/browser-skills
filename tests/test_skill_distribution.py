@@ -1,4 +1,4 @@
-"""The distributed skill must include its launcher without bundling the runtime."""
+"""Distribute every skill and its references, without bundling the runtime."""
 
 import json
 from pathlib import Path
@@ -16,5 +16,10 @@ def test_skill_distribution_contains_executable_payload():
         cwd=root, capture_output=True, text=True, check=True, timeout=20,
     )
     paths = {item["path"] for item in json.loads(result.stdout)[0]["files"]}
-    assert {"skills/surf/SKILL.md", "skills/surf/scripts/run.py", "skills/surf/runtime-revision"} <= paths
+    documents = {
+        path.relative_to(root).as_posix()
+        for pattern in ("skills/*/SKILL.md", "skills/*/docs/**/*.md")
+        for path in root.glob(pattern)
+    }
+    assert documents | {"skills/surf/scripts/run.py", "skills/surf/runtime-revision"} <= paths
     assert not any(path.startswith("packages/") for path in paths), "the skill installs its runtime, not bundled source"

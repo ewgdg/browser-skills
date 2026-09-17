@@ -35,25 +35,13 @@ PY
 
 ## Google Search CLI
 
-Google Search retains its CLI and depends on Surf's Python API. Install both from the same intended release/source revision; installing from the repository default branch below uses remote code, not unpublished local changes:
-
-```bash
-uv tool install \
-  --with "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
-  "surf-google-search @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-google-search"
-```
+Google Search retains its CLI and depends on Surf's Python API. Follow the shipped [installation instructions](skills/surf-google-search/docs/cli.md#installation) to install matching published revisions.
 
 ```bash
 surf-google-search "latest Patchright documentation"
-surf-google-search --page 2 --page-count 2 "latest Patchright documentation"
-printf 'latest Patchright documentation\n' | surf-google-search -
 ```
 
-Pass exact `-` as the required query to read stdin. One invocation returns compact JSON for one to three consecutive rendered Google Search pages.
-
-Searches sharing one Surf profile serialize with randomized natural pacing and honor Patchright or AXI selection. Results include visible primary organic and top-level rich records; ads, hidden/nested sources, and multi-link Google modules are excluded. Each result includes its Search page and one-based page-local position. Duplicate destinations are removed within the invocation without compacting positions.
-
-A Google challenge preserves one browser thread and blocks queued searches from repeatedly navigating until resolved or closed. Follow the [Google Search skill](skills/surf-google-search/SKILL.md) for human handoff.
+Follow the [Google Search skill](skills/surf-google-search/SKILL.md) for retrieval and human handoff. Consult its [CLI reference](skills/surf-google-search/docs/cli.md#request-and-output) for pagination, result eligibility, output fields and errors.
 
 ## Profiles and login
 
