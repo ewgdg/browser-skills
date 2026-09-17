@@ -2,7 +2,7 @@
 
 Tracking issue: [#22](https://github.com/ewgdg/browser-skills/issues/22), still open.
 
-Status: active; implemented in the runtime and the launcher, with the test suites passing. The release gate is not done: `skills/surf/runtime-revision` still names the previous runtime, so the repository's skill is ahead of its pin until a runtime revision is published and pinned (requires explicit authorization).
+Status: active and released: implemented in the runtime and the launcher, pinned at `a81b446` and pushed, with the test suites passing and the pinned revision validated without a dependency override.
 
 Supersedes every earlier revision of this plan and the keying recommendation in `plans/proposed/session-identity.md`, which stays for its identity analysis only. Shape: sessions are created explicitly, addressed by an id the launcher prints, and die on an idle timeout or an explicit kill.
 
@@ -90,7 +90,7 @@ Neither is worth a file:
    - `--reset` discards bindings without replacing the interpreter.
 2. Implement create, reuse, kill and list; delete the ownership machinery; replace the owner-watch thread with the idle timer.
 3. Docs: `skills/surf/docs/launcher.md` (CLI, TTL, discovery), `skills/surf/SKILL.md` (create once per task, keep the id, expect expiry), and any `--session NAME` examples in `README.md` or the skill docs.
-4. Release gate: publish a runtime revision, update `skills/surf/runtime-revision`, confirm `tests/test_skill_distribution.py`. Requires explicit authorization.
+4. Release gate: pin `skills/surf/runtime-revision` to the commit holding the runtime change and push both, then confirm `tests/test_skill_distribution.py` passes and the pinned revision resolves. Done: pinned at `a81b446`, pushed in `a8d47f0`.
 
 ## Validation
 
@@ -117,7 +117,7 @@ If TTL expiry or a lost id is observed to cost real re-derivation in practice, t
 - [x] Ownership machinery deleted: ancestry walk, owner reference, harness identity, session key, log file and lock file.
 - [x] Tests: `packages/surf-agent/tests/test_session.py` (36 tests) and `tests/test_skill_launcher.py`; full suite 293 passed, 4 skipped.
 - [x] Docs updated: `skills/surf/SKILL.md`, `skills/surf/docs/launcher.md`, `README.md`, and the session-addressing bullets in `plans/active/persistent-interpreter.md`.
-- [ ] Runtime published and pin updated.
+- [x] Runtime pin updated to `a81b446` and pushed (`a8d47f0`); a copied install resolved the pinned revision and ran `--new-session` with no dependency override.
 
 ## Surprises and discoveries
 

@@ -10,7 +10,7 @@ The launcher executes Python directly: file-relative imports, working directory,
 
 ## Published runtime
 
-`runtime-revision`, beside `SKILL.md`, selects a full 40-character Git commit for the runtime dependency. Maintainers test and publish that runtime commit before updating the skill's pin, then validate the published skill without a dependency override. Users update the skill; the launcher installs its matching runtime.
+`runtime-revision`, beside `SKILL.md`, selects a full 40-character Git commit for the runtime dependency. The pin names the commit a runtime change was made in and resolves once that commit is pushed; maintainers update it in the same change as the runtime edit. Users update the skill; the launcher installs its matching runtime.
 
 A missing or invalid pin is an installation defect. Stop and report it, then update or repair the installed skill. If the pinned commit cannot be fetched, report that failure.
 
