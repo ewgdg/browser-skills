@@ -18,7 +18,7 @@ The interpreter already existed; the complexity came from how sessions were addr
 
 ## Scope & constraints
 
-- `--new-session [--name SLUG] [--ttl SECONDS] -` creates an interpreter and prints its id as a launcher frame on stderr, next to the existing identity frames: `--- session surf-7f3a91c2 (created; idle timeout 1800 s) ---`. stdout stays ordinary script output.
+- `--new-session [--name SLUG] [--ttl SECONDS] -` creates an interpreter, prints its id as the **last line of stdout**, and repeats it inside the launcher frame on stderr. Later calls add nothing to stdout: the id rides in their stderr frames only.
 - `--session ID -` reuses exactly that interpreter. An unknown id is an error listing live sessions: no implicit creation, no bare-name reuse, so a typo cannot silently start a fresh interpreter.
 - **TTL**: idle timeout measured between cells. A running cell is never interrupted by it — that is `--timeout`'s job. Default `DEFAULT_SESSION_IDLE_TIMEOUT_S` = 1800, overridable per session at creation.
 - `--kill-session ID` kills immediately. A cell in flight dies with it and its side effects are unknown, exactly as with a timeout.
@@ -34,6 +34,16 @@ The interpreter already existed; the complexity came from how sessions were addr
 2. **TTL default 1800 s**, per-session override. Rationale: 35.5 MB measured per live interpreter, so an idle session should not outlive a task by much, while a human handoff inside one task should survive. Shorter favours memory, longer favours handoffs.
 3. **Discovery is required** (`--list-sessions`), because an opaque id cannot be re-derived from memory the way a name could. Working directory plus idle time is the identification hint.
 4. **Kill is immediate and documented as such**; clean shutdown removes the socket, and the listing skips sockets with no listener.
+5. **Stream placement**: the id is the last line of stdout on the create call only; the identity, cell-counter and status frames stay on stderr. Rationale below.
+
+### Stream placement
+
+pi's bash tool returns stdout and stderr together, and this session's own exec tool merges both into one result field, so a stderr frame is readable. Two things still argue for putting the handle on stdout:
+
+- **Not every harness treats the streams equally.** A consumer that captures only stdout, or routes stderr into a separate channel, would lose the one value the caller cannot re-derive.
+- **Ordering between the streams is not guaranteed.** Probes in this session produced stderr-first and interleaved orderings for identical commands, so agent-critical values should not depend on position — except deliberately: the create call's id is last on stdout *by construction*, which is the one deterministic position available.
+
+Printing *all* frames on stdout was rejected: every cell's stdout would then carry launcher noise, breaking `run.py --session ID - | jq` and `run.py ... > out.txt`. The create call is the single place where the caller is explicitly asking for a handle, so it pays for purity there and nowhere else.
 
 ## Rejected
 
@@ -45,7 +55,8 @@ The interpreter already existed; the complexity came from how sessions were addr
 ## Work plan
 
 1. Test-first, before implementation:
-   - creating a session returns an id and prints it in the frame;
+   - creating a session returns an id, prints it as the last line of stdout, and repeats it in the stderr frame — including when the first cell raises;
+   - a reusing call writes nothing extra to stdout, so the cell's own output stays pipeable;
    - reusing that id attaches and the cell counter continues;
    - an unknown id errors and lists live sessions;
    - idle past the TTL → the interpreter is gone and the id is unknown;
@@ -66,7 +77,8 @@ The interpreter already existed; the complexity came from how sessions were addr
 
 ## Risks
 
-- **Lost id** (context compaction, a long interruption): loud — `unknown session` plus a live list — and the cost is rebuilding state, never contamination. Mitigation: print the id in every frame, and recommend the agent write the id next to its task notes for long tasks.
+- **Lost id** (context compaction, a long interruption): loud — `unknown session` plus a live list — and the cost is rebuilding state, never contamination. Mitigation: the id appears in the create call's stdout and in every later stderr frame, `--list-sessions` is the fallback, and long tasks should write the id next to their notes.
+- **A harness that separates the streams** may show the id only in stdout's last line, or only in the stderr frame. Both carry it; neither is required alone.
 - **TTL expiry during a human handoff**: the recovery cell covers it, at the cost of one cell. `--ttl` exists for tasks that involve a human.
 - **Leak bounded by TTL rather than by owner death**: a crashed agent leaves one interpreter until it idles out. Accepted, bounded and measured.
 - **Migration**: every existing name-keyed session becomes unreachable; those interpreters expire on their own, and no cleanup step is needed because deleting a live session's socket would break it.
@@ -83,6 +95,8 @@ If TTL expiry or a lost id is observed to cost real re-derivation in practice, t
 - [ ] Runtime published and pin updated.
 
 ## Surprises and discoveries
+
+- Streams: pi's bash tool documents that it returns stdout and stderr, and this session's exec tool merges them into one field, but their relative order is not stable — the same shape of command produced stderr-first once and chronological interleaving another time. Labelled values survive that; positional ones do not.
 
 - Identity and ownership were separate mechanisms that disagreed in practice: this session's shells carry no `PI_SESSION_ID`, while ownership resolved to `pi` through `python3 → exec_bridge → pi → zsh → systemd`.
 - Ancestor stability is harness-specific: consecutive tool calls gave different `python3` pids but the same `exec_bridge` and `pi`, so "key on the parent pid" is not portable.
