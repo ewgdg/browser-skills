@@ -269,6 +269,7 @@ def test_idle_interpreter_exits_after_its_timeout():
     assert wait_for(lambda: not session.session_socket_path(created.session_id).exists())
     with pytest.raises(session.SessionError, match="unknown session"):
         run_in(created.session_id, "pass")
+    assert process_state(created.interpreter_pid) is None
 
 
 def test_a_running_cell_is_not_cut_by_the_idle_timeout():
@@ -281,7 +282,8 @@ def test_a_running_cell_is_not_cut_by_the_idle_timeout():
 def test_kill_session_stops_it_and_removes_its_files():
     created = create("kept = 1")
     assert session.kill_session(created.session_id) is True
-    assert wait_for_exit(created.interpreter_pid)
+    # The creator reaps its own worker: a finished worker must not linger as a zombie.
+    assert process_state(created.interpreter_pid) is None
     assert not session.session_socket_path(created.session_id).exists()
     assert session.kill_session(created.session_id) is False
     with pytest.raises(session.SessionError, match="unknown session"):

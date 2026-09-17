@@ -123,6 +123,7 @@ If TTL expiry or a lost id is observed to cost real re-derivation in practice, t
 
 - A stop request is handled on its own thread, so the accept loop must check the stopping flag on its timeout path as well: the first implementation cleared it only where a connection had just been accepted, and a stopped worker then lived until its idle timeout. The kill test caught it.
 - A worker from an earlier runtime answers hello without the new fields. `--list-sessions` ignores such interpreters with a frame on stderr and `--kill-session` refuses them with an explanation rather than pretending they are absent, which matters only during the transition but would otherwise hide a live process.
+- A worker that exits stays a zombie until its creator reaps it. The launcher is a one-shot process, so init reaps it, but a long-lived process that creates sessions accumulates one zombie per session. Measured directly: three created sessions, killed, all three left as zombies of the creating process. Every entry point now reaps finished workers, and `--kill-session` waits for the exit so "stopped" means the process is gone.
 
 - Streams: pi's bash tool documents that it returns stdout and stderr, and this session's exec tool merges them into one field, but their relative order is not stable — the same shape of command produced stderr-first once and chronological interleaving another time. Labelled values survive that; positional ones do not.
 

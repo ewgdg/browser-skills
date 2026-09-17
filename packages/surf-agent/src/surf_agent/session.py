@@ -57,6 +57,11 @@ _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
 _SOCKET_SUFFIX = ".sock"
 
+# Workers this process started. A worker that exits stays a zombie until its
+# creator reaps it: a one-shot launcher exits immediately, but a long-lived
+# process that creates sessions must reap its own children as they finish.
+_children: list[subprocess.Popen] = []
+
 
 class SessionError(SurfAgentError):
     """The session interpreter could not be started or spoken to."""
@@ -360,6 +365,26 @@ def _release_startup_pipe(process: subprocess.Popen) -> None:
             process.stdout.close()
 
 
+def _reap_children(wait_s: float = 0.0) -> None:
+    """Reap finished workers; every entry point calls this.
+
+    *wait_s* gives a caller that has just asked a worker to stop time to see it
+    exit, so "stopped" means the process is gone rather than merely dying.
+    """
+    deadline = time.monotonic() + wait_s
+    while True:
+        pending = False
+        for process in list(_children):
+            if process.poll() is not None:
+                with contextlib.suppress(ValueError):
+                    _children.remove(process)
+            else:
+                pending = True
+        if not pending or time.monotonic() >= deadline:
+            return
+        time.sleep(0.02)
+
+
 def _start_interpreter(socket_path: Path, idle_timeout_s: float) -> tuple[int, int]:
     """Spawn a worker for this socket path and wait until it accepts cells.
 
@@ -383,6 +408,7 @@ def _start_interpreter(socket_path: Path, idle_timeout_s: float) -> tuple[int, i
         reply = _hello_quietly(socket_path, HELLO_TIMEOUT_S)
         if reply is not None:
             _release_startup_pipe(process)
+            _children.append(process)
             return int(reply["pid"]), int(reply["cells"])
         if process.poll() is not None:
             raise SessionError(
@@ -490,6 +516,7 @@ def _session_entry(session_id: str, reply: dict[str, Any]) -> SessionEntry:
 
 def list_sessions() -> list[SessionEntry]:
     """Live sessions, discovered from the socket directory that names them."""
+    _reap_children()
     try:
         paths = sorted(session_socket_dir().glob(f"*{_SOCKET_SUFFIX}"))
     except OSError:
@@ -516,6 +543,7 @@ def _unknown_session_error(session_id: str) -> SessionError:
 
 def kill_session(session_id: str, *, timeout_s: float = WORKER_START_TIMEOUT_S) -> bool:
     """Stop a session interpreter; True when one was there to stop."""
+    _reap_children()
     _validate_session_id(session_id)
     socket_path = session_socket_path(session_id)
     reply = _hello(socket_path, HELLO_TIMEOUT_S)
@@ -531,6 +559,9 @@ def kill_session(session_id: str, *, timeout_s: float = WORKER_START_TIMEOUT_S) 
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline and socket_path.exists():
         time.sleep(0.02)
+    # A worker removes its socket just before exiting, so wait for the exit too:
+    # otherwise a stopped session leaves a zombie behind its own confirmation.
+    _reap_children(wait_s=min(timeout_s, 2.0))
     with contextlib.suppress(OSError):
         socket_path.unlink()
     return True
@@ -559,6 +590,7 @@ def run_cell(
     if not math.isfinite(idle_timeout_s) or idle_timeout_s <= 0:
         raise SessionError("session idle timeout must be a positive number of seconds")
     _validate_session_id(session_id)
+    _reap_children()
     socket_path = session_socket_path(session_id)
     _prepare_directory(socket_path.parent)
     if create:
@@ -635,6 +667,7 @@ def run_cell(
 
 def reset_bindings(session_id: str) -> ResetResult:
     """Discard Python bindings in the session interpreter; never replace it."""
+    _reap_children()
     _validate_session_id(session_id)
     socket_path = session_socket_path(session_id)
     _prepare_directory(socket_path.parent)
