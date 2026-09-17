@@ -7,7 +7,12 @@ description: Real browser control for web research, documentation lookup, testin
 
 Follow the workflow below; open linked `docs/` only when the stated task or problem applies.
 
-Run ordinary Python through `scripts/run.py`. Each call starts a fresh interpreter: import and initialize handles each time. Named browser threads persist between calls; Python variables and emission baselines do not. Save intermediate data to files when needed across calls.
+Run Python through `scripts/run.py`. Named browser threads persist between calls; Python variables and emission baselines live with the interpreter that ran the code.
+
+- **Fresh interpreter** — `run.py FILE|-` starts a new interpreter for that call. Import and initialize handles each time; write intermediate data to files when a later call needs it.
+- **Persistent session** — `run.py --session NAME -` reuses one interpreter per session name. Initialize handles once, then reuse variables, helpers and data in later cells.
+
+Choose one mode per task. Multi-step work that repeatedly inspects the same page benefits from a session; a one-shot script does not need one. Cells run sequentially: a second cell while one is running fails immediately instead of queueing.
 
 ## Prepare
 
@@ -55,6 +60,26 @@ thread.press("Enter")
 thread.emit(thread.snapshot())
 ```
 
+A persistent session keeps the initialized handle, its emission baseline and any helper or data from earlier cells. Use the same session name for the whole task:
+
+```bash
+python3 "$SURF_SKILL/scripts/run.py" --session research-42 - <<'PY'
+from surf_agent import Thread
+
+thread = Thread("research-42")
+thread.open("https://example.com")
+thread.emit(thread.snapshot())
+PY
+```
+
+```bash
+python3 "$SURF_SKILL/scripts/run.py" --session research-42 - <<'PY'
+thread.fill("@query", "browser skills")  # `thread` and its baseline survived
+thread.press("Enter")
+thread.emit(thread.snapshot())
+PY
+```
+
 Actions and observations are silent; print only useful results. `snapshot().text` is complete. `emit(snapshot)` outputs a numbered observation with explicit BEGIN/END boundaries: full text first, then useful diffs; `full=True` forces full output. Multiple emissions appear in order in the same script output, not separate agent turns. End the script when the next action requires a decision. Read [snapshot semantics](docs/python-api.md#snapshot-output) for the format, baselines or custom sinks.
 
 Pass a Python file or `-` for stdin; subsequent arguments reach `sys.argv`. For large text or JavaScript, read files in Python rather than nesting shell quoting:
@@ -77,11 +102,13 @@ For manual login, close Surf automation windows and call `Browser().open_profile
 
 After timeout or connection loss, inspect the same named thread before deciding whether to repeat an action: submissions, purchases, or messages may already have taken effect.
 
+A cell that exceeds `--timeout SECONDS` (default 300) destroys the session interpreter. The next call reports the replacement: bindings are lost, the browser thread is not, and the failed cell's side effects are unknown. `--session NAME --reset` discards bindings without replacing the interpreter. After either, reattach with `Thread(name)`, emit a full observation, and inspect before repeating anything; a new handle has no baseline, so its first emission is full.
+
 `is_open()` checks without creating a page, but false can also mean the bridge is unavailable. Reopen only when absence is established and navigation is safe. For a persistently unavailable bridge, use `Browser().stop_bridge()`; the next browser action restarts it. Restarting does not make replay safe.
 
 ## Cleanup
 
-Close every thread you opened when its work is complete, including after errors; retain a thread only for an explicit pending human handoff.
+Close every thread you opened when its work is complete, including after errors; retain a thread only for an explicit pending human handoff. A session interpreter ends with the agent session; closing threads remains the caller's job.
 
 ```python
 from surf_agent import Browser, Thread

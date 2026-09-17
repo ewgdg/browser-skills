@@ -59,7 +59,7 @@ Automatic diff falls back to full output if page identity/origin changes, the di
 
 Failed or incomplete writes leave the baseline unchanged; observation numbers may have gaps so a partly written frame's number is never reused. `emit()` returns `None`, and all frames append to the selected sink; it does not pause the script for an agent decision.
 
-Baselines belong to Python handles, not persistent thread storage. A fresh script's first emission is full. Use separate handles for independent output consumers rather than sending dependent diffs to unrelated sinks.
+Baselines belong to Python handles, not persistent thread storage or the browser. A fresh script's first emission is full. A persistent session keeps each handle's baseline across cells; a replaced interpreter loses it, so the first emission of a handle recreated in that interpreter is full by construction. Use separate handles for independent output consumers rather than sending dependent diffs to unrelated sinks.
 
 ## Browser administration
 

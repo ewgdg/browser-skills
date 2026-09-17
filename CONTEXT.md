@@ -26,6 +26,12 @@ _Avoid_: Publication date, inferred date
 
 **Browser thread** — A named browser interaction context managed by Surf, presented as a window or tab. The thread is the caller's unit of browser interaction and ownership, not the underlying browser page identifier or bridge address.
 
+**Session interpreter** — One isolated Python process owned by an agent session that keeps Python bindings alive across tool calls and user turns. Ordinary `run.py FILE|-` calls use fresh interpreters and are not session interpreters.
+_Avoid_: Kernel, REPL, sandbox
+
+**Cell** — One piece of Python source executed in a session interpreter, reading from stdin like a script run with `-`. Cells run sequentially, and a cell's output returns to the caller when it finishes; a cell's failure or timeout says nothing about browser side effects.
+_Avoid_: Step, script, command
+
 **Cookie import** — A one-way refresh that adds or updates selected cookies from a normal browser profile in the Surf profile. It does not remove cookies that exist only in Surf.
 
 **Cookie source** — The explicitly configured normal browser profile from which Surf imports cookies.
