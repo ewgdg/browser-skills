@@ -102,7 +102,7 @@ For manual login, close Surf automation windows and call `Browser().open_profile
 
 After timeout or connection loss, inspect the same named thread before deciding whether to repeat an action: submissions, purchases, or messages may already have taken effect.
 
-A cell that exceeds `--timeout SECONDS` (default 300) destroys the session interpreter. The next call reports the replacement: bindings are lost, the browser thread is not, and the failed cell's side effects are unknown. `--session NAME --reset` discards bindings without replacing the interpreter. After either, reattach with `Thread(name)`, emit a full observation, and inspect before repeating anything; a new handle has no baseline, so its first emission is full. If a call reports an interpreter that did not answer, stop the process it names and retry; the browser thread survives.
+A cell that exceeds `--timeout SECONDS` (default 300) destroys the session interpreter. The next call reports the replacement: bindings are lost, the browser thread is not, and the failed cell's side effects are unknown. `--session NAME --reset` discards bindings without replacing the interpreter. After either, reattach with `Thread(name)`, emit a full observation, and inspect before repeating anything; a new handle has no baseline, so its first emission is full. If a call reports an interpreter that did not answer, resume or stop the process it names and retry; the browser thread survives.
 
 `is_open()` checks without creating a page, but false can also mean the bridge is unavailable. Reopen only when absence is established and navigation is safe. For a persistently unavailable bridge, use `Browser().stop_bridge()`; the next browser action restarts it. Restarting does not make replay safe.
 

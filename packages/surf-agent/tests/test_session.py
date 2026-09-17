@@ -338,6 +338,40 @@ def test_stopped_interpreter_is_reported_not_replaced(monkeypatch, owner):
     assert after.stdout == b"resumed 1\n"
 
 
+def test_listener_pid_finds_the_worker_for_both_spawn_forms(monkeypatch, owner):
+    default_worker = session.run_cell("work", "pass", owner=owner)
+    assert session._listener_pid(session.session_socket_path("work")) == default_worker.interpreter_pid
+
+    bootstrap = (
+        "import sys; from surf_agent.session import main; "
+        "raise SystemExit(main(['worker', *sys.argv[1:]]))"
+    )
+    monkeypatch.setenv(session.WORKER_COMMAND_ENV, json.dumps([sys.executable, "-c", bootstrap]))
+    inline_worker = session.run_cell("inline", "pass", owner=owner)
+    assert (
+        session._listener_pid(session.session_socket_path("inline"))
+        == inline_worker.interpreter_pid
+    )
+
+
+def test_stalled_interpreter_before_a_cell_starts_reports_a_stall(monkeypatch, owner):
+    first = session.run_cell("work", "kept = 1", owner=owner)
+
+    def stalled(*_args, **_kwargs):
+        raise session._InterpreterGone("interpreter did not answer: timed out", stalled=True)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(session, "_exchange_cell", stalled)
+        with pytest.raises(session.SessionError) as failure:
+            session.run_cell("work", "print('never')", owner=owner)
+    assert str(first.interpreter_pid) in str(failure.value)
+    # Nothing was killed: the same interpreter still holds the bindings.
+    after = session.run_cell("work", "print(kept)", owner=owner)
+    assert after.status == "ok"
+    assert after.created is False
+    assert after.stdout == b"1\n"
+
+
 def test_dead_worker_is_replaced_on_the_next_cell(owner):
     first = session.run_cell("work", "kept = 2", owner=owner)
     os.kill(first.interpreter_pid, signal.SIGKILL)

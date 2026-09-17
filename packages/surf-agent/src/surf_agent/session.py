@@ -328,9 +328,20 @@ def _listener_pid(socket_path: Path) -> int | None:
         arguments = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
         if not arguments or not Path(arguments[0]).name.startswith("python"):
             continue
-        if wanted in arguments and "surf_agent.session" in arguments and "worker" in arguments:
+        # The worker's own command names the module either as an argument (`-m`) or
+        # inside an inline `-c` bootstrap, so match the joined command line too.
+        if wanted in arguments and "surf_agent.session" in " ".join(arguments):
             return int(entry.name)
     return None
+
+
+def _stalled_error(socket_path: Path) -> SessionError:
+    pid = _listener_pid(socket_path)
+    who = f" (pid {pid})" if pid is not None else ""
+    return SessionError(
+        f"the session interpreter{who} did not answer; resume or stop that "
+        "process and retry this session"
+    )
 
 
 def _hello(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
@@ -342,13 +353,8 @@ def _hello(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
         if exc.stalled:
             # A live interpreter that cannot answer any thread is stopped or
             # wedged. Replacing it would run two interpreters against one session,
-            # so fail fast and name the process that has to be stopped first.
-            pid = _listener_pid(socket_path)
-            who = f" (pid {pid})" if pid is not None else ""
-            raise SessionError(
-                f"the session interpreter{who} did not answer; resume or stop that "
-                "process and retry this session"
-            ) from exc
+            # so fail fast and name the process that has to be resumed or stopped.
+            raise _stalled_error(socket_path) from exc
         return None
 
 
@@ -499,11 +505,13 @@ def run_cell(
     started = time.monotonic()
     number = cells + 1
     result_pid = pid
+    cell_started = False
 
     def on_started(interpreter_pid: int, assigned: int) -> None:
-        nonlocal number, result_pid
+        nonlocal number, result_pid, cell_started
         number = assigned
         result_pid = interpreter_pid
+        cell_started = True
         _frame(f"--- interpreter {interpreter_pid} (cell #{number}, {origin}) ---")
 
     try:
@@ -513,14 +521,18 @@ def run_cell(
             timeout_s + REPLY_GRACE_S,
             on_started,
         )
-    except _InterpreterGone:
+    except _InterpreterGone as exc:
+        if exc.stalled and not cell_started:
+            # No cell was accepted yet, so the session is stuck rather than lost.
+            raise _stalled_error(socket_path) from exc
         elapsed = time.monotonic() - started
         _kill_interpreter(pid, start_time)
-        reason = (
-            f"cell #{number} exceeded {timeout_s:g} s"
-            if elapsed >= timeout_s
-            else f"worker exited during cell #{number}"
-        )
+        if elapsed >= timeout_s:
+            reason = f"cell #{number} exceeded {timeout_s:g} s"
+        elif exc.stalled:
+            reason = f"interpreter stopped responding during cell #{number}"
+        else:
+            reason = f"worker exited during cell #{number}"
         _frame(f"--- interpreter replaced ({reason}); bindings lost; side effects unknown ---")
         return CellResult("replaced", result_pid, number, created, reason, b"", b"", elapsed)
 
@@ -558,7 +570,9 @@ def reset_bindings(name: str, *, owner: OwnerRef | None = None) -> ResetResult:
     pid, cells = int(reply["pid"]), int(reply["cells"])
     try:
         answer = _exchange(socket_path, {"op": "reset"}, HELLO_TIMEOUT_S)
-    except _InterpreterGone:
+    except _InterpreterGone as exc:
+        if exc.stalled:
+            raise _stalled_error(socket_path) from exc
         _frame(f"--- interpreter {pid} vanished before reset; bindings are gone ---")
         return ResetResult("absent", None, None)
     status = answer.get("status")
