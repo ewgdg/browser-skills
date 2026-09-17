@@ -8,6 +8,12 @@ Read this for dependency or release-installation failures, or deliberate local d
 
 The launcher executes Python directly: file-relative imports, working directory, script arguments, stdin, exceptions and exit codes follow ordinary Python behavior. It does not process inline dependency metadata. Google Chrome is a separate prerequisite; see [Patchright setup](patchright-backend.md#setup-and-selection) for detection and executable overrides.
 
+## Published runtime
+
+`runtime-revision`, beside `SKILL.md`, selects a full 40-character Git commit for the runtime dependency. Maintainers test and publish that runtime commit before updating the skill's pin, then validate the published skill without a dependency override. Users update the skill; the launcher installs its matching runtime.
+
+A missing or invalid pin is an installation defect. Stop and report it, then update or repair the installed skill. If the pinned commit cannot be fetched, report that failure.
+
 ## Local development validation
 
 Only when deliberately testing local runtime changes, supply an existing built wheel by absolute path:
