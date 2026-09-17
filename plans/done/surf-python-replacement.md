@@ -70,7 +70,7 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 - `setup()` validates prerequisites. The launcher installs the Patchright extra; Chrome installation remains explicit, outside package setup.
 - `set_backend()` stops the previous persisted backend before writing selection; `reset_backend()` only clears selection, so stop runtime explicitly first.
 - AXI `reset()` forgets local ownership without closing the window. Patchright rejects reset before mutation instead of preserving the old silent no-op for bridge-held ownership.
-- `runtime-revision` selects a verified reachable runtime commit. A new distribution regression test rejects UNRELEASED/invalid shipped pins. The wheel override remains explicit development-only; ordinary browsing reports installation defects instead of searching for alternate interpreters or cached wheels.
+- `runtime-revision` selects a verified reachable runtime commit. A new distribution regression test rejects missing or invalid shipped pins. The wheel override remains explicit development-only; ordinary browsing reports installation defects instead of searching for alternate interpreters or cached wheels.
 
 ## Outcomes & retrospective
 The replacement is published and the installed skill works through its default launcher. No wheel override, source checkout or Google Search interpreter is needed for normal use. Interpreter persistence remains deferred to #22; no live AXI or credential-login claims are added.

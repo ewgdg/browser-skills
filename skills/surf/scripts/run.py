@@ -25,9 +25,9 @@ def main():
         revision = (Path(__file__).resolve().parents[1] / "runtime-revision").read_text().strip()
         if not re.fullmatch(r"[0-9a-f]{40}", revision):
             print(
-                "Surf runtime is UNRELEASED or has an invalid revision. "
-                "Release requires a reachable commit pin; for local validation set "
-                "SURF_AGENT_DEPENDENCY to an absolute built-wheel path.",
+                "This Surf skill has a missing or invalid runtime pin, so it is not "
+                "correctly installed; update or reinstall it. For local development, "
+                "set SURF_AGENT_DEPENDENCY to an absolute built-wheel path.",
                 file=sys.stderr,
             )
             return 2

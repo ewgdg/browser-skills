@@ -13,10 +13,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_unreleased_dependency_fails_before_running_script(tmp_path):
+def test_missing_or_invalid_pin_fails_before_running_script(tmp_path):
     skill = tmp_path / "installed skill"
     shutil.copytree(ROOT / "skills/surf", skill, ignore=shutil.ignore_patterns(".*"))
-    (skill / "runtime-revision").write_text("UNRELEASED\n")
+    (skill / "runtime-revision").write_text("not-a-commit\n")
     env = os.environ.copy()
     env.pop("SURF_AGENT_DEPENDENCY", None)
     result = subprocess.run(
@@ -25,7 +25,7 @@ def test_unreleased_dependency_fails_before_running_script(tmp_path):
         cwd=tmp_path, env=env, timeout=10,
     )
     assert result.returncode == 2
-    assert "UNRELEASED" in result.stderr
+    assert "invalid runtime pin" in result.stderr
     assert "SURF_AGENT_DEPENDENCY" in result.stderr
     assert result.stdout == ""
 
