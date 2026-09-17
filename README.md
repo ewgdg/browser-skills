@@ -13,7 +13,7 @@ pi install git:github.com/ewgdg/browser-skills
 
 ## Surf Python workflow
 
-The Surf skill launches ordinary Python files or stdin through `skills/surf/scripts/run.py`. Each ordinary call starts a fresh interpreter, while `--session NAME` keeps one interpreter alive across calls; the dedicated browser and named threads survive either way. The Surf action CLI is removed. See [Surf skill](skills/surf/SKILL.md) for the execution workflow and [Python API](docs/surf-python-api.md) for the interface.
+The Surf skill launches ordinary Python files or stdin through `skills/surf/scripts/run.py`. Each ordinary call starts a fresh interpreter; `--new-session` creates a session interpreter whose id later calls pass back with `--session ID`, with an idle timeout and `--kill-session`/`--list-sessions` for control. The dedicated browser and named threads survive either way. The Surf action CLI is removed. See [Surf skill](skills/surf/SKILL.md) for the execution workflow and [Python API](docs/surf-python-api.md) for the interface.
 
 The launcher requires Python 3 and `uv`, selects Python 3.11, and supplies `surf-agent[patchright]`. Google Chrome must be installed separately. Patchright is the default; AXI remains an explicitly selected alternative. Camoufox is not supported.
 

@@ -2,7 +2,9 @@
 
 Tracking issue: [#22](https://github.com/ewgdg/browser-skills/issues/22), still open.
 
-Status: proposed, nothing implemented. Supersedes every earlier revision of this plan and the keying recommendation in `plans/proposed/session-identity.md`, which stays for its identity analysis only. Shape: sessions are created explicitly, addressed by an id the launcher prints, and die on an idle timeout or an explicit kill.
+Status: active; implemented in the runtime and the launcher, with the test suites passing. The release gate is not done: `skills/surf/runtime-revision` still names the previous runtime, so the repository's skill is ahead of its pin until a runtime revision is published and pinned (requires explicit authorization).
+
+Supersedes every earlier revision of this plan and the keying recommendation in `plans/proposed/session-identity.md`, which stays for its identity analysis only. Shape: sessions are created explicitly, addressed by an id the launcher prints, and die on an idle timeout or an explicit kill.
 
 ## Goal
 
@@ -111,12 +113,16 @@ If TTL expiry or a lost id is observed to cost real re-derivation in practice, t
 
 ## Progress
 
-- [ ] CLI: create, reuse, kill, list, TTL.
-- [ ] Ownership machinery deleted.
-- [ ] Docs updated.
+- [x] CLI: create, reuse, kill, list, TTL (`packages/surf-agent/src/surf_agent/session.py`, `skills/surf/scripts/run.py`).
+- [x] Ownership machinery deleted: ancestry walk, owner reference, harness identity, session key, log file and lock file.
+- [x] Tests: `packages/surf-agent/tests/test_session.py` (36 tests) and `tests/test_skill_launcher.py`; full suite 293 passed, 4 skipped.
+- [x] Docs updated: `skills/surf/SKILL.md`, `skills/surf/docs/launcher.md`, `README.md`, and the session-addressing bullets in `plans/active/persistent-interpreter.md`.
 - [ ] Runtime published and pin updated.
 
 ## Surprises and discoveries
+
+- A stop request is handled on its own thread, so the accept loop must check the stopping flag on its timeout path as well: the first implementation cleared it only where a connection had just been accepted, and a stopped worker then lived until its idle timeout. The kill test caught it.
+- A worker from an earlier runtime answers hello without the new fields. `--list-sessions` ignores such interpreters with a frame on stderr and `--kill-session` refuses them with an explanation rather than pretending they are absent, which matters only during the transition but would otherwise hide a live process.
 
 - Streams: pi's bash tool documents that it returns stdout and stderr, and this session's exec tool merges them into one field, but their relative order is not stable — the same shape of command produced stderr-first once and chronological interleaving another time. Labelled values survive that; positional ones do not.
 
