@@ -132,12 +132,19 @@ assert not Thread('installed-acceptance').is_open()
 print('cleanup passed')
 ''').strip() == "cleanup passed"
 
-        def invoke_session(source, *arguments, expect=0):
+        session = {"id": None}
+
+        def invoke_session(source, *arguments, expect=0, create=False):
+            options = ["--new-session"] if create else ["--session", session["id"]]
             result = subprocess.run(
-                [sys.executable, str(launcher), "--session", session_name, "-", *arguments],
+                [sys.executable, str(launcher), *options, "-", *arguments],
                 input=source, capture_output=True, text=True, cwd=workdir, env=environment, timeout=90,
             )
             assert result.returncode == expect, f"{result.stdout}\n{result.stderr}"
+            if create:
+                reported = re.search(r"^session_id: (\S+)$", result.stdout, re.MULTILINE)
+                assert reported, result.stdout
+                session["id"] = reported.group(1)
             return result
 
         def stop_session_worker(pid):
@@ -145,13 +152,9 @@ print('cleanup passed')
                 command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
             except OSError:
                 return
-            if session_name.encode() in command:
+            if session["id"] is not None and session["id"].encode() in command:
                 os.kill(pid, signal.SIGKILL)
 
-        # Persistent session: initialize once, act across cells, replace the
-        # interpreter, reattach to the surviving browser thread, then close.
-        # A unique name keeps a rerun from attaching to an earlier run's worker.
-        session_name = f"installed-session-{os.getpid()}"
         first_cell = invoke_session('''
 import sys
 from surf_agent import Thread
@@ -159,7 +162,7 @@ t = Thread('installed-acceptance-session')
 t.open(sys.argv[1] + '/index.html')
 records = 100
 t.emit(t.snapshot())
-''', base_url)
+''', base_url, create=True)
         created = re.search(r"--- interpreter (\d+) \(cell #1, created", first_cell.stderr)
         assert created, first_cell.stderr
         assert "+++ observation" not in first_cell.stdout, "first emission must be full"
@@ -182,9 +185,10 @@ t.emit(t.snapshot())
             time.sleep(0.05)
         assert not os.path.exists(f"/proc/{worker_pid}")
 
-        replaced = invoke_session("print(records)\n", expect=1)
-        assert "cell #1, created" in replaced.stderr, replaced.stderr
-        assert "NameError" in replaced.stderr, replaced.stderr
+        # A killed interpreter takes its session id with it: the bindings are gone
+        # and the id is refused rather than quietly remade.
+        lost = invoke_session("print(records)\n", expect=2)
+        assert "unknown session" in lost.stderr, lost.stderr
 
         reattached = invoke_session('''
 import io
@@ -197,8 +201,9 @@ frame = capture.getvalue()
 assert frame.startswith('--- BEGIN observation 1 ---\\n'), frame[:80]
 assert '+++ observation' not in frame, 'the new interpreter must emit full output first'
 print('reattached')
-''')
+''', create=True)
         assert reattached.stdout == "reattached\n"
+        new_worker = int(re.search(r"--- interpreter (\d+) ", reattached.stderr).group(1))
 
         # A later cell must be able to start the bridge process itself: the
         # session worker cannot rely on the temporary environment of its creator.
@@ -221,9 +226,7 @@ Thread('installed-acceptance-session').close()
 print('session thread closed')
 ''')
         assert closed.stdout == "session thread closed\n"
-        survivor = re.search(r"--- interpreter (\d+) \(cell #3, attached", restarted.stderr)
-        assert survivor, restarted.stderr
-        stop_session_worker(int(survivor.group(1)))
+        stop_session_worker(new_worker)
     finally:
         try:
             invoke("from surf_agent import Browser\nBrowser().stop_bridge()\n")

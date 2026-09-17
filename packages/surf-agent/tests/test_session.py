@@ -1,7 +1,8 @@
-"""Contract tests for the persistent per-session interpreter."""
+"""Contract tests for explicitly created session interpreters."""
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
@@ -19,58 +20,77 @@ import pytest
 from surf_agent import session
 
 
-@pytest.fixture(autouse=True)
-def isolated_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """Keep every test's sockets, logs and worker processes out of the real runtime dir."""
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
-    monkeypatch.delenv("PI_SESSION_ID", raising=False)
-    monkeypatch.delenv("PI_SESSION_FILE", raising=False)
-
-
-@pytest.fixture
-def owner():
-    """A stand-in for the harness process: long-lived, killable, and not our parent."""
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
-    info = session.read_process(process.pid)
-    assert info is not None
+def process_state(pid: int) -> str | None:
     try:
-        yield session.OwnerRef(pid=process.pid, start_time=info.start_time)
-    finally:
-        process.kill()
-        process.wait()
+        raw = Path(f"/proc/{pid}/stat").read_bytes()
+    except OSError:
+        return None
+    try:
+        return raw.rsplit(b") ", 1)[1].split()[0].decode()
+    except (IndexError, ValueError):
+        return None
 
 
-def wait_for_exit(pid: int, timeout_s: float = 10.0) -> str:
+def wait_for(predicate, timeout_s: float = 10.0) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        info = session.read_process(pid)
-        if info is None or info.state == "Z":
-            return "gone" if info is None else "Z"
-        time.sleep(0.05)
-    return "alive"
-
-
-def wait_for_state(pid: int, state: str, timeout_s: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        info = session.read_process(pid)
-        if info is not None and info.state == state:
+        if predicate():
             return True
         time.sleep(0.02)
     return False
 
 
-def run_when_ready(name: str, code: str, owner: session.OwnerRef, timeout_s: float = 10.0):
-    """Run a cell, waiting out a cell that another client left running."""
-    deadline = time.monotonic() + timeout_s
-    while True:
-        result = session.run_cell(name, code, owner=owner)
-        if result.status != "busy" or time.monotonic() > deadline:
-            return result
-        time.sleep(0.05)
+def wait_for_exit(pid: int, timeout_s: float = 10.0) -> bool:
+    return wait_for(lambda: process_state(pid) in (None, "Z"), timeout_s)
 
 
-def start_blocking_cell(owner, tmp_path, name: str = "work"):
+def stop_worker(socket_path: Path) -> None:
+    """Stop whatever still listens on this socket, and drop the name."""
+    pid = session._listener_pid(socket_path)
+    if pid is not None:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+        with contextlib.suppress(ChildProcessError, OSError):
+            os.waitpid(pid, os.WNOHANG)
+    with contextlib.suppress(OSError):
+        socket_path.unlink()
+
+
+@pytest.fixture(autouse=True)
+def isolated_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """Keep every test's sockets and worker processes out of the real runtime dir."""
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.delenv(session.WORKER_COMMAND_ENV, raising=False)
+    yield
+    directory = session.session_socket_dir()
+    if directory.exists():
+        for socket_path in directory.glob(f"*{session._SOCKET_SUFFIX}"):
+            stop_worker(socket_path)
+
+
+def create(code: str, *, name: str | None = None, idle_timeout_s: float | None = None, **kwargs) -> session.CellResult:
+    """Create a session and run its first cell."""
+    options = {"create": True}
+    if idle_timeout_s is not None:
+        options["idle_timeout_s"] = idle_timeout_s
+    options.update(kwargs)
+    return session.run_cell(session.new_session_id(name), code, **options)
+
+
+def run_in(session_id: str, code: str, **kwargs) -> session.CellResult:
+    return session.run_cell(session_id, code, **kwargs)
+
+
+def metadata_block(session_id: str, idle_timeout_s: float = session.DEFAULT_SESSION_IDLE_TIMEOUT_S) -> str:
+    return (
+        "--- BEGIN session metadata ---\n"
+        f"session_id: {session_id}\n"
+        f"idle_timeout_s: {idle_timeout_s:g}\n"
+        "--- END session metadata ---\n"
+    )
+
+
+def start_blocking_cell(session_id: str, tmp_path: Path, *, timeout_s: float = 60.0):
     """Start a cell that blocks until the returned release file appears."""
     marker, release = tmp_path / "marker", tmp_path / "release"
     code = (
@@ -81,32 +101,67 @@ def start_blocking_cell(owner, tmp_path, name: str = "work"):
         "    time.sleep(0.01)\n"
     )
     thread = threading.Thread(
-        target=session.run_cell, args=(name, code),
-        kwargs={"owner": owner, "timeout_s": 60.0},
+        target=session.run_cell, args=(session_id, code), kwargs={"timeout_s": timeout_s}
     )
     thread.start()
-    deadline = time.monotonic() + 10.0
-    while not marker.exists() and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert marker.exists(), "blocking cell never started"
+    assert wait_for(marker.exists), "blocking cell never started"
     return thread, release
 
 
-def send_raw_request(socket_path, request) -> socket.socket:
+def send_raw(socket_path: Path, payload: bytes) -> socket.socket:
     connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     connection.connect(str(socket_path))
-    connection.sendall(json.dumps(request).encode() + b"\n")
+    connection.sendall(payload)
     return connection
 
 
-def test_cells_run_in_order_and_retain_bindings(owner):
-    first = session.run_cell("work", "answer = 41\nprint('first')", owner=owner)
+@contextlib.contextmanager
+def fake_interpreter(socket_path: Path, reply: bytes | None):
+    """A listener that answers each connection with *reply*, or closes it."""
+    socket_path.parent.mkdir(parents=True, exist_ok=True)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(str(socket_path))
+    server.settimeout(0.2)
+    server.listen(8)
+    stop = threading.Event()
+
+    def loop() -> None:
+        while not stop.is_set():
+            try:
+                connection, _ = server.accept()
+            except (TimeoutError, OSError):
+                continue
+            with connection:
+                if reply is None:
+                    continue
+                stream = connection.makefile("rwb")
+                stream.readline()
+                stream.write(reply)
+                stream.flush()
+
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join(timeout=2.0)
+        server.close()
+        with contextlib.suppress(OSError):
+            socket_path.unlink()
+
+
+# Cells and bindings
+
+
+def test_cells_run_in_order_and_retain_bindings():
+    first = create("answer = 41\nprint('first')")
     assert first.status == "ok"
     assert first.cell_number == 1
     assert first.created is True
     assert first.stdout == b"first\n"
 
-    second = session.run_cell("work", "print('answer', answer + 1)", owner=owner)
+    second = run_in(first.session_id, "print('answer', answer + 1)")
     assert second.status == "ok"
     assert second.cell_number == 2
     assert second.created is False
@@ -114,136 +169,306 @@ def test_cells_run_in_order_and_retain_bindings(owner):
     assert second.stdout == b"answer 42\n"
 
 
-def test_cell_globals_are_script_globals(owner):
-    result = session.run_cell(
-        "work",
-        "import sys\nprint(__name__, sys.argv, 'Thread' in dir())",
-        argv=("-", "two words"),
-        owner=owner,
-    )
-    assert result.status == "ok"
-    assert result.stdout == b"__main__ ['-', 'two words'] False\n"
+def test_cell_globals_are_script_globals():
+    result = create("import sys\nprint(__name__, sys.argv, 'Thread' in dir())")
+    assert result.stdout == b"__main__ ['-'] False\n"
 
 
-def test_cell_output_and_errors_are_captured_per_cell(owner):
-    result = session.run_cell(
-        "work",
-        "import sys\nprint('out')\nprint('problem', file=sys.stderr)\nraise ValueError('boom')",
-        owner=owner,
-    )
-    assert result.status == "error"
-    assert result.detail == "ValueError: boom"
-    assert result.stdout == b"out\n"
-    assert b"Traceback" in result.stderr
-    assert b"ValueError: boom" in result.stderr
+def test_cell_output_and_errors_are_captured_per_cell():
+    created = create("print('out')\nraise ValueError('boom')")
+    assert created.status == "error"
+    assert created.stdout == b"out\n"
+    assert b"ValueError: boom" in created.stderr
+    assert "ValueError: boom" in (created.detail or "")
 
-    # The namespace survives a cell error.
-    after = session.run_cell("work", "print('still here')", owner=owner)
+    after = run_in(created.session_id, "print('recovered')")
     assert after.status == "ok"
-    assert after.cell_number == 2
+    assert after.stderr == b""
 
 
-def test_system_exit_ends_only_the_cell(owner):
-    result = session.run_cell("work", "import sys\nsys.exit(3)", owner=owner)
-    assert result.status == "error"
-    assert result.detail == "SystemExit: 3"
-    assert session.run_cell("work", "print('alive')", owner=owner).status == "ok"
+def test_system_exit_ends_only_the_cell():
+    created = create("raise SystemExit(3)")
+    assert created.status == "error"
+    assert "SystemExit" in (created.detail or "")
+    after = run_in(created.session_id, "print('alive')")
+    assert after.status == "ok"
 
 
-def test_reset_discards_bindings_without_replacing_interpreter(owner):
-    first = session.run_cell("work", "value = 7", owner=owner)
-    result = session.reset_bindings("work", owner=owner)
+# Ids and addressing
+
+
+def test_new_session_ids_are_readable_and_unique():
+    assert re.fullmatch(r"[0-9a-f]{8}", session.new_session_id())
+    assert re.fullmatch(r"my-task-[0-9a-f]{8}", session.new_session_id("my task!"))
+    assert len({session.new_session_id("task") for _ in range(50)}) == 50
+
+
+def test_invalid_session_ids_are_rejected():
+    for bad in ("", "-leading", ".hidden", "with/slash", "a" * 70, "space here"):
+        with pytest.raises(session.SessionError):
+            run_in(bad, "pass")
+
+
+def test_unknown_session_id_is_rejected_and_lists_live_sessions():
+    created = create("pass")
+    with pytest.raises(session.SessionError) as excinfo:
+        run_in(session.new_session_id("other"), "pass")
+    message = str(excinfo.value)
+    assert "unknown session" in message
+    assert created.session_id in message
+
+
+def test_two_sessions_do_not_share_globals():
+    first = create("kept = 'first'")
+    second = create("kept = 'second'")
+    assert first.interpreter_pid != second.interpreter_pid
+    assert run_in(first.session_id, "print(kept)").stdout == b"first\n"
+    assert run_in(second.session_id, "print(kept)").stdout == b"second\n"
+
+
+# The metadata block
+
+
+def test_create_prints_the_metadata_block_last_on_stdout(capfd):
+    created = create("print('cell output')", name="demo", idle_timeout_s=90.0)
+    captured = capfd.readouterr()
+    assert captured.out == "cell output\n" + metadata_block(created.session_id, 90.0)
+    assert created.session_id.startswith("demo-")
+    assert f"(cell #1, created; idle timeout 90 s)" in captured.err
+
+
+def test_create_prints_the_block_when_the_first_cell_raises(capfd):
+    created = create("raise ValueError('boom')")
+    captured = capfd.readouterr()
+    assert captured.out == metadata_block(created.session_id)
+
+
+def test_attach_prints_no_metadata_block(capfd):
+    created = create("pass")
+    capfd.readouterr()
+    run_in(created.session_id, "print('only output')")
+    captured = capfd.readouterr()
+    assert captured.out == "only output\n"
+    assert "session metadata" not in captured.out
+
+
+def test_cell_lookalike_block_does_not_change_the_rule(capfd):
+    lookalike = "--- BEGIN session metadata ---\nsession_id: fake\n--- END session metadata ---"
+    created = create(f"print({lookalike!r})")
+    captured = capfd.readouterr()
+    assert "session_id: fake" in captured.out
+    assert captured.out.endswith(metadata_block(created.session_id))
+
+
+# Lifetime
+
+
+def test_idle_interpreter_exits_after_its_timeout():
+    created = create("kept = 1", idle_timeout_s=1.0)
+    assert wait_for_exit(created.interpreter_pid)
+    assert wait_for(lambda: not session.session_socket_path(created.session_id).exists())
+    with pytest.raises(session.SessionError, match="unknown session"):
+        run_in(created.session_id, "pass")
+
+
+def test_a_running_cell_is_not_cut_by_the_idle_timeout():
+    created = create("pass", idle_timeout_s=1.0)
+    slow = run_in(created.session_id, "import time\ntime.sleep(2)", timeout_s=30.0)
+    assert slow.status == "ok"
+    assert run_in(created.session_id, "print('still here')").stdout == b"still here\n"
+
+
+def test_kill_session_stops_it_and_removes_its_files():
+    created = create("kept = 1")
+    assert session.kill_session(created.session_id) is True
+    assert wait_for_exit(created.interpreter_pid)
+    assert not session.session_socket_path(created.session_id).exists()
+    assert session.kill_session(created.session_id) is False
+    with pytest.raises(session.SessionError, match="unknown session"):
+        run_in(created.session_id, "pass")
+
+
+def test_list_sessions_reports_live_sessions():
+    created = create("pass", name="listed", idle_timeout_s=42.0)
+    entries = {entry.session_id: entry for entry in session.list_sessions()}
+    assert created.session_id in entries
+    entry = entries[created.session_id]
+    assert entry.interpreter_pid == created.interpreter_pid
+    assert entry.cells == 1
+    assert entry.idle_timeout_s == 42.0
+    assert entry.idle_s < 5.0
+    assert entry.cwd == os.getcwd()
+
+
+def test_list_sessions_sweeps_stale_sockets_and_ignores_other_protocols(capfd):
+    stale = session.session_socket_path(session.new_session_id("stale"))
+    stale.parent.mkdir(parents=True, exist_ok=True)
+    stale.touch()
+    old = time.time() - 60
+    os.utime(stale, (old, old))
+    other = session.session_socket_path(session.new_session_id("other"))
+    with fake_interpreter(other, b'{"status": "hello", "pid": 1, "cells": 0}\n'):
+        entries = session.list_sessions()
+    assert entries == []
+    assert not stale.exists()
+    assert "different interpreter protocol" in capfd.readouterr().err
+
+
+def test_kill_refuses_an_interpreter_this_runtime_cannot_stop():
+    socket_path = session.session_socket_path(session.new_session_id("other"))
+    with fake_interpreter(socket_path, b'{"status": "hello", "pid": 1, "cells": 0}\n'):
+        with pytest.raises(session.SessionError, match="does not speak to"):
+            session.kill_session(session_id_from(socket_path))
+
+
+def session_id_from(socket_path: Path) -> str:
+    return socket_path.name[: -len(session._SOCKET_SUFFIX)]
+
+
+# Reset
+
+
+def test_reset_discards_bindings_without_replacing_interpreter():
+    created = create("kept = 1")
+    result = session.reset_bindings(created.session_id)
     assert result.status == "ok"
-    assert result.interpreter_pid == first.interpreter_pid
-
-    after = session.run_cell("work", "print(value)", owner=owner)
-    assert after.status == "error"
-    assert "NameError" in (after.detail or "")
-    # Reset does not restart the cell counter: the interpreter identity is unchanged.
-    assert after.cell_number == 2
+    assert result.interpreter_pid == created.interpreter_pid
+    after = run_in(created.session_id, "print('kept' in dir())")
+    assert after.status == "ok"
+    assert after.stdout == b"False\n"
 
 
-def test_reset_without_an_interpreter_is_harmless(owner):
-    assert session.reset_bindings("nothing-here", owner=owner).status == "absent"
+def test_reset_without_an_interpreter_is_harmless():
+    result = session.reset_bindings(session.new_session_id("gone"))
+    assert result.status == "absent"
+    assert result.interpreter_pid is None
 
 
-def test_concurrent_first_cells_converge_on_one_interpreter(capfd, owner):
-    results: list[session.CellResult] = []
-
-    def run(index: int) -> None:
-        results.append(
-            session.run_cell("work", f"print('cell {index}')", owner=owner, timeout_s=30.0)
-        )
-
-    threads = [threading.Thread(target=run, args=(index,)) for index in range(3)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=60.0)
-
-    assert len(results) == 3
-    assert len({result.interpreter_pid for result in results}) == 1
-    assert {result.status for result in results} <= {"ok", "busy"}
-    finished = sorted(result.cell_number for result in results if result.status == "ok")
-    assert finished == list(range(1, len(finished) + 1))
-    # Every cell number is assigned and framed exactly once, headers and trailers alike.
-    frames = capfd.readouterr().err
-    assert sorted(re.findall(r"--- interpreter \d+ \(cell #(\d+), ", frames)) == [
-        str(number) for number in finished
-    ]
-    assert sorted(re.findall(r"--- cell #(\d+) ok", frames)) == [str(number) for number in finished]
-
-
-def test_reset_while_a_cell_runs_is_rejected(owner, tmp_path):
-    slow, release = start_blocking_cell(owner, tmp_path)
+def test_reset_while_a_cell_runs_is_rejected(tmp_path):
+    created = create("pass")
+    thread, release = start_blocking_cell(created.session_id, tmp_path)
     try:
-        assert session.reset_bindings("work", owner=owner).status == "busy"
+        result = session.reset_bindings(created.session_id)
+        assert result.status == "busy"
+        assert result.interpreter_pid == created.interpreter_pid
     finally:
         release.touch()
-        slow.join(timeout=60.0)
+        thread.join(timeout=30)
 
 
-def test_busy_cell_fails_fast_instead_of_queueing(owner, tmp_path):
-    slow, release = start_blocking_cell(owner, tmp_path)
+# Concurrency and robustness
+
+
+def test_busy_cell_fails_fast_instead_of_queueing(tmp_path):
+    created = create("pass")
+    thread, release = start_blocking_cell(created.session_id, tmp_path)
     try:
         started = time.monotonic()
-        result = session.run_cell("work", "print('never runs')", owner=owner)
-        assert result.status == "busy"
-        assert time.monotonic() - started < 1.0
-        assert result.stdout == b""
-        assert result.cell_number is None
+        busy = run_in(created.session_id, "pass")
+        assert busy.status == "busy"
+        assert busy.duration_s < 2.0
+        assert time.monotonic() - started < 2.0
     finally:
         release.touch()
-        slow.join(timeout=60.0)
+        thread.join(timeout=30)
 
 
-def test_client_that_disconnects_early_does_not_wedge_the_session(owner):
-    session.run_cell("work", "value = 1", owner=owner)
-    connection = send_raw_request(
-        session.session_socket_path("work"),
-        {"op": "cell", "code": "print('orphan')", "argv": ["-"], "timeout_s": 30},
+def test_client_that_disconnects_early_does_not_wedge_the_session():
+    created = create("pass")
+    socket_path = session.session_socket_path(created.session_id)
+    connection = send_raw(socket_path, b'{"op": "cell", "code": "print(1)"}\n')
+    connection.close()
+    assert run_in(created.session_id, "print('after')").stdout == b"after\n"
+
+
+def test_malformed_request_does_not_wedge_the_session():
+    created = create("pass")
+    socket_path = session.session_socket_path(created.session_id)
+    with send_raw(socket_path, b"not json\n") as connection:
+        reply = json.loads(connection.makefile("rb").readline())
+    assert reply["status"] == "error"
+    assert run_in(created.session_id, "print('after')").stdout == b"after\n"
+
+
+# Faults and replacement
+
+
+def test_timeout_replaces_interpreter_and_reports_the_loss():
+    created = create("kept = 1")
+    slow = run_in(created.session_id, "import time\ntime.sleep(30)", timeout_s=0.5)
+    assert slow.status == "replaced"
+    assert "exceeded 0.5" in (slow.detail or "")
+    assert slow.duration_s < 5.0
+    assert wait_for_exit(created.interpreter_pid)
+    # A replaced interpreter is gone: its id is unknown rather than silently remade.
+    with pytest.raises(session.SessionError, match="unknown session"):
+        run_in(created.session_id, "print(kept)")
+
+
+def test_cell_that_kills_its_worker_prints_nothing(capfd):
+    created = create("kept = 1")
+    capfd.readouterr()
+    result = run_in(
+        created.session_id,
+        "import os, signal\nprint('before death')\nos.kill(os.getpid(), signal.SIGKILL)",
     )
-    connection.close()  # never reads the started reply
-    result = run_when_ready("work", "print('after orphan', value)", owner)
-    assert result.status == "ok", result.detail
-    assert result.stdout == b"after orphan 1\n"
+    assert result.status == "replaced"
+    assert "exited during" in (result.detail or "")
+    assert result.stdout == b""
+    frames = capfd.readouterr().err
+    assert f"--- interpreter {created.interpreter_pid} (cell #2, attached) ---" in frames
 
 
-def test_malformed_request_does_not_wedge_the_session(owner):
-    session.run_cell("work", "value = 2", owner=owner)
-    connection = send_raw_request(
-        session.session_socket_path("work"),
-        {"op": "cell", "code": "print('bad')", "argv": ["-"], "timeout_s": None},
+def test_caller_replaces_a_worker_that_cannot_answer(monkeypatch):
+    monkeypatch.setattr(session, "REPLY_GRACE_S", 0.5)
+    created = create("pass")
+    outcome: list[session.CellResult] = []
+    thread = threading.Thread(
+        target=lambda: outcome.append(
+            run_in(created.session_id, "import time\ntime.sleep(30)", timeout_s=1.0)
+        )
     )
-    with connection, connection.makefile("rb") as stream:
-        assert json.loads(stream.readline())["status"] == "started"
-        assert json.loads(stream.readline())["status"] == "error"
-    result = run_when_ready("work", "print('after malformed', value)", owner)
-    assert result.status == "ok", result.detail
-    assert result.stdout == b"after malformed 2\n"
+    thread.start()
+    assert wait_for(lambda: process_state(created.interpreter_pid) is not None)
+    time.sleep(0.3)
+    os.kill(created.interpreter_pid, signal.SIGSTOP)
+    thread.join(timeout=30)
+    assert not thread.is_alive()
+    assert outcome and outcome[0].status == "replaced"
+    assert "exceeded 1" in (outcome[0].detail or "")
+    assert wait_for_exit(created.interpreter_pid)
 
 
-def test_configured_worker_command_starts_the_interpreter(monkeypatch, owner):
+def test_stopped_interpreter_is_reported_not_replaced(monkeypatch):
+    monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
+    created = create("pass")
+    os.kill(created.interpreter_pid, signal.SIGSTOP)
+    try:
+        with pytest.raises(session.SessionError, match="did not answer"):
+            run_in(created.session_id, "pass")
+    finally:
+        os.kill(created.interpreter_pid, signal.SIGKILL)
+    assert wait_for_exit(created.interpreter_pid)
+
+
+def test_interpreter_that_closes_the_channel_is_not_replaced():
+    socket_path = session.session_socket_path(session.new_session_id("closer"))
+    with fake_interpreter(socket_path, None):
+        with pytest.raises(session.SessionError, match="unknown session"):
+            run_in(session_id_from(socket_path), "pass")
+
+
+def test_malformed_hello_reply_is_reported():
+    socket_path = session.session_socket_path(session.new_session_id("garbage"))
+    with fake_interpreter(socket_path, b"not a reply\n"):
+        with pytest.raises(session.SessionError, match="unreadable reply"):
+            run_in(session_id_from(socket_path), "pass")
+
+
+# Worker configuration
+
+
+def test_configured_worker_command_starts_the_interpreter(monkeypatch):
     bootstrap = (
         "import sys; from surf_agent.session import main; "
         "raise SystemExit(main(['worker', *sys.argv[1:]]))"
@@ -251,255 +476,58 @@ def test_configured_worker_command_starts_the_interpreter(monkeypatch, owner):
     monkeypatch.setenv(
         session.WORKER_COMMAND_ENV, json.dumps([sys.executable, "-c", bootstrap])
     )
-    result = session.run_cell("work", "print('configured command')", owner=owner)
+    result = create("print('configured command')")
     assert result.status == "ok"
     assert result.stdout == b"configured command\n"
 
 
-def test_invalid_worker_command_is_rejected(monkeypatch, owner):
+def test_invalid_worker_command_is_rejected(monkeypatch):
     for value in ("not json", json.dumps([]), json.dumps(["python", 3])):
         monkeypatch.setenv(session.WORKER_COMMAND_ENV, value)
         with pytest.raises(session.SessionError):
-            session.run_cell("work", "pass", owner=owner)
+            create("pass")
 
 
-def test_timeout_replaces_interpreter_and_reports_new_identity(owner):
-    first = session.run_cell("work", "kept = 1", owner=owner)
-    slow = session.run_cell("work", "import time\ntime.sleep(30)", timeout_s=0.5, owner=owner)
-    assert slow.status == "replaced"
-    assert "exceeded 0.5" in (slow.detail or "")
-    assert slow.duration_s < 5.0
-    assert "exceeded its deadline" in session.session_log_path("work").read_text()
-    assert wait_for_exit(first.interpreter_pid) in {"gone", "Z"}
-
-    after = session.run_cell("work", "print(kept)", owner=owner)
-    assert after.created is True
-    assert after.cell_number == 1
-    assert after.interpreter_pid != first.interpreter_pid
-    assert after.status == "error"
-    assert "NameError" in (after.detail or "")
-
-
-def test_cell_that_kills_its_worker_prints_nothing(capfd, owner):
-    first = session.run_cell("work", "kept = 1", owner=owner)
-    result = session.run_cell(
-        "work",
-        "import os, signal\nprint('before death')\nos.kill(os.getpid(), signal.SIGKILL)",
-        owner=owner,
+def test_failing_worker_reports_its_own_output(monkeypatch):
+    monkeypatch.setenv(
+        session.WORKER_COMMAND_ENV,
+        json.dumps([sys.executable, "-c", "import sys; print('boom: cannot start'); sys.exit(3)"]),
     )
-    assert result.status == "replaced"
-    assert "exited during" in (result.detail or "")
-    assert result.stdout == b""
-    # The header is printed outside the cell, so the caller can still see where it died.
-    frames = capfd.readouterr().err
-    assert f"--- interpreter {first.interpreter_pid} (cell #2, attached) ---" in frames
+    with pytest.raises(session.SessionError, match="boom: cannot start"):
+        create("pass")
 
 
-def test_caller_kills_an_interpreter_that_misses_its_own_deadline(monkeypatch, owner):
-    # The worker's own timer is the primary deadline; the caller must still kill
-    # an interpreter whose cell prevents that timer from running.
-    monkeypatch.setattr(session, "REPLY_GRACE_S", 0.5)
-    first = session.run_cell("work", "kept = 1", owner=owner)
-    result = session.run_cell(
-        "work",
-        "import threading, time\n"
-        "for thread in threading.enumerate():\n"
-        "    if isinstance(thread, threading.Timer):\n"
-        "        thread.cancel()\n"
-        "time.sleep(30)\n",
-        timeout_s=0.5,
-        owner=owner,
-    )
-    assert result.status == "replaced"
-    assert "exceeded 0.5" in (result.detail or "")
-    assert wait_for_exit(first.interpreter_pid) in {"gone", "Z"}
+# Files and streams
 
 
-def test_stopped_interpreter_is_reported_not_replaced(monkeypatch, owner):
-    monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.25)
-    first = session.run_cell("work", "kept = 1", owner=owner)
-    socket_path = session.session_socket_path("work")
-    os.kill(first.interpreter_pid, signal.SIGSTOP)
-    try:
-        assert wait_for_state(first.interpreter_pid, "T")
-        # More attempts than the accept queue holds: none may replace the worker,
-        # and every failure names the process that has to be resumed or stopped.
-        for _ in range(session.SOCKET_BACKLOG + 4):
-            with pytest.raises(session.SessionError) as failure:
-                session.run_cell("work", "print('while stopped')", owner=owner)
-            assert str(first.interpreter_pid) in str(failure.value)
-        assert session.read_process(first.interpreter_pid).state == "T"
-        assert socket_path.exists()
-    finally:
-        os.kill(first.interpreter_pid, signal.SIGCONT)
-    after = session.run_cell("work", "print('resumed', kept)", owner=owner)
-    assert after.status == "ok"
-    assert after.created is False
-    assert after.stdout == b"resumed 1\n"
-
-
-def test_listener_pid_finds_the_worker_for_both_spawn_forms(monkeypatch, owner):
-    default_worker = session.run_cell("work", "pass", owner=owner)
-    assert session._listener_pid(session.session_socket_path("work")) == default_worker.interpreter_pid
-
-    bootstrap = (
-        "import sys; from surf_agent.session import main; "
-        "raise SystemExit(main(['worker', *sys.argv[1:]]))"
-    )
-    monkeypatch.setenv(session.WORKER_COMMAND_ENV, json.dumps([sys.executable, "-c", bootstrap]))
-    inline_worker = session.run_cell("inline", "pass", owner=owner)
-    assert (
-        session._listener_pid(session.session_socket_path("inline"))
-        == inline_worker.interpreter_pid
-    )
-
-
-def test_interpreter_closing_before_a_request_is_reported_not_raised():
-    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
-    right.close()
-    # Unbuffered: the failed write must not linger for a later close to flush.
-    with left, left.makefile("wb", buffering=0) as stream:
-        with pytest.raises(session._InterpreterGone) as failure:
-            session._send_request(stream, {"op": "cell", "code": "pass"})
-    assert failure.value.stalled is False
-
-
-def test_stalled_interpreter_before_a_cell_starts_reports_a_stall(monkeypatch, owner):
-    first = session.run_cell("work", "kept = 1", owner=owner)
-
-    def stalled(*_args, **_kwargs):
-        raise session._InterpreterGone("interpreter did not answer: timed out", stalled=True)
-
-    with monkeypatch.context() as patch:
-        patch.setattr(session, "_exchange_cell", stalled)
-        with pytest.raises(session.SessionError) as failure:
-            session.run_cell("work", "print('never')", owner=owner)
-    assert str(first.interpreter_pid) in str(failure.value)
-    # Nothing was killed: the same interpreter still holds the bindings.
-    after = session.run_cell("work", "print(kept)", owner=owner)
-    assert after.status == "ok"
-    assert after.created is False
-    assert after.stdout == b"1\n"
-
-
-def test_dead_worker_is_replaced_on_the_next_cell(owner):
-    first = session.run_cell("work", "kept = 2", owner=owner)
-    os.kill(first.interpreter_pid, signal.SIGKILL)
-    assert wait_for_exit(first.interpreter_pid) in {"gone", "Z"}
-
-    second = session.run_cell("work", "print(kept)", owner=owner)
-    assert second.created is True
-    assert second.cell_number == 1
-    assert second.interpreter_pid != first.interpreter_pid
-    assert second.status == "error"
-
-
-def test_sessions_do_not_share_globals(owner):
-    first = session.run_cell("alpha", "marker = 'alpha'", owner=owner)
-    second = session.run_cell("beta", "print(marker)", owner=owner)
-    assert second.status == "error"
-    assert second.interpreter_pid != first.interpreter_pid
-    assert session.read_process(first.interpreter_pid) is not None
-
-
-def test_session_key_is_scoped_to_the_harness_identity(monkeypatch, tmp_path):
-    monkeypatch.setenv("PI_SESSION_ID", "one")
-    first = session.session_socket_path("work")
-    monkeypatch.setenv("PI_SESSION_ID", "two")
-    second = session.session_socket_path("work")
-    assert first != second
-    assert str(first.parent) == str(tmp_path / "runtime" / "surf-agent")
-    assert len(os.fsencode(str(first))) <= session.SOCKET_PATH_LIMIT
-
-
-def test_session_files_are_private(owner):
-    session.run_cell("work", "pass", owner=owner)
-    socket_path = session.session_socket_path("work")
-    log_path = session.session_log_path("work")
+def test_session_files_are_private_and_leave_no_artifacts():
+    created = create("print('hi')")
+    directory = session.session_socket_dir()
+    socket_path = session.session_socket_path(created.session_id)
+    assert stat.S_IMODE(directory.stat().st_mode) == 0o700
     assert stat.S_IMODE(socket_path.stat().st_mode) == 0o600
-    assert stat.S_IMODE(socket_path.parent.stat().st_mode) == 0o700
-    assert stat.S_IMODE(log_path.stat().st_mode) == 0o600
+    assert [path.name for path in directory.iterdir()] == [socket_path.name]
+    assert os.readlink(f"/proc/{created.interpreter_pid}/fd/1") == os.devnull
+    assert os.readlink(f"/proc/{created.interpreter_pid}/fd/2") == os.devnull
 
 
-def test_environment_is_pinned_when_the_interpreter_is_created(monkeypatch, owner):
-    monkeypatch.setenv("SURF_AGENT_HOME", "/first")
-    session.run_cell("work", "import os\npinned = os.environ['SURF_AGENT_HOME']", owner=owner)
-    monkeypatch.setenv("SURF_AGENT_HOME", "/second")
-    result = session.run_cell(
-        "work", "import os\nprint(pinned, os.environ['SURF_AGENT_HOME'])", owner=owner
+def test_descriptor_writes_are_dropped_without_a_file():
+    created = create(
+        "import os, subprocess, sys\n"
+        "os.write(1, b'raw stdout\\n')\n"
+        "os.write(2, b'raw stderr\\n')\n"
+        "subprocess.run(['/bin/echo', 'child output'])\n"
+        "print('print is visible')\n"
     )
-    assert result.stdout == b"/first /first\n"
+    assert created.status == "ok"
+    assert created.stdout == b"print is visible\n"
+    assert created.stderr == b""
+    assert list(session.session_socket_dir().iterdir()) == [
+        session.session_socket_path(created.session_id)
+    ]
 
 
-def test_owner_liveness_distinguishes_reuse_and_zombies():
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-    try:
-        info = session.read_process(process.pid)
-        assert info is not None
-        assert session.process_alive(process.pid, info.start_time) is True
-        assert session.process_alive(process.pid, info.start_time + 1) is False
-        process.kill()
-        process.wait()
-        assert session.process_alive(process.pid, info.start_time) is False
-
-        # A reaped child lingers as a zombie while its parent lives; it is not an owner.
-        pid = os.fork()
-        if pid == 0:
-            os._exit(0)
-        try:
-            deadline = time.monotonic() + 5.0
-            info = session.read_process(pid)
-            while info is not None and info.state != "Z" and time.monotonic() < deadline:
-                time.sleep(0.05)
-                info = session.read_process(pid)
-            assert info is not None and info.state == "Z"
-            start_time = info.start_time
-            assert session.process_alive(pid, start_time) is False
-        finally:
-            os.waitpid(pid, 0)
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait()
-
-
-def test_owner_death_reaps_the_worker():
-    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
-    info = session.read_process(process.pid)
-    assert info is not None
-    owner = session.OwnerRef(pid=process.pid, start_time=info.start_time)
-    try:
-        result = session.run_cell("work", "kept = 1", owner=owner)
-        assert result.status == "ok"
-
-        process.kill()
-        process.wait()
-        assert wait_for_exit(result.interpreter_pid) in {"gone", "Z"}
-        # The reaped worker cleans up its socket name on the way out.
-        assert not session.session_socket_path("work").exists()
-        # The worker is our child in-process; reap it so it does not linger as a zombie.
-        try:
-            os.waitpid(result.interpreter_pid, os.WNOHANG)
-        except ChildProcessError:
-            pass
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.wait()
-
-
-def stop_worker(pid: int, socket_path: Path) -> None:
-    """Stop only a process that is still this test's worker for that socket."""
-    try:
-        command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
-    except OSError:
-        return
-    if b"surf_agent.session" in command and str(socket_path).encode() in command:
-        os.kill(pid, signal.SIGKILL)
-
-
-def test_worker_never_inherits_the_callers_stdout(monkeypatch):
-    monkeypatch.setenv("PI_SESSION_ID", "fd-test")
+def test_worker_never_inherits_the_callers_stdout():
     code = (
         "import os, subprocess, sys\n"
         "assert sys.stdout.fileno() == 1 and sys.stderr.fileno() == 2\n"
@@ -508,25 +536,17 @@ def test_worker_never_inherits_the_callers_stdout(monkeypatch):
         "print('after raw')\n"
     )
     result = subprocess.run(
-        [sys.executable, "-m", "surf_agent.session", "cell", "--session", "fd", "-"],
+        [sys.executable, "-m", "surf_agent.session", "cell", "--new-session", "--name", "fd", "-"],
         input=code, capture_output=True, text=True, timeout=30,
     )
+    assert result.returncode == 0, result.stderr
+    # If the detached worker inherited this pipe, the call would never see EOF.
+    assert "after raw" in result.stdout
+    assert "raw bytes" not in result.stdout
+    assert "child output" not in result.stdout
+    session_id = re.search(r"session_id: (\S+)", result.stdout).group(1)
     try:
-        assert result.returncode == 0, result.stderr
-        # If the detached worker inherited this pipe, the call would never see EOF.
-        assert result.stdout == "after raw\n"
-        assert "raw bytes" not in result.stdout
-        assert "child output" not in result.stdout
-
-        logged = session.session_log_path("fd").read_text()
-        assert "raw bytes" in logged
-        assert "child output" in logged
-
-        worker_pid = int(result.stderr.split("--- interpreter ")[1].split(" ")[0])
-        assert os.readlink(f"/proc/{worker_pid}/fd/1") == str(session.session_log_path("fd"))
-        assert os.readlink(f"/proc/{worker_pid}/fd/2") == str(session.session_log_path("fd"))
+        assert result.stdout.endswith(metadata_block(session_id))
     finally:
-        # The launcher resolved the harness ancestor as owner; this test stops it directly.
-        match = re.search(r"--- interpreter (\d+) ", result.stderr)
-        if match:
-            stop_worker(int(match.group(1)), session.session_socket_path("fd"))
+        assert session.kill_session(session_id) is True
+

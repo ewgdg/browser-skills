@@ -9,6 +9,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -158,10 +159,10 @@ def test_missing_uv_explains_installation(installed_skill):
 
 @pytest.fixture
 def session_launcher(installed_skill, tmp_path):
-    """The installed launcher with a private runtime dir and harness session id."""
+    """The installed launcher with a private runtime directory."""
     launcher, working, env = installed_skill
     runtime = tmp_path / "runtime"
-    env = {**env, "XDG_RUNTIME_DIR": str(runtime), "PI_SESSION_ID": "launcher-tests"}
+    env = {**env, "XDG_RUNTIME_DIR": str(runtime)}
     interpreters: list[int] = []
     yield launcher, working, env, interpreters
     for pid in interpreters:
@@ -183,18 +184,35 @@ def run_session(launcher, working, env, interpreters, *arguments, source=""):
     return result
 
 
+def create_session(launcher, working, env, interpreters, *arguments, source=""):
+    """Create a session and return its result together with the reported id."""
+    result = run_session(launcher, working, env, interpreters, "--new-session", *arguments, source=source)
+    match = re.search(r"^session_id: (\S+)$", result.stdout, re.MULTILINE)
+    return result, (match.group(1) if match else None)
+
+
+def metadata_block(session_id: str, idle_timeout_s: int = 1800) -> str:
+    return (
+        "--- BEGIN session metadata ---\n"
+        f"session_id: {session_id}\n"
+        f"idle_timeout_s: {idle_timeout_s}\n"
+        "--- END session metadata ---\n"
+    )
+
+
 def test_session_mode_retains_bindings_across_launcher_invocations(session_launcher):
     launcher, working, env, interpreters = session_launcher
-    first = run_session(
-        launcher, working, env, interpreters, "--session", "workflow", "-",
-        source="answer = 41\nprint('initialized')",
+    first, session_id = create_session(
+        launcher, working, env, interpreters, "-", source="answer = 41\nprint('initialized')"
     )
     assert first.returncode == 0, first.stderr
-    assert first.stdout == "initialized\n"
-    assert "cell #1, created" in first.stderr
+    assert session_id is not None and re.fullmatch(r"[0-9a-f]{8}", session_id)
+    # The id is the last thing the create call prints, after the cell's own output.
+    assert first.stdout == "initialized\n" + metadata_block(session_id)
+    assert "cell #1, created; idle timeout 1800 s" in first.stderr
 
     second = run_session(
-        launcher, working, env, interpreters, "--session", "workflow", "-", "two words",
+        launcher, working, env, interpreters, "--session", session_id, "-", "two words",
         source=(
             "import subprocess, sys\n"
             "assert answer == 41\n"
@@ -212,16 +230,14 @@ def test_session_mode_retains_bindings_across_launcher_invocations(session_launc
 
 def test_session_reset_clears_bindings(session_launcher):
     launcher, working, env, interpreters = session_launcher
-    assert run_session(
-        launcher, working, env, interpreters, "--session", "workflow", "-",
-        source="value = 7",
-    ).returncode == 0
-    reset = run_session(launcher, working, env, interpreters, "--session", "workflow", "--reset")
+    created, session_id = create_session(launcher, working, env, interpreters, "-", source="value = 7")
+    assert created.returncode == 0, created.stderr
+    reset = run_session(launcher, working, env, interpreters, "--session", session_id, "--reset")
     assert reset.returncode == 0, reset.stderr
     assert "bindings cleared" in reset.stderr
 
     after = run_session(
-        launcher, working, env, interpreters, "--session", "workflow", "-", source="print(value)",
+        launcher, working, env, interpreters, "--session", session_id, "-", source="print(value)",
     )
     assert after.returncode == 1
     assert "NameError" in after.stderr
@@ -229,23 +245,85 @@ def test_session_reset_clears_bindings(session_launcher):
 
 def test_session_timeout_reports_replacement(session_launcher):
     launcher, working, env, interpreters = session_launcher
+    created, session_id = create_session(launcher, working, env, interpreters, "-", source="kept = 1")
+    assert created.returncode == 0, created.stderr
     result = run_session(
-        launcher, working, env, interpreters, "--session", "workflow", "--timeout", "0.5", "-",
+        launcher, working, env, interpreters, "--session", session_id, "--timeout", "0.5", "-",
         source="import time\ntime.sleep(30)",
     )
     assert result.returncode == 1
     assert "interpreter replaced" in result.stderr
     assert "exceeded 0.5" in result.stderr
+    # The session is gone rather than quietly remade.
+    gone = run_session(launcher, working, env, interpreters, "--session", session_id, "-", source="pass")
+    assert gone.returncode == 2
+    assert "unknown session" in gone.stderr
 
 
 def test_session_mode_rejects_a_file_source(session_launcher):
     launcher, working, env, interpreters = session_launcher
     script = working / "cell.py"
     script.write_text("print('must not run')\n")
-    result = run_session(launcher, working, env, interpreters, "--session", "workflow", str(script))
+    result = run_session(launcher, working, env, interpreters, "--new-session", str(script))
     assert result.returncode == 2
     assert "stdin" in result.stderr
     assert result.stdout == ""
+
+
+def test_unknown_session_ids_are_refused(session_launcher):
+    launcher, working, env, interpreters = session_launcher
+    result = run_session(launcher, working, env, interpreters, "--session", "deadbeef", "-", source="pass")
+    assert result.returncode == 2
+    assert "unknown session" in result.stderr
+    assert result.stdout == ""
+    # An id is not a name: text that no create call reported is refused, not created.
+    assert run_session(
+        launcher, working, env, interpreters, "--session", "workflow", "-", source="pass"
+    ).returncode == 2
+
+
+def test_kill_session_stops_the_interpreter(session_launcher):
+    launcher, working, env, interpreters = session_launcher
+    created, session_id = create_session(launcher, working, env, interpreters, "-", source="pass")
+    assert created.returncode == 0, created.stderr
+
+    killed = run_session(launcher, working, env, interpreters, "--kill-session", session_id)
+    assert killed.returncode == 0, killed.stderr
+    assert f"session {session_id} stopped" in killed.stdout
+
+    again = run_session(launcher, working, env, interpreters, "--kill-session", session_id)
+    assert again.returncode == 1
+    assert f"no live session {session_id}" in again.stdout
+    assert run_session(
+        launcher, working, env, interpreters, "--session", session_id, "-", source="pass"
+    ).returncode == 2
+
+
+def test_list_sessions_reports_the_created_session(session_launcher):
+    launcher, working, env, interpreters = session_launcher
+    created, session_id = create_session(launcher, working, env, interpreters, "--name", "listed", "-", source="pass")
+    assert created.returncode == 0, created.stderr
+    assert session_id.startswith("listed-")
+
+    listing = run_session(launcher, working, env, interpreters, "--list-sessions")
+    assert listing.returncode == 0, listing.stderr
+    assert session_id in listing.stdout
+    assert f"cwd {working}" in listing.stdout
+
+    assert run_session(launcher, working, env, interpreters, "--kill-session", session_id).returncode == 0
+    empty = run_session(launcher, working, env, interpreters, "--list-sessions")
+    assert empty.stdout == "no live sessions\n"
+
+
+def test_session_idle_timeout_ends_the_interpreter(session_launcher):
+    launcher, working, env, interpreters = session_launcher
+    created, session_id = create_session(launcher, working, env, interpreters, "--ttl", "1", "-", source="kept = 1")
+    assert created.returncode == 0, created.stderr
+    assert "idle timeout 1 s" in created.stderr
+    time.sleep(2)
+    expired = run_session(launcher, working, env, interpreters, "--session", session_id, "-", source="print(kept)")
+    assert expired.returncode == 2
+    assert "unknown session" in expired.stderr
 
 
 def test_options_after_the_source_belong_to_python(installed_skill):
@@ -271,34 +349,55 @@ def load_launcher():
 
 def test_launcher_option_scoping():
     launcher = load_launcher()
-    assert launcher.split_options(["script.py", "--session", "x"]) == (
-        None, None, False, ["script.py", "--session", "x"]
-    )
-    assert launcher.split_options(["--", "script.py"]) == (None, None, False, ["--", "script.py"])
-    assert launcher.split_options(["--session", "workflow", "--timeout", "5", "-", "arg"]) == (
-        "workflow", "5", False, ["-", "arg"]
-    )
-    assert launcher.split_options(["--reset"]) == (None, None, True, [])
-    # A launcher option without its value falls through to ordinary Python.
-    assert launcher.split_options(["--session"]) == (None, None, False, ["--session"])
+    ordinary = launcher.parse_arguments(["script.py", "--session", "x"])
+    assert ordinary.session_mode is False
+    assert ordinary.python_arguments == ["--", "script.py", "--session", "x"]
+    assert launcher.parse_arguments(["--", "script.py"]).python_arguments == ["--", "--", "script.py"]
+
+    reuse = launcher.parse_arguments(["--session", "workflow", "--timeout", "5", "-", "arg"])
+    assert reuse.session_mode is True
+    assert reuse.python_arguments == [
+        "-m", "surf_agent.session", "cell", "--session", "workflow", "--timeout", "5", "-", "arg"
+    ]
+    create = launcher.parse_arguments(["--new-session", "--name", "demo", "--ttl", "60", "-"])
+    assert create.python_arguments == [
+        "-m", "surf_agent.session", "cell", "--new-session", "--name", "demo", "--ttl", "60", "-"
+    ]
+    assert launcher.parse_arguments(["--kill-session", "abc12345"]).python_arguments == [
+        "-m", "surf_agent.session", "kill", "--session", "abc12345"
+    ]
+    assert launcher.parse_arguments(["--list-sessions"]).python_arguments == [
+        "-m", "surf_agent.session", "list"
+    ]
+    assert launcher.parse_arguments(["--session", "abc12345", "--reset"]).python_arguments == [
+        "-m", "surf_agent.session", "reset", "--session", "abc12345"
+    ]
 
 
 def test_launcher_rejects_invalid_session_arguments():
     launcher = load_launcher()
-    assert launcher.session_arguments("workflow", None, False, ["-"]) == [
-        "-m", "surf_agent.session", "cell", "--session", "workflow", "-"
-    ]
-    assert launcher.session_arguments("workflow", "5", False, ["-"]) == [
-        "-m", "surf_agent.session", "cell", "--session", "workflow", "--timeout", "5", "-"
-    ]
-    assert launcher.session_arguments("workflow", None, True, []) == [
-        "-m", "surf_agent.session", "reset", "--session", "workflow"
-    ]
-    # A file source, an empty name, a bad timeout, and --reset with a timeout are all refused.
-    for arguments in (("workflow", None, False, ["cell.py"]), ("", None, False, ["-"]),
-                      ("workflow", "0", False, ["-"]), ("workflow", "nan", False, ["-"]),
-                      ("workflow", "5", True, []), ("workflow", None, True, ["-"])):
-        assert launcher.session_arguments(*arguments) is None, arguments
+    # A file source, a bad timeout, a mistimed option, and a missing mode are refused.
+    for arguments in (
+        ["--new-session", "cell.py"],
+        ["--session", "workflow", "cell.py"],
+        ["--session", "workflow", "--timeout", "0", "-"],
+        ["--session", "workflow", "--timeout", "nan", "-"],
+        ["--new-session", "--ttl", "0", "-"],
+        ["--session", "workflow", "--ttl", "60", "-"],
+        ["--session", "workflow", "--name", "demo", "-"],
+        ["--session", "workflow", "--reset", "-"],
+        ["--session", "workflow", "--reset", "--timeout", "5"],
+        ["--session", "workflow", "--reset", "--ttl", "5"],
+        ["--new-session", "--kill-session", "abc12345"],
+        ["--kill-session"],
+        ["--list-sessions", "-"],
+        ["--list-sessions", "--timeout", "5"],
+        ["--timeout", "5", "-"],
+        ["--reset"],
+        ["--session"],
+        ["--new-session"],
+    ):
+        assert launcher.parse_arguments(arguments) is None, arguments
 
 
 def test_release_pin_requests_exact_git_revision_and_extra(installed_skill):

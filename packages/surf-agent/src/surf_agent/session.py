@@ -1,24 +1,28 @@
-"""Persistent per-session Python interpreter for Surf.
+"""Persistent per-session Python interpreters for Surf.
 
-One isolated interpreter per agent session, sequential cells, over a unix
-socket. The worker is a detached process: it never inherits the caller's
-stdout pipe, its own fd 1 and 2 point at a per-session log, and cell output
-travels back over the control socket.
+One explicitly created interpreter per session, sequential cells, over a unix
+socket. A session is addressed by the id that --new-session reports and later
+cells pass back; it ends when it has been idle for its timeout or when a
+--kill-session request stops it.
 
-See `plans/active/persistent-interpreter.md` for the settled contracts.
+The worker is a detached process: it never inherits the caller's stdout pipe.
+Its own fd 1 and 2 start on a pipe the launcher reads only when startup fails,
+then point at /dev/null, and cell output travels back over the control socket.
+
+See `plans/active/explicit-sessions.md` for the settled contracts.
 """
 
 from __future__ import annotations
 
 import base64
 import contextlib
-import fcntl
-import hashlib
 import io
 import json
 import math
 import os
 import re
+import secrets
+import select
 import signal
 import socket
 import subprocess
@@ -34,23 +38,24 @@ from .errors import SurfAgentError
 from .runtime import surf_agent_state_dir
 
 DEFAULT_CELL_TIMEOUT_S = 300.0
+DEFAULT_SESSION_IDLE_TIMEOUT_S = 1800.0
 # Long enough to cover reply transfer after a cell that finished inside its own deadline.
 REPLY_GRACE_S = 10.0
 HELLO_TIMEOUT_S = 5.0
 WORKER_START_TIMEOUT_S = 10.0
-OWNER_WATCH_INTERVAL_S = 2.0
+# How often an idle worker checks whether its timeout has passed.
+IDLE_POLL_S = 0.5
 # The launcher resolves its dependency manager into this handoff. Direct imports
 # of this module (tests, other harnesses) start the worker with sys.executable.
 WORKER_COMMAND_ENV = "SURF_SESSION_WORKER_COMMAND"
 SOCKET_BACKLOG = 8
 # Linux allows 107 bytes for sun_path plus the terminating NUL.
 SOCKET_PATH_LIMIT = 107
-# The durable harness process owns a session. Anything between it and the
-# caller is transient: the launcher itself and one shell per tool call.
-HARNESS_COMMS = frozenset({"pi"})
-SESSION_MANAGER_COMMS = frozenset({"systemd", "init"})
-DEAD_STATES = frozenset({"Z", "X", "x"})
+# Ids are file names, so they stay inside one path segment and cannot begin with
+# a dash or a dot.
+_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _SLUG = re.compile(r"[^A-Za-z0-9._-]+")
+_SOCKET_SUFFIX = ".sock"
 
 
 class SessionError(SurfAgentError):
@@ -70,25 +75,9 @@ class _InterpreterGone(Exception):
 
 
 @dataclass(frozen=True)
-class ProcessInfo:
-    pid: int
-    comm: str
-    state: str
-    ppid: int
-    start_time: int
-
-
-@dataclass(frozen=True)
-class OwnerRef:
-    """Identity of the process that must outlive the interpreter."""
-
-    pid: int
-    start_time: int
-
-
-@dataclass(frozen=True)
 class CellResult:
     status: str  # "ok", "error", "busy" or "replaced"
+    session_id: str
     interpreter_pid: int
     cell_number: int | None  # None when no cell started
     created: bool
@@ -105,81 +94,36 @@ class ResetResult:
     cell_number: int | None
 
 
-def read_process(pid: int) -> ProcessInfo | None:
-    """Read the process facts an owner reference needs; None when it is gone."""
-    try:
-        raw = Path(f"/proc/{pid}/stat").read_bytes()
-    except OSError:
-        return None
-    try:
-        # The comm field may contain spaces and parentheses; split from the right.
-        before, after = raw.rsplit(b") ", 1)
-        fields = after.split()
-        return ProcessInfo(
-            pid=int(before.split(b"(", 1)[0]),
-            comm=before.split(b"(", 1)[1].decode(errors="replace"),
-            state=fields[0].decode(errors="replace"),
-            ppid=int(fields[1]),
-            start_time=int(fields[19]),
-        )
-    except (IndexError, ValueError):
-        return None
+@dataclass(frozen=True)
+class SessionEntry:
+    session_id: str
+    interpreter_pid: int
+    cells: int
+    idle_s: float
+    uptime_s: float
+    idle_timeout_s: float
+    cwd: str
 
 
-def process_alive(pid: int, start_time: int) -> bool:
-    """Prove the process is still the recorded one: same start, not a zombie."""
-    info = read_process(pid)
-    return (
-        info is not None
-        and info.state not in DEAD_STATES
-        and info.start_time == start_time
-    )
+def new_session_id(name: str | None = None) -> str:
+    """A fresh id: an optional readable slug plus random hex.
 
-
-def ancestor_chain(pid: int | None = None) -> list[ProcessInfo]:
-    """The caller's process at index 0, then each ancestor up to pid 1."""
-    chain: list[ProcessInfo] = []
-    current = os.getpid() if pid is None else pid
-    while current > 1:
-        info = read_process(current)
-        if info is None or any(entry.pid == info.pid for entry in chain):
-            break
-        chain.append(info)
-        current = info.ppid
-    return chain
-
-
-def resolve_owner() -> OwnerRef:
-    """Record the session process that must outlive the interpreter.
-
-    The immediate parent is a per-tool-call shell, so it is never the owner.
-    When no known harness process is in the chain, fall back to the outermost
-    non-init ancestor, which is the terminal or service that started the call.
+    The random part is what keeps two callers from ever choosing the same
+    session, whatever name they pass.
     """
-    chain = ancestor_chain()
-    if not chain:
-        raise SessionError("could not read the process ancestor chain to find the session owner")
-    for info in chain[1:]:
-        if info.comm in HARNESS_COMMS:
-            return OwnerRef(info.pid, info.start_time)
-    for info in reversed(chain):
-        if info.comm not in SESSION_MANAGER_COMMS:
-            return OwnerRef(info.pid, info.start_time)
-    return OwnerRef(chain[0].pid, chain[0].start_time)
+    suffix = secrets.token_hex(4)
+    if not name:
+        return suffix
+    slug = _SLUG.sub("-", name).strip("-.")[:32].strip("-.")
+    return f"{slug}-{suffix}" if slug else suffix
 
 
-def session_identity() -> str | None:
-    value = os.environ.get("PI_SESSION_ID")
-    if value:
-        return value
-    session_file = os.environ.get("PI_SESSION_FILE")
-    return Path(session_file).stem if session_file else None
-
-
-def session_key(name: str) -> str:
-    """Namespace one session name under the harness session that asked for it."""
-    identity = session_identity()
-    return f"{identity}:{name}" if identity else name
+def _validate_session_id(session_id: str) -> str:
+    # Ids are opaque: only ids that exist are accepted, so a typo cannot silently
+    # start a second interpreter.
+    if not _SESSION_ID.fullmatch(session_id):
+        raise SessionError(f"invalid session id {session_id!r}; ids come from --new-session")
+    return session_id
 
 
 def session_socket_dir() -> Path:
@@ -188,26 +132,15 @@ def session_socket_dir() -> Path:
     return root / "surf-agent"
 
 
-def session_socket_path(name: str) -> Path:
+def session_socket_path(session_id: str) -> Path:
+    """The socket file is the session's whole record: no registry, no state file."""
     directory = session_socket_dir()
-    digest = hashlib.sha256(session_key(name).encode()).hexdigest()[:16]
-    slug = _SLUG.sub("-", name).strip("-.")[:32] or "session"
-    stem = f"{slug}-{digest}"
-    if len(os.fsencode(str(directory / f"{stem}.sock"))) > SOCKET_PATH_LIMIT:
-        # Deep runtime directories leave only the identity digest.
-        stem = digest
-    if len(os.fsencode(str(directory / f"{stem}.sock"))) > SOCKET_PATH_LIMIT:
-        raise SessionError(f"session socket path is too long under {directory}")
-    return directory / f"{stem}.sock"
-
-
-def session_log_path(name: str) -> Path:
-    """Worker stdout/stderr for a session: raw fd writes and subprocess output."""
-    return session_socket_path(name).with_suffix(".log")
-
-
-def session_lock_path(name: str) -> Path:
-    return session_socket_path(name).with_suffix(".lock")
+    path = directory / f"{session_id}{_SOCKET_SUFFIX}"
+    if len(os.fsencode(str(path))) > SOCKET_PATH_LIMIT:
+        raise SessionError(
+            f"session socket path is too long under {directory}; use a shorter --name"
+        )
+    return directory / f"{session_id}{_SOCKET_SUFFIX}"
 
 
 def _prepare_directory(directory: Path) -> None:
@@ -216,23 +149,6 @@ def _prepare_directory(directory: Path) -> None:
         os.chmod(directory, 0o700)
     except OSError as exc:
         raise SessionError(f"could not prepare the session runtime directory {directory}: {exc}") from exc
-
-
-@contextlib.contextmanager
-def _session_lock(name: str):
-    """Serialize attach-or-spawn so two first cells cannot diverge into two interpreters."""
-    path = session_lock_path(name)
-    try:
-        descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
-    except OSError as exc:
-        raise SessionError(f"could not open the session lock {path}: {exc}") from exc
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
-        yield
-    finally:
-        with contextlib.suppress(OSError):
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
 
 
 def _read_reply(stream: Any) -> dict[str, Any]:
@@ -320,7 +236,8 @@ def _listener_pid(socket_path: Path) -> int | None:
     """The worker process whose command line names this session socket.
 
     Reading /proc keeps the diagnostic independent of the socket's accept queue,
-    which can be full exactly when a suspended worker is not accepting.
+    which can be full exactly when a suspended worker is not accepting, and it is
+    what makes killing safe: a recycled pid cannot claim this socket's name.
     """
     wanted = str(socket_path)
     try:
@@ -347,12 +264,12 @@ def _listener_pid(socket_path: Path) -> int | None:
     return None
 
 
-def _stalled_error(socket_path: Path) -> SessionError:
+def _stalled_error(socket_path: Path, session_id: str) -> SessionError:
     pid = _listener_pid(socket_path)
     who = f" (pid {pid})" if pid is not None else ""
     return SessionError(
-        f"the session interpreter{who} did not answer; resume or stop that "
-        "process and retry this session"
+        f"the session interpreter{who} did not answer; stop it with "
+        f"--kill-session {session_id} and retry, or resume that process"
     )
 
 
@@ -364,14 +281,14 @@ def _hello(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
     except _InterpreterGone as exc:
         if exc.stalled:
             # A live interpreter that cannot answer any thread is stopped or
-            # wedged. Replacing it would run two interpreters against one session,
-            # so fail fast and name the process that has to be resumed or stopped.
-            raise _stalled_error(socket_path) from exc
+            # wedged. Treating it as absent would leave the id pointing at a
+            # process nobody can talk to, so fail fast and name it.
+            raise _stalled_error(socket_path, socket_path.name[: -len(_SOCKET_SUFFIX)]) from exc
         return None
 
 
 def _hello_quietly(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
-    """Spawn-time probe: an interpreter that cannot answer is not ready yet."""
+    """Spawn-time and listing probe: an interpreter that cannot answer is not usable."""
     try:
         return _hello(socket_path, timeout_s)
     except SessionError:
@@ -401,69 +318,92 @@ def _worker_command() -> list[str]:
     return command
 
 
-def _spawn_interpreter(
-    socket_path: Path, log_path: Path, owner: OwnerRef
-) -> tuple[int, int, bool, int]:
+# A worker started by an earlier runtime answers hello without these fields. It
+# cannot be listed or spoken to by this one; it exits with the process that made it.
+_HELLO_FIELDS = ("ttl_s", "idle_s", "uptime_s")
+
+
+def _compatible_reply(reply: dict[str, Any], session_id: str) -> dict[str, Any]:
+    if all(field in reply for field in _HELLO_FIELDS):
+        return reply
+    raise SessionError(
+        f"session {session_id!r} runs an interpreter this runtime does not speak to; "
+        "it exits with the process that created it"
+    )
+
+
+def _startup_output(process: subprocess.Popen) -> str:
+    """What the worker wrote before it detached its descriptors.
+
+    The launcher reads the pipe only on failure, and only after the worker is
+    gone, so a bounded wait is enough to prove there is nothing to read.
+    """
+    stream = process.stdout
+    if stream is None:
+        return "no output"
     try:
-        descriptor = os.open(log_path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
-    except OSError as exc:
-        raise SessionError(f"could not open the session log {log_path}: {exc}") from exc
-    try:
-        try:
-            process = subprocess.Popen(
-                [
-                    *_worker_command(),
-                    str(socket_path), str(owner.pid), str(owner.start_time),
-                ],
-                stdin=subprocess.DEVNULL,
-                stdout=descriptor,
-                stderr=descriptor,
-                start_new_session=True,
-            )
-        except OSError as exc:
-            raise SessionError(f"could not start the session interpreter: {exc}") from exc
+        ready, _, _ = select.select([stream], [], [], 1.0)
+        if not ready:
+            return "no output"
+        text = stream.read().decode("utf-8", errors="replace").strip()
+    except (OSError, ValueError):
+        text = ""
     finally:
-        os.close(descriptor)
+        with contextlib.suppress(OSError):
+            stream.close()
+    return text or "no output"
+
+
+def _release_startup_pipe(process: subprocess.Popen) -> None:
+    if process.stdout is not None:
+        with contextlib.suppress(OSError):
+            process.stdout.close()
+
+
+def _start_interpreter(socket_path: Path, idle_timeout_s: float) -> tuple[int, int]:
+    """Spawn a worker for this socket path and wait until it accepts cells.
+
+    Returns the interpreter pid and its cell count.
+    """
+    try:
+        process = subprocess.Popen(
+            [*_worker_command(), str(socket_path), f"{idle_timeout_s:g}"],
+            stdin=subprocess.DEVNULL,
+            # A detached worker must not hold the caller's stdout pipe, or the tool
+            # call never sees EOF. This pipe belongs to the launcher alone; the
+            # worker releases it once it listens, and it is read only on failure.
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise SessionError(f"could not start the session interpreter: {exc}") from exc
     deadline = time.monotonic() + WORKER_START_TIMEOUT_S
     while time.monotonic() < deadline:
         reply = _hello_quietly(socket_path, HELLO_TIMEOUT_S)
         if reply is not None:
-            return int(reply["pid"]), int(reply["start_time"]), True, int(reply["cells"])
+            _release_startup_pipe(process)
+            return int(reply["pid"]), int(reply["cells"])
         if process.poll() is not None:
-            # Another client may have won the bind race; adopt its interpreter.
-            reply = _hello_quietly(socket_path, HELLO_TIMEOUT_S)
-            if reply is not None:
-                return int(reply["pid"]), int(reply["start_time"]), True, int(reply["cells"])
-            raise SessionError(f"session interpreter failed to start; see {log_path}")
+            raise SessionError(
+                f"session interpreter failed to start: {_startup_output(process)}"
+            )
         time.sleep(0.02)
     process.kill()
     with contextlib.suppress(subprocess.TimeoutExpired):
         process.wait(timeout=WORKER_START_TIMEOUT_S)
-    raise SessionError(f"session interpreter did not become ready; see {log_path}")
+    raise SessionError(
+        f"session interpreter did not become ready: {_startup_output(process)}"
+    )
 
 
-def _ensure_interpreter(
-    name: str, owner: OwnerRef
-) -> tuple[int, int, bool, int]:
-    """Attach to the session interpreter, replacing a stale one."""
-    socket_path = session_socket_path(name)
-    log_path = session_log_path(name)
-    _prepare_directory(log_path.parent)
-    with _session_lock(name):
-        reply = _hello(socket_path, HELLO_TIMEOUT_S)
-        if reply is not None:
-            return int(reply["pid"]), int(reply["start_time"]), False, int(reply["cells"])
-        if socket_path.exists():
-            # A reaped or killed worker leaves its socket file behind.
-            with contextlib.suppress(OSError):
-                socket_path.unlink()
-        return _spawn_interpreter(socket_path, log_path, owner)
-
-
-def _kill_interpreter(pid: int, start_time: int) -> None:
-    if process_alive(pid, start_time):
-        with contextlib.suppress(OSError):
-            os.kill(pid, signal.SIGKILL)
+def _kill_interpreter(socket_path: Path, pid: int) -> None:
+    # Only the process that still names this socket may be killed: a recycled pid
+    # must never be signalled.
+    if _listener_pid(socket_path) != pid:
+        return
+    with contextlib.suppress(OSError):
+        os.kill(pid, signal.SIGKILL)
 
 
 def _frame(text: str) -> None:
@@ -494,25 +434,147 @@ def _decode(value: Any) -> bytes:
     return base64.b64decode(value) if value else b""
 
 
+def _metadata_block(session_id: str, idle_timeout_s: float) -> bytes:
+    # Named delimiters rather than bare `---` fences: the same tool result can hold
+    # observation frames and unified diffs, whose headers start with `---` too.
+    return (
+        "--- BEGIN session metadata ---\n"
+        f"session_id: {session_id}\n"
+        f"idle_timeout_s: {idle_timeout_s:g}\n"
+        "--- END session metadata ---\n"
+    ).encode()
+
+
+def _duration(seconds: float) -> str:
+    total = int(max(0.0, seconds))
+    hours, remainder = divmod(total, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}h{minutes}m"
+    if minutes:
+        return f"{minutes}m{secs}s"
+    return f"{secs}s"
+
+
+def _discard_stale_socket(socket_path: Path) -> None:
+    """Remove a socket file nothing is listening on.
+
+    Only once it is older than a worker start: a worker that has just bound its
+    socket but is not yet accepting would otherwise lose its name.
+    """
+    try:
+        if time.time() - socket_path.stat().st_mtime < WORKER_START_TIMEOUT_S:
+            return
+        socket_path.unlink()
+    except OSError:
+        pass
+
+
+def _session_entry(session_id: str, reply: dict[str, Any]) -> SessionEntry:
+    def number(key: str) -> float:
+        try:
+            return float(reply[key])
+        except (KeyError, TypeError, ValueError):
+            return 0.0
+
+    return SessionEntry(
+        session_id=session_id,
+        interpreter_pid=int(number("pid")),
+        cells=int(number("cells")),
+        idle_s=number("idle_s"),
+        uptime_s=number("uptime_s"),
+        idle_timeout_s=number("ttl_s"),
+        cwd=str(reply.get("cwd") or ""),
+    )
+
+
+def list_sessions() -> list[SessionEntry]:
+    """Live sessions, discovered from the socket directory that names them."""
+    try:
+        paths = sorted(session_socket_dir().glob(f"*{_SOCKET_SUFFIX}"))
+    except OSError:
+        return []
+    entries: list[SessionEntry] = []
+    for path in paths:
+        session_id = path.name[: -len(_SOCKET_SUFFIX)]
+        reply = _hello_quietly(path, HELLO_TIMEOUT_S)
+        if reply is None:
+            _discard_stale_socket(path)
+            continue
+        if not all(field in reply for field in _HELLO_FIELDS):
+            _frame(f"--- ignoring session {session_id}: different interpreter protocol ---")
+            continue
+        entries.append(_session_entry(session_id, reply))
+    return entries
+
+
+def _unknown_session_error(session_id: str) -> SessionError:
+    live = ", ".join(entry.session_id for entry in list_sessions())
+    known = f"live sessions: {live}" if live else "no live sessions"
+    return SessionError(f"unknown session {session_id!r} ({known}); create one with --new-session")
+
+
+def kill_session(session_id: str, *, timeout_s: float = WORKER_START_TIMEOUT_S) -> bool:
+    """Stop a session interpreter; True when one was there to stop."""
+    _validate_session_id(session_id)
+    socket_path = session_socket_path(session_id)
+    reply = _hello(socket_path, HELLO_TIMEOUT_S)
+    if reply is None:
+        _discard_stale_socket(socket_path)
+        return False
+    _compatible_reply(reply, session_id)
+    answer = _exchange(socket_path, {"op": "shutdown"}, HELLO_TIMEOUT_S)
+    if answer.get("status") != "ok":
+        raise SessionError(f"interpreter sent an unexpected reply: {answer!r}")
+    # The worker removes its own socket; waiting keeps a following --list-sessions
+    # from reporting a session that is already gone.
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline and socket_path.exists():
+        time.sleep(0.02)
+    with contextlib.suppress(OSError):
+        socket_path.unlink()
+    return True
+
+
 def run_cell(
-    name: str,
+    session_id: str,
     code: str,
     *,
+    create: bool = False,
+    idle_timeout_s: float = DEFAULT_SESSION_IDLE_TIMEOUT_S,
     argv: tuple[str, ...] = ("-",),
     timeout_s: float = DEFAULT_CELL_TIMEOUT_S,
-    owner: OwnerRef | None = None,
 ) -> CellResult:
-    """Run one cell in the named session interpreter, creating it if needed.
+    """Run one cell in a session interpreter.
 
-    Cell bytes are relayed to this process's stdout/stderr; launcher frames go
-    to stderr. The interpreter is destroyed when the cell exceeds *timeout_s*.
+    With *create*, a new interpreter is started for *session_id* and this call
+    reports it in a metadata block. Otherwise the call attaches to the existing
+    interpreter for that id and fails when there is none.
+
+    Cell bytes are relayed to this process's stdout/stderr; launcher frames go to
+    stderr. The interpreter is destroyed when the cell exceeds *timeout_s*.
     """
     if not math.isfinite(timeout_s) or timeout_s <= 0:
         raise SessionError("cell timeout must be a positive number of seconds")
-    owner = owner or resolve_owner()
-    socket_path = session_socket_path(name)
-    pid, start_time, created, cells = _ensure_interpreter(name, owner)
-    origin = f"created; log {session_log_path(name)}" if created else "attached"
+    if not math.isfinite(idle_timeout_s) or idle_timeout_s <= 0:
+        raise SessionError("session idle timeout must be a positive number of seconds")
+    _validate_session_id(session_id)
+    socket_path = session_socket_path(session_id)
+    _prepare_directory(socket_path.parent)
+    if create:
+        pid, cells = _start_interpreter(socket_path, idle_timeout_s)
+        origin = f"created; idle timeout {idle_timeout_s:g} s"
+    else:
+        reply = _hello(socket_path, HELLO_TIMEOUT_S)
+        if reply is None:
+            _discard_stale_socket(socket_path)
+            raise _unknown_session_error(session_id)
+        _compatible_reply(reply, session_id)
+        try:
+            pid, cells = int(reply["pid"]), int(reply["cells"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SessionError(f"interpreter sent an incomplete hello reply: {reply!r}") from exc
+        origin = "attached"
 
     started = time.monotonic()
     number = cells + 1
@@ -536,9 +598,9 @@ def run_cell(
     except _InterpreterGone as exc:
         if exc.stalled and not cell_started:
             # No cell was accepted yet, so the session is stuck rather than lost.
-            raise _stalled_error(socket_path) from exc
+            raise _stalled_error(socket_path, session_id) from exc
         elapsed = time.monotonic() - started
-        _kill_interpreter(pid, start_time)
+        _kill_interpreter(socket_path, pid)
         if elapsed >= timeout_s:
             reason = f"cell #{number} exceeded {timeout_s:g} s"
         elif exc.stalled:
@@ -546,14 +608,14 @@ def run_cell(
         else:
             reason = f"worker exited during cell #{number}"
         _frame(f"--- interpreter replaced ({reason}); bindings lost; side effects unknown ---")
-        return CellResult("replaced", result_pid, number, created, reason, b"", b"", elapsed)
+        return CellResult("replaced", session_id, result_pid, number, create, reason, b"", b"", elapsed)
 
     elapsed = time.monotonic() - started
     status = reply.get("status")
     if status == "busy":
         busy_pid = int(reply.get("pid", pid))
         _frame(f"--- interpreter {busy_pid} busy; no cell started ---")
-        return CellResult("busy", busy_pid, None, created, None, b"", b"", elapsed)
+        return CellResult("busy", session_id, busy_pid, None, create, None, b"", b"", elapsed)
     if status not in {"ok", "error"}:
         raise SessionError(f"interpreter sent an unexpected reply: {reply!r}")
     result_pid = int(reply.get("pid", result_pid))
@@ -563,28 +625,31 @@ def run_cell(
     detail = reply.get("exception")
     suffix = f": {detail}" if detail else ""
     _frame(f"--- cell #{number} {status}{suffix} ({elapsed * 1000:.0f} ms) ---")
-    return CellResult(status, result_pid, number, created, detail, stdout, stderr, elapsed)
+    if create:
+        # Last on stdout, after the cell's own output: the caller reads the session
+        # id from the end of its own stream. A replaced interpreter reports no id,
+        # because the session it names no longer exists.
+        _write_bytes(sys.stdout, _metadata_block(session_id, idle_timeout_s))
+    return CellResult(status, session_id, result_pid, number, create, detail, stdout, stderr, elapsed)
 
 
-def reset_bindings(name: str, *, owner: OwnerRef | None = None) -> ResetResult:
+def reset_bindings(session_id: str) -> ResetResult:
     """Discard Python bindings in the session interpreter; never replace it."""
-    owner = owner or resolve_owner()
-    _prepare_directory(session_log_path(name).parent)
-    with _session_lock(name):
-        socket_path = session_socket_path(name)
-        reply = _hello(socket_path, HELLO_TIMEOUT_S)
-        if reply is None:
-            if socket_path.exists():
-                with contextlib.suppress(OSError):
-                    socket_path.unlink()
-            _frame(f"--- no interpreter for session {name!r}; bindings are already gone ---")
-            return ResetResult("absent", None, None)
+    _validate_session_id(session_id)
+    socket_path = session_socket_path(session_id)
+    _prepare_directory(socket_path.parent)
+    reply = _hello(socket_path, HELLO_TIMEOUT_S)
+    if reply is None:
+        _discard_stale_socket(socket_path)
+        _frame(f"--- no live session {session_id}; bindings are already gone ---")
+        return ResetResult("absent", None, None)
+    _compatible_reply(reply, session_id)
     pid, cells = int(reply["pid"]), int(reply["cells"])
     try:
         answer = _exchange(socket_path, {"op": "reset"}, HELLO_TIMEOUT_S)
     except _InterpreterGone as exc:
         if exc.stalled:
-            raise _stalled_error(socket_path) from exc
+            raise _stalled_error(socket_path, session_id) from exc
         _frame(f"--- interpreter {pid} vanished before reset; bindings are gone ---")
         return ResetResult("absent", None, None)
     status = answer.get("status")
@@ -599,13 +664,23 @@ def reset_bindings(name: str, *, owner: OwnerRef | None = None) -> ResetResult:
 
 
 class _WorkerState:
-    def __init__(self, socket_path: Path) -> None:
+    def __init__(self, socket_path: Path, idle_timeout_s: float) -> None:
         self.socket_path = socket_path
         self.socket_inode: int | None = None
         self.namespace: dict[str, Any] = {"__name__": "__main__"}
         self.cells = 0
         self.running = False
+        self.stopping = False
+        self.idle_timeout_s = idle_timeout_s
+        self.started = time.monotonic()
+        self.last_activity = self.started
         self.lock = threading.Lock()
+
+    def touch(self) -> None:
+        self.last_activity = time.monotonic()
+
+    def idle_seconds(self) -> float:
+        return max(0.0, time.monotonic() - self.last_activity)
 
 
 def _remove_socket(state: _WorkerState) -> None:
@@ -630,11 +705,11 @@ def _shutdown(state: _WorkerState, status: int) -> None:
     os._exit(status)
 
 
-class _LogFd(io.BytesIO):
+class _NullBackedBuffer(io.BytesIO):
     """Captured cell bytes that still report this worker's own descriptor.
 
-    A cell that hands sys.stdout to a subprocess, or asks for its fileno, then
-    writes to the session log exactly as os.write(1, ...) does.
+    A cell that hands sys.stdout to a subprocess, or asks for its fileno, writes
+    to the descriptor the worker holds - which is /dev/null once it is listening.
     """
 
     def __init__(self, file_descriptor: int) -> None:
@@ -650,16 +725,14 @@ def _capture_stream(errors: str, file_descriptor: int) -> io.TextIOWrapper:
     # handler mirrors CPython's own stdout (strict) and stderr (backslashreplace),
     # so cells encode text exactly as a script would.
     return io.TextIOWrapper(
-        _LogFd(file_descriptor), encoding="utf-8", errors=errors, newline="",
+        _NullBackedBuffer(file_descriptor), encoding="utf-8", errors=errors, newline="",
         write_through=True,
     )
 
 
-def _expire(state: _WorkerState, number: int) -> None:
-    # The cell thread redirected sys.stderr to a capture buffer it never returns,
-    # so write the reason directly to this process's log descriptor.
-    with contextlib.suppress(OSError):
-        os.write(2, f"cell #{number} exceeded its deadline; interpreter exiting\n".encode())
+def _expire(state: _WorkerState) -> None:
+    # The cell's own deadline, enforced from a timer so a caller that dies cannot
+    # leave a busy interpreter behind. The next call reports the replacement.
     _shutdown(state, 1)
 
 
@@ -679,7 +752,7 @@ def _run_cell_request(
         number = state.cells
         namespace = state.namespace
     # Every exit path below must clear the flag: a worker left claiming a cell
-    # would reject every later cell and reset until its owner dies.
+    # would reject every later cell and reset until it exits.
     expiration: threading.Timer | None = None
     try:
         stdout = _capture_stream("strict", 1)
@@ -690,7 +763,7 @@ def _run_cell_request(
         _write_reply(stream, {"status": "started", "pid": os.getpid(), "cells": number})
         timeout_s = float(request.get("timeout_s", DEFAULT_CELL_TIMEOUT_S))
         argv = [str(part) for part in request.get("argv") or ["-"]]
-        expiration = threading.Timer(timeout_s, _expire, args=(state, number))
+        expiration = threading.Timer(timeout_s, _expire, args=(state,))
         expiration.daemon = True
         expiration.start()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -706,6 +779,9 @@ def _run_cell_request(
             expiration.cancel()
         with state.lock:
             state.running = False
+        # Idle time starts when the cell finishes, so a long cell is never cut
+        # short by the session timeout.
+        state.touch()
     return {
         "status": status,
         "pid": os.getpid(),
@@ -723,16 +799,32 @@ def _reset_request(state: _WorkerState) -> dict[str, Any]:
         # Old bindings are dropped, not mutated: their objects survive only if the
         # cell itself kept a reference elsewhere. Browser threads are untouched.
         state.namespace = {"__name__": "__main__"}
-        return {"status": "ok", "pid": os.getpid(), "cells": state.cells}
+    state.touch()
+    return {"status": "ok", "pid": os.getpid(), "cells": state.cells}
+
+
+def _shutdown_request(state: _WorkerState) -> dict[str, Any]:
+    # The reply must reach the caller before this process exits, so the request
+    # only marks the worker; the accept loop stops it.
+    state.stopping = True
+    return {"status": "ok", "pid": os.getpid(), "cells": state.cells}
+
+
+def _worker_cwd() -> str:
+    with contextlib.suppress(OSError):
+        return os.getcwd()
+    return ""
 
 
 def _hello_reply(state: _WorkerState) -> dict[str, Any]:
-    info = read_process(os.getpid())
     return {
         "status": "hello",
         "pid": os.getpid(),
-        "start_time": info.start_time if info is not None else 0,
         "cells": state.cells,
+        "idle_s": state.idle_seconds(),
+        "uptime_s": max(0.0, time.monotonic() - state.started),
+        "ttl_s": state.idle_timeout_s,
+        "cwd": _worker_cwd(),
     }
 
 
@@ -749,6 +841,8 @@ def _handle_connection(connection: socket.socket, state: _WorkerState) -> None:
                 reply = _run_cell_request(state, request, stream)
             elif request.get("op") == "reset":
                 reply = _reset_request(state)
+            elif request.get("op") == "shutdown":
+                reply = _shutdown_request(state)
             else:
                 reply = {
                     "status": "error",
@@ -769,67 +863,138 @@ def _handle_connection(connection: socket.socket, state: _WorkerState) -> None:
             return
 
 
-def _watch_owner(state: _WorkerState, owner: OwnerRef) -> None:
-    while True:
-        time.sleep(OWNER_WATCH_INTERVAL_S)
-        if not process_alive(owner.pid, owner.start_time):
-            _shutdown(state, 0)
+def _detach_output() -> None:
+    """Release the launcher's startup pipe.
+
+    The pipe exists only so the launcher can explain a worker that dies before it
+    listens. Keeping it after that would leave later descriptor writes aimed at a
+    reader that has gone.
+    """
+    try:
+        descriptor = os.open(os.devnull, os.O_RDWR)
+    except OSError:
+        return
+    try:
+        os.dup2(descriptor, 1)
+        os.dup2(descriptor, 2)
+    finally:
+        os.close(descriptor)
 
 
-def serve(socket_path: Path, owner: OwnerRef) -> None:
-    """Run the worker: accept connections, run one cell at a time."""
+def _idle_expired(state: _WorkerState) -> bool:
+    if state.stopping or state.running:
+        return False
+    return state.idle_seconds() >= state.idle_timeout_s
+
+
+def serve(socket_path: Path, idle_timeout_s: float) -> None:
+    """Run the worker: accept connections, run one cell at a time, expire when idle."""
     socket_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(socket_path.parent, 0o700)
-    state = _WorkerState(socket_path)
+    state = _WorkerState(socket_path, idle_timeout_s)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         server.bind(str(socket_path))
         state.socket_inode = os.stat(socket_path).st_ino
         os.chmod(socket_path, 0o600)
         server.listen(SOCKET_BACKLOG)
-        threading.Thread(target=_watch_owner, args=(state, owner), daemon=True).start()
-        print(f"surf session interpreter ready (pid {os.getpid()})", file=sys.stderr, flush=True)
+        server.settimeout(IDLE_POLL_S)
+        _detach_output()
         while True:
-            connection, _ = server.accept()
+            try:
+                connection, _ = server.accept()
+            except TimeoutError:
+                # A shutdown request is handled on its own thread, so it is seen
+                # here; a stopped worker must not linger until its idle timeout.
+                if state.stopping or _idle_expired(state):
+                    _shutdown(state, 0)
+                continue
             threading.Thread(
                 target=_handle_connection, args=(connection, state), daemon=True
             ).start()
+            if state.stopping:
+                _shutdown(state, 0)
     finally:
         server.close()
         _remove_socket(state)
 
 
 _USAGE = """usage:
-  run.py --session NAME [--timeout SECONDS] - [arguments...]
-  run.py --session NAME --reset
+  run.py FILE|- [arguments...]
+  run.py --new-session [--name SLUG] [--ttl SECONDS] - [arguments...]
+  run.py --session ID - [arguments...]
+  run.py --session ID --reset
+  run.py --kill-session ID
+  run.py --list-sessions
 """
 
 
+def _positive_seconds(value: str, option: str) -> float | None:
+    try:
+        seconds = float(value)
+    except ValueError:
+        seconds = 0.0
+    if not math.isfinite(seconds) or seconds <= 0:
+        print(f"surf: {option} expects positive seconds, got {value!r}", file=sys.stderr)
+        return None
+    return seconds
+
+
 def _main_cell(arguments: list[str]) -> int:
+    session_id: str | None = None
+    create = False
     name: str | None = None
+    idle_timeout_s = DEFAULT_SESSION_IDLE_TIMEOUT_S
     timeout_s = DEFAULT_CELL_TIMEOUT_S
     index = 0
     while index < len(arguments) and arguments[index].startswith("--"):
         option = arguments[index]
-        if option == "--session" and index + 1 < len(arguments):
+        if option == "--new-session":
+            create = True
+            index += 1
+        elif option == "--session" and index + 1 < len(arguments):
+            session_id = arguments[index + 1]
+            index += 2
+        elif option == "--name" and index + 1 < len(arguments):
             name = arguments[index + 1]
             index += 2
-        elif option == "--timeout" and index + 1 < len(arguments):
-            try:
-                timeout_s = float(arguments[index + 1])
-            except ValueError:
-                print(f"surf: --timeout expects seconds, got {arguments[index + 1]!r}", file=sys.stderr)
+        elif option == "--ttl" and index + 1 < len(arguments):
+            parsed = _positive_seconds(arguments[index + 1], "--ttl")
+            if parsed is None:
                 return 2
+            idle_timeout_s = parsed
+            index += 2
+        elif option == "--timeout" and index + 1 < len(arguments):
+            parsed = _positive_seconds(arguments[index + 1], "--timeout")
+            if parsed is None:
+                return 2
+            timeout_s = parsed
             index += 2
         else:
             print(_USAGE, file=sys.stderr, end="")
             return 2
     argv = arguments[index:]
-    if not name or not argv or argv[0] != "-":
+    if not argv or argv[0] != "-":
         print(_USAGE, file=sys.stderr, end="")
         return 2
+    if create == bool(session_id):
+        print("surf: pass exactly one of --new-session or --session ID", file=sys.stderr)
+        return 2
+    if name is not None and not create:
+        print("surf: --name applies to --new-session", file=sys.stderr)
+        return 2
+    if create:
+        session_id = new_session_id(name)
+    assert session_id is not None
     try:
-        result = run_cell(name, sys.stdin.read(), argv=tuple(argv), timeout_s=timeout_s)
+        result = run_cell(
+            session_id,
+            sys.stdin.read(),
+            create=create,
+            idle_timeout_s=idle_timeout_s,
+            argv=tuple(argv),
+            timeout_s=timeout_s,
+        )
     except SessionError as exc:
         print(f"surf: {exc}", file=sys.stderr)
         return 2
@@ -837,33 +1002,77 @@ def _main_cell(arguments: list[str]) -> int:
 
 
 def _main_reset(arguments: list[str]) -> int:
-    name: str | None = None
+    session_id: str | None = None
     index = 0
     while index < len(arguments) and arguments[index].startswith("--"):
         if arguments[index] == "--session" and index + 1 < len(arguments):
-            name = arguments[index + 1]
+            session_id = arguments[index + 1]
             index += 2
         else:
             print(_USAGE, file=sys.stderr, end="")
             return 2
-    if not name or index != len(arguments):
+    if not session_id or index != len(arguments):
         print(_USAGE, file=sys.stderr, end="")
         return 2
     try:
-        result = reset_bindings(name)
+        result = reset_bindings(session_id)
     except SessionError as exc:
         print(f"surf: {exc}", file=sys.stderr)
         return 2
     return 0 if result.status in {"ok", "absent"} else 1
 
 
+def _session_option(arguments: list[str]) -> str | None:
+    if len(arguments) != 2 or arguments[0] != "--session":
+        print(_USAGE, file=sys.stderr, end="")
+        return None
+    return arguments[1]
+
+
+def _main_kill(arguments: list[str]) -> int:
+    session_id = _session_option(arguments)
+    if session_id is None:
+        return 2
+    try:
+        stopped = kill_session(session_id)
+    except SessionError as exc:
+        print(f"surf: {exc}", file=sys.stderr)
+        return 2
+    if stopped:
+        print(f"session {session_id} stopped")
+        return 0
+    print(f"no live session {session_id}")
+    return 1
+
+
+def _main_list(arguments: list[str]) -> int:
+    if arguments:
+        print(_USAGE, file=sys.stderr, end="")
+        return 2
+    try:
+        entries = list_sessions()
+    except SessionError as exc:
+        print(f"surf: {exc}", file=sys.stderr)
+        return 2
+    if not entries:
+        print("no live sessions")
+        return 0
+    for entry in entries:
+        print(
+            f"{entry.session_id}  pid {entry.interpreter_pid}  cell #{entry.cells}  "
+            f"idle {_duration(entry.idle_s)}  up {_duration(entry.uptime_s)}  "
+            f"ttl {entry.idle_timeout_s:g}s  cwd {entry.cwd}"
+        )
+    return 0
+
+
 def _main_worker(arguments: list[str]) -> None:
-    if len(arguments) != 3:
-        print("usage: python -m surf_agent.session worker SOCKET OWNER_PID OWNER_START",
+    if len(arguments) != 2:
+        print("usage: python -m surf_agent.session worker SOCKET IDLE_TIMEOUT_SECONDS",
               file=sys.stderr)
         raise SystemExit(2)
-    socket_path, owner_pid, owner_start = arguments
-    serve(Path(socket_path), OwnerRef(int(owner_pid), int(owner_start)))
+    socket_path, idle_timeout = arguments
+    serve(Path(socket_path), float(idle_timeout))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -879,9 +1088,14 @@ def main(argv: list[str] | None = None) -> int:
         return _main_cell(rest)
     if command == "reset":
         return _main_reset(rest)
+    if command == "kill":
+        return _main_kill(rest)
+    if command == "list":
+        return _main_list(rest)
     print(_USAGE, file=sys.stderr, end="")
     return 2
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

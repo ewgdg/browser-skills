@@ -4,6 +4,7 @@
 import json
 import math
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import shutil
@@ -11,9 +12,17 @@ import sys
 
 USAGE = (
     "Usage: python3 run.py FILE|- [script arguments...]\n"
-    "       python3 run.py --session NAME [--timeout SECONDS] - [arguments...]\n"
-    "       python3 run.py --session NAME --reset\n"
+    "       python3 run.py --new-session [--name SLUG] [--ttl SECONDS]"
+    " [--timeout SECONDS] - [arguments...]\n"
+    "       python3 run.py --session ID [--timeout SECONDS] - [arguments...]\n"
+    "       python3 run.py --session ID --reset\n"
+    "       python3 run.py --kill-session ID\n"
+    "       python3 run.py --list-sessions\n"
 )
+
+SESSION_COMMAND = ["-m", "surf_agent.session"]
+SESSION_MODES = ("--new-session", "--session", "--kill-session", "--list-sessions")
+SESSION_VALUES = ("--name", "--ttl", "--timeout")
 
 # Read by surf_agent.session so a detached worker re-enters this same dependency
 # resolution instead of trusting the temporary environment uv removes on exit.
@@ -44,76 +53,134 @@ def dependency_requirement() -> str | None:
     )
 
 
-def split_options(arguments: list[str]) -> tuple[str | None, str | None, bool, list[str]]:
-    """Take only leading options; everything from FILE|- onward belongs to Python."""
-    session = None
-    timeout = None
+@dataclass(frozen=True)
+class Invocation:
+    session_mode: bool
+    python_arguments: list[str]
+
+
+def positive_seconds(value: str, option: str) -> str | None:
+    try:
+        seconds = float(value)
+    except ValueError:
+        seconds = 0.0
+    if not math.isfinite(seconds) or seconds <= 0:
+        print(f"{option} expects positive seconds, got {value!r}.", file=sys.stderr)
+        return None
+    return value
+
+
+def parse_arguments(arguments: list[str]) -> Invocation | None:
+    """Parse leading options; everything from FILE|- onward belongs to Python.
+
+    Returns None after reporting why a call cannot be built.
+    """
+    modes: list[str] = []
+    values: dict[str, list[str]] = {}
     reset = False
     index = 0
     while index < len(arguments) and arguments[index].startswith("--"):
         option = arguments[index]
-        if option == "--session" and index + 1 < len(arguments):
-            session = arguments[index + 1]
-            index += 2
-        elif option == "--timeout" and index + 1 < len(arguments):
-            timeout = arguments[index + 1]
-            index += 2
-        elif option == "--reset":
+        if option == "--reset":
             reset = True
             index += 1
-        else:
+            continue
+        if option not in SESSION_MODES and option not in SESSION_VALUES:
             break
-    return session, timeout, reset, arguments[index:]
+        if option in SESSION_MODES:
+            modes.append(option)
+            if option in ("--new-session", "--list-sessions"):
+                index += 1
+                continue
+        if index + 1 >= len(arguments):
+            print(f"{option} expects a value.\n{USAGE}", file=sys.stderr, end="")
+            return None
+        values.setdefault(option, []).append(arguments[index + 1])
+        index += 2
+    rest = arguments[index:]
 
-
-def session_arguments(
-    session: str, timeout: str | None, reset: bool, rest: list[str]
-) -> list[str] | None:
-    """The Python arguments for session mode, or None after reporting a usage error."""
-    if not session:
-        print(USAGE, file=sys.stderr, end="")
+    repeated = [option for option, seen in values.items() if len(seen) > 1]
+    if repeated:
+        print(f"{repeated[0]} was given more than once.", file=sys.stderr)
         return None
-    if timeout is not None:
-        try:
-            value = float(timeout)
-        except ValueError:
-            value = 0.0
-        if not math.isfinite(value) or value <= 0:
-            print(f"--timeout expects positive seconds, got {timeout!r}.", file=sys.stderr)
-            return None
-    if reset:
-        if rest or timeout is not None:
-            print("--reset discards bindings and takes no source or timeout.", file=sys.stderr)
-            return None
-        return ["-m", "surf_agent.session", "reset", "--session", session]
-    if not rest or rest[0] != "-":
+    if len(modes) > 1:
         print(
-            "Session mode runs one cell from stdin: pass '-' as the source. "
-            "Use a file without --session for an ordinary script.",
+            "Pass exactly one of --new-session, --session, --kill-session or --list-sessions.",
             file=sys.stderr,
         )
         return None
-    command = ["-m", "surf_agent.session", "cell", "--session", session]
+    mode = modes[0] if modes else None
+    session = (values.get("--session") or [None])[0]
+    kill_target = (values.get("--kill-session") or [None])[0]
+    timeout = (values.get("--timeout") or [None])[0]
+    idle_timeout = (values.get("--ttl") or [None])[0]
+    name = (values.get("--name") or [None])[0]
+    extras = rest or reset or timeout or idle_timeout or name
+
+    if mode == "--kill-session":
+        if extras:
+            print(f"--kill-session takes only a session id.\n{USAGE}", file=sys.stderr, end="")
+            return None
+        return Invocation(True, [*SESSION_COMMAND, "kill", "--session", kill_target])
+    if mode == "--list-sessions":
+        if extras:
+            print(f"--list-sessions takes no other options.\n{USAGE}", file=sys.stderr, end="")
+            return None
+        return Invocation(True, [*SESSION_COMMAND, "list"])
+    if mode is None:
+        if reset or timeout or idle_timeout or name:
+            print(
+                "--reset, --ttl, --name and --timeout require --new-session or --session.",
+                file=sys.stderr,
+            )
+            return None
+        if not rest:
+            print(USAGE, file=sys.stderr, end="")
+            return None
+        # A leading double dash stops option parsing, so the script keeps its own
+        # arguments exactly as an ordinary Python run would receive them.
+        return Invocation(False, ["--", *rest])
+
+    if timeout is not None and positive_seconds(timeout, "--timeout") is None:
+        return None
+    if idle_timeout is not None and mode != "--new-session":
+        print("--ttl applies when a session is created.", file=sys.stderr)
+        return None
+    if name is not None and mode != "--new-session":
+        print("--name applies when a session is created.", file=sys.stderr)
+        return None
+    if idle_timeout is not None and positive_seconds(idle_timeout, "--ttl") is None:
+        return None
+    if mode == "--session" and reset:
+        if rest or timeout is not None:
+            print("--reset discards bindings and takes no source or timeout.", file=sys.stderr)
+            return None
+        return Invocation(True, [*SESSION_COMMAND, "reset", "--session", session])
+    if not rest or rest[0] != "-":
+        print(
+            "A session cell is read from stdin: pass '-' as the source. "
+            "Use a file without a session option for an ordinary script.",
+            file=sys.stderr,
+        )
+        return None
+    command = [*SESSION_COMMAND, "cell"]
+    if mode == "--new-session":
+        command.append("--new-session")
+        if name is not None:
+            command += ["--name", name]
+        if idle_timeout is not None:
+            command += ["--ttl", idle_timeout]
+    else:
+        command += ["--session", session]
     if timeout is not None:
         command += ["--timeout", timeout]
-    return command + rest
+    return Invocation(True, command + rest)
 
 
 def main():
-    session, timeout, reset, rest = split_options(sys.argv[1:])
-    if session is None:
-        if reset or timeout is not None:
-            print(f"--timeout and --reset require --session.\n{USAGE}", file=sys.stderr, end="")
-            return 2
-        if not rest:
-            print(USAGE, file=sys.stderr, end="")
-            return 2
-        python_arguments = ["--", *rest]
-    else:
-        session_command = session_arguments(session, timeout, reset, rest)
-        if session_command is None:
-            return 2
-        python_arguments = session_command
+    invocation = parse_arguments(sys.argv[1:])
+    if invocation is None:
+        return 2
 
     dependency = dependency_requirement()
     if dependency is None:
@@ -128,13 +195,13 @@ def main():
         "--with", dependency, "--", "python",
     ]
     environment = dict(os.environ)
-    if session is not None:
+    if invocation.session_mode:
         environment[WORKER_COMMAND_ENV] = json.dumps(
-            [*uv_command, "-m", "surf_agent.session", "worker"]
+            [*uv_command, *SESSION_COMMAND, "worker"]
         )
     # Execute Python directly: uv must not reinterpret script metadata or change
     # ordinary Python's stdin, sibling imports, arguments, or exception behavior.
-    os.execve(uv, [*uv_command, *python_arguments], environment)
+    os.execve(uv, [*uv_command, *invocation.python_arguments], environment)
 
 
 if __name__ == "__main__":
