@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from itertools import count
 from typing import Any, TextIO
 
 from .runtime import SurfAgent, safe_thread_name
@@ -12,6 +13,7 @@ from .errors import SurfAgentError
 
 
 Snapshot = SnapshotCapture
+_observation_ids = count(1)
 
 
 def _create_agent(name: str) -> SurfAgent:
@@ -30,7 +32,7 @@ class Thread:
     def __init__(self, name: str = DEFAULT_THREAD) -> None:
         self.name = safe_thread_name(name)
         self._agent = _create_agent(self.name)
-        self._baseline: Snapshot | None = None
+        self._baseline: tuple[int, Snapshot] | None = None
 
     def open(self, url: str) -> str:
         """Navigate this thread's page to *url* and return backend output."""
@@ -91,23 +93,37 @@ class Thread:
         return self._capture()
 
     def emit(self, snapshot: Snapshot, *, full: bool = False, sink: TextIO | None = None) -> None:
-        """Emit an already captured snapshot and advance baseline on success.
+        """Emit a numbered observation and advance baseline after a complete write.
 
         Automatic emission compares against the last successfully emitted
         snapshot. Before a baseline exists it emits the complete value.
         """
         if not isinstance(snapshot, SnapshotCapture):
             raise TypeError("emit expects a snapshot returned by snapshot()")
+        # Reserve before writing: partial output must never reuse an observation ID.
+        observation_id = next(_observation_ids)
         if full or self._baseline is None:
             output = snapshot.text
         else:
-            output = choose_snapshot_diff(self._baseline, snapshot).output
-        # AXI may return unterminated text; keep consecutive observations separate.
-        if output and not output.endswith("\n"):
+            baseline_id, baseline_snapshot = self._baseline
+            output = choose_snapshot_diff(
+                baseline_snapshot,
+                snapshot,
+                before_label=f"observation {baseline_id}",
+                after_label=f"observation {observation_id}",
+            ).output
+        # Include an empty body line too; preserve the immutable snapshot value.
+        if not output.endswith("\n"):
             output += "\n"
+        frame = (
+            f"--- BEGIN observation {observation_id} ---\n"
+            f"{output}"
+            f"--- END observation {observation_id} ---\n"
+        )
         destination = sys.stdout if sink is None else sink
-        destination.write(output)
-        self._baseline = snapshot
+        if destination.write(frame) != len(frame):
+            raise SurfAgentError("observation output was not completely written")
+        self._baseline = observation_id, snapshot
 
     def close(self) -> None:
         """Close this thread's managed browser page."""

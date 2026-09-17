@@ -58,13 +58,22 @@ def url_without_fragment(url: str | None) -> str | None:
     return urlunparse(parsed._replace(fragment=""))
 
 
-def unified_snapshot_diff(before: SnapshotCapture, after: SnapshotCapture) -> str:
+def unified_snapshot_diff(
+    before: SnapshotCapture,
+    after: SnapshotCapture,
+    *,
+    before_label: str,
+    after_label: str,
+) -> str:
     return "".join(
-        difflib.unified_diff(
+        # difflib preserves unterminated source lines but omits GNU diff's marker.
+        # Add it so adjacent deletion/addition records cannot concatenate.
+        line if line.endswith("\n") else line + "\n\\ No newline at end of file\n"
+        for line in difflib.unified_diff(
             before.text.splitlines(keepends=True),
             after.text.splitlines(keepends=True),
-            fromfile="baseline",
-            tofile="current",
+            fromfile=before_label,
+            tofile=after_label,
         )
     )
 
@@ -74,7 +83,11 @@ def count_diff_hunks(diff_text: str) -> int:
 
 
 def choose_snapshot_diff(
-    before: SnapshotCapture | None, after: SnapshotCapture
+    before: SnapshotCapture | None,
+    after: SnapshotCapture,
+    *,
+    before_label: str,
+    after_label: str,
 ) -> SnapshotDiffDecision:
     if before is None:
         return SnapshotDiffDecision(
@@ -95,10 +108,13 @@ def choose_snapshot_diff(
             reason="origin changed",
         )
 
-    diff_text = unified_snapshot_diff(before, after)
+    diff_text = unified_snapshot_diff(
+        before, after, before_label=before_label, after_label=after_label
+    )
     if not diff_text:
         return SnapshotDiffDecision(
-            format_snapshot_header("diff", "no changes"),
+            f"--- {before_label}\n+++ {after_label}\n"
+            + format_snapshot_header("diff", "no changes"),
             used_diff=True,
             reason="no changes",
         )

@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 import io
 import json
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -50,6 +53,16 @@ def capture(text: str, *, page_id: int = 1) -> SnapshotCapture:
     )
 
 
+def observation_frames(output: str) -> list[tuple[int, str]]:
+    matches = re.findall(
+        r"--- BEGIN observation (\d+) ---\n(.*?)--- END observation \1 ---\n",
+        output,
+        flags=re.S,
+    )
+    assert matches, output
+    return [(int(number), body) for number, body in matches]
+
+
 def use_backend(monkeypatch: pytest.MonkeyPatch, backend: FakeBackend) -> None:
     monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: FakeAgent(backend))
 
@@ -84,7 +97,7 @@ def test_snapshot_is_complete_typed_value_and_does_not_advance_baseline(monkeypa
     thread.emit(observed, sink=output)
 
     assert observed.text == second.text
-    assert output.getvalue() == second.text
+    assert observation_frames(output.getvalue())[0][1] == second.text
     assert backend.capture_calls == 2
 
 
@@ -118,7 +131,7 @@ def test_emit_does_not_capture_and_explicit_full_establishes_baseline(monkeypatc
     thread.emit(second, sink=output)
 
     assert backend.capture_calls == 0
-    assert output.getvalue().startswith(first.text)
+    assert observation_frames(output.getvalue())[0][1] == first.text
     assert "+changed line 100" in output.getvalue()
 
 
@@ -161,8 +174,8 @@ def test_navigation_clears_emission_baseline_and_handles_are_independent(monkeyp
     independent = io.StringIO()
     second_thread.emit(second, sink=independent)
 
-    assert output.getvalue() == second.text
-    assert independent.getvalue() == second.text
+    assert observation_frames(output.getvalue())[0][1] == second.text
+    assert observation_frames(independent.getvalue())[0][1] == second.text
 
 
 def test_close_raises_on_backend_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -466,8 +479,166 @@ def test_emit_separates_unterminated_snapshots_without_changing_the_value(
     thread.emit(first, sink=output)
     thread.emit(capture("second"), full=True, sink=output)
 
-    assert output.getvalue() == "first\nsecond\n"
+    assert [body for _, body in observation_frames(output.getvalue())] == ["first\n", "second\n"]
     assert first.text == "first"
+
+
+def test_interleaved_handles_and_sinks_reference_their_successful_observation(monkeypatch):
+    backend = FakeBackend([], [])
+    use_backend(monkeypatch, backend)
+    first, other = Thread("first"), Thread("other")
+    before = capture("".join(f"stable line {index}\n" for index in range(220)))
+    changed = capture(before.text.replace("stable line 100", "changed line"))
+    first_sink, other_sink, diff_sink = io.StringIO(), io.StringIO(), io.StringIO()
+    assert first.emit(before, sink=first_sink) is None
+    other.emit(before, sink=other_sink)
+    first.emit(changed, sink=diff_sink)
+    first_id, _ = observation_frames(first_sink.getvalue())[0]
+    other_id, _ = observation_frames(other_sink.getvalue())[0]
+    diff_id, body = observation_frames(diff_sink.getvalue())[0]
+    assert (other_id, diff_id) == (first_id + 1, first_id + 2)
+    assert body.startswith(f"--- observation {first_id}\n+++ observation {diff_id}\n")
+    assert "+changed line\n" in body
+    assert backend.capture_calls == 0
+
+
+@pytest.mark.parametrize("text", ["", "unterminated", "terminated\n"])
+def test_full_and_empty_observations_have_exact_boundaries(monkeypatch, text):
+    use_backend(monkeypatch, FakeBackend([], []))
+    thread = Thread("hidden-name")
+    snapshot = capture(text)
+    output = io.StringIO()
+    thread.emit(snapshot, full=True, sink=output)
+    number, body = observation_frames(output.getvalue())[0]
+    expected_body = text if text.endswith("\n") else text + "\n"
+    assert body == expected_body
+    assert output.getvalue() == f"--- BEGIN observation {number} ---\n{expected_body}--- END observation {number} ---\n"
+    assert snapshot.text == text
+
+
+def test_stdout_mixed_with_print_and_fallback_nochange_full_are_framed(monkeypatch, capsys):
+    use_backend(monkeypatch, FakeBackend([], []))
+    thread = Thread("research")
+    print("before")
+    thread.emit(capture("first"))
+    print("between")
+    thread.emit(capture("first"))
+    thread.emit(capture("replacement"))
+    thread.emit(capture("replacement"), full=True)
+    print("after")
+    output = capsys.readouterr().out
+    frames = observation_frames(output)
+    assert len(frames) == 4
+    assert frames[1][1] == f"--- observation {frames[0][0]}\n+++ observation {frames[1][0]}\n# snapshot-diff: no changes\n"
+    assert frames[2][1].startswith("# snapshot fallback:")
+    assert frames[2][1].endswith("replacement\n")
+    assert frames[3][1] == "replacement\n"
+    assert output.startswith("before\n--- BEGIN observation ")
+    assert f"--- END observation {frames[0][0]} ---\nbetween\n" in output
+    assert output.endswith(f"--- END observation {frames[-1][0]} ---\nafter\n")
+
+
+@pytest.mark.parametrize("failure", ["raise", "short", "none"])
+def test_failed_frames_consume_ids_without_advancing_baseline(monkeypatch, failure):
+    use_backend(monkeypatch, FakeBackend([], []))
+    thread = Thread("research")
+    before = capture("".join(f"stable line {index}\n" for index in range(220)))
+    failed = capture(before.text.replace("stable line 100", "failed change"))
+    after = capture(before.text.replace("stable line 101", "successful change"))
+    initial, final = io.StringIO(), io.StringIO()
+    thread.emit(before, sink=initial)
+    attempted = []
+
+    class FailingSink:
+        def write(self, value):
+            attempted.append(value)
+            if failure == "raise":
+                raise OSError("partially written output")
+            return len(value) - 1 if failure == "short" else None
+
+    with pytest.raises((OSError, SurfAgentError)):
+        thread.emit(failed, sink=FailingSink())
+    thread.emit(after, sink=final)
+    before_id, _ = observation_frames(initial.getvalue())[0]
+    failed_id, _ = observation_frames(attempted[0])[0]
+    after_id, body = observation_frames(final.getvalue())[0]
+    assert (failed_id, after_id) == (before_id + 1, before_id + 2)
+    assert body.startswith(f"--- observation {before_id}\n+++ observation {after_id}\n")
+    assert "failed change" not in body
+    assert "+successful change" in body
+
+
+@pytest.mark.parametrize("mode", ["full", "nochange", "fallback"])
+def test_every_successful_frame_becomes_the_next_diff_identity(monkeypatch, mode):
+    use_backend(monkeypatch, FakeBackend([], []))
+    thread = Thread("research")
+    original = capture("".join(f"stable line {index}\n" for index in range(220)))
+    thread.emit(original, sink=io.StringIO())
+    baseline = capture(original.text, page_id=2 if mode == "fallback" else 1)
+    baseline_output = io.StringIO()
+    thread.emit(baseline, full=mode == "full", sink=baseline_output)
+    baseline_id, _ = observation_frames(baseline_output.getvalue())[0]
+    changed = capture(baseline.text.replace("stable line 100", "changed line"), page_id=baseline.page_id)
+    output = io.StringIO()
+    thread.emit(changed, sink=output)
+    current_id, body = observation_frames(output.getvalue())[0]
+    assert body.startswith(f"--- observation {baseline_id}\n+++ observation {current_id}\n")
+
+
+def test_interleaved_unchanged_observation_identifies_its_nonadjacent_baseline(monkeypatch):
+    use_backend(monkeypatch, FakeBackend([], []))
+    first, other = Thread("first"), Thread("other")
+    value = capture("unchanged")
+    output = io.StringIO()
+    first.emit(value, sink=output)
+    other.emit(capture("unrelated"), sink=output)
+    first.emit(value, sink=output)
+    frames = observation_frames(output.getvalue())
+    assert frames[2][1] == f"--- observation {frames[0][0]}\n+++ observation {frames[2][0]}\n# snapshot-diff: no changes\n"
+
+
+def test_unterminated_changed_lines_remain_separate_in_unified_diff(monkeypatch):
+    use_backend(monkeypatch, FakeBackend([], []))
+    thread = Thread("research")
+    prefix = "".join(f"stable line {index}\n" for index in range(220))
+    before, after = capture(prefix + "old"), capture(prefix + "new")
+    thread.emit(before, sink=io.StringIO())
+    output = io.StringIO()
+    thread.emit(after, sink=output)
+    _, body = observation_frames(output.getvalue())[0]
+    assert "-old\n\\ No newline at end of file\n+new\n\\ No newline at end of file\n" in body
+    assert before.text == prefix + "old"
+    assert after.text == prefix + "new"
+
+
+@pytest.mark.parametrize("action", ["open", "back", "close", "reset"])
+def test_lifecycle_actions_clear_snapshot_and_observation_identity(monkeypatch, action):
+    from unittest.mock import Mock
+
+    agent = Mock(backend="axi")
+    agent.browser_backend.close.return_value = 0
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda name: agent)
+    thread = Thread("research")
+    before = capture("".join(f"stable line {index}\n" for index in range(220)))
+    after = capture(before.text.replace("stable line 100", "changed line"))
+    thread.emit(before, sink=io.StringIO())
+    arguments = ["https://example.test/"] if action == "open" else []
+    getattr(thread, action)(*arguments)
+    output = io.StringIO()
+    thread.emit(after, sink=output)
+    assert observation_frames(output.getvalue())[0][1] == after.text
+
+
+def test_fresh_script_starts_observation_numbers_at_one():
+    script = """
+import surf_agent.thread as module
+from surf_agent import Thread, Snapshot
+module._create_agent = lambda name: None
+Thread('one').emit(Snapshot('hello', None, None, None, None, None))
+Thread('two').emit(Snapshot('world', None, None, None, None, None))
+"""
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, check=True, timeout=5)
+    assert observation_frames(result.stdout) == [(1, "hello\n"), (2, "world\n")]
 
 
 def test_is_open_does_not_start_missing_local_bridge(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

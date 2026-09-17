@@ -87,7 +87,8 @@ assert t.is_open(), 'browser disappeared after the previous interpreter exited'
 before = t.snapshot()
 baseline = io.StringIO()
 t.emit(before, sink=baseline)
-assert baseline.getvalue().rstrip() == before.text.rstrip()
+before_body = before.text if before.text.endswith('\\n') else before.text + '\\n'
+assert baseline.getvalue() == '--- BEGIN observation 1 ---\\n' + before_body + '--- END observation 1 ---\\n'
 name = re.search(r'textbox[^\\n]*?\\[ref=([^] ]+)', before.text).group(1)
 button = re.search(r'button "Save"[^\\n]*?\\[ref=([^] ]+)', before.text).group(1)
 t.fill(name, 'Exact "quote" and \\nnewline')
@@ -98,10 +99,12 @@ after = t.snapshot()
 diff = io.StringIO()
 t.emit(after, sink=diff)
 assert len(diff.getvalue()) < len(after.text)
-assert diff.getvalue().startswith('--- baseline')
+assert diff.getvalue().startswith('--- BEGIN observation 2 ---\\n--- observation 1\\n+++ observation 2\\n')
+assert diff.getvalue().endswith('--- END observation 2 ---\\n')
 full = io.StringIO()
 t.emit(after, full=True, sink=full)
-assert full.getvalue().rstrip() == after.text.rstrip()
+after_body = after.text if after.text.endswith('\\n') else after.text + '\\n'
+assert full.getvalue() == '--- BEGIN observation 3 ---\\n' + after_body + '--- END observation 3 ---\\n'
 t.screenshot(sys.argv[1])
 print(json.dumps({'full_chars': len(after.text), 'diff_chars': len(diff.getvalue())}))
 ''', str(tmp_path / "shot.png"), "literal ${HOME} and spaces", file=True)

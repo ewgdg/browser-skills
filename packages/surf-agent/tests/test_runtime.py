@@ -1568,7 +1568,8 @@ class AxiBackendTests(unittest.TestCase):
         for before_text, after_text, reason in cases:
             with self.subTest(reason=reason):
                 decision = choose_snapshot_diff(
-                    snapshot_capture(before_text), snapshot_capture(after_text)
+                    snapshot_capture(before_text), snapshot_capture(after_text),
+                    before_label="observation 1", after_label="observation 2",
                 )
 
                 self.assertFalse(decision.used_diff)
@@ -1577,10 +1578,10 @@ class AxiBackendTests(unittest.TestCase):
 
     def test_snapshot_diff_no_changes_emits_compact_header(self):
         capture = snapshot_capture(snapshot_text())
-        decision = choose_snapshot_diff(capture, capture)
+        decision = choose_snapshot_diff(capture, capture, before_label="observation 1", after_label="observation 2")
 
         self.assertTrue(decision.used_diff)
-        self.assertEqual(decision.output, "# snapshot-diff: no changes\n")
+        self.assertEqual(decision.output, "--- observation 1\n+++ observation 2\n# snapshot-diff: no changes\n")
 
     def test_snapshot_diff_metadata_vetoes_only_identity_changes(self):
         before = snapshot_capture(
@@ -1596,12 +1597,14 @@ class AxiBackendTests(unittest.TestCase):
                 origin="https://other.test",
                 url_without_fragment="https://other.test/path",
             ),
+            before_label="observation 1", after_label="observation 2",
         )
         self.assertFalse(origin_change.used_diff)
         self.assertIn("origin changed", origin_change.output)
 
         page_change = choose_snapshot_diff(
-            before, snapshot_capture(useful_after, page_id=23)
+            before, snapshot_capture(useful_after, page_id=23),
+            before_label="observation 1", after_label="observation 2",
         )
         self.assertFalse(page_change.used_diff)
         self.assertIn("page changed", page_change.output)
@@ -1613,6 +1616,7 @@ class AxiBackendTests(unittest.TestCase):
                 url="https://example.test/path#new",
                 url_without_fragment="https://example.test/path",
             ),
+            before_label="observation 1", after_label="observation 2",
         )
         self.assertTrue(hash_only.used_diff)
 
@@ -1624,6 +1628,7 @@ class AxiBackendTests(unittest.TestCase):
                 url_without_fragment="https://example.test/other",
                 title="Other",
             ),
+            before_label="observation 1", after_label="observation 2",
         )
         self.assertTrue(path_and_title.used_diff)
 

@@ -55,7 +55,7 @@ thread.press("Enter")
 thread.emit(thread.snapshot())
 ```
 
-Actions and observations are silent; print only useful results. `snapshot().text` is complete. `emit(snapshot)` outputs full text first, then useful diffs against that handle's last successful emission; `full=True` forces full output. Read [snapshot semantics](docs/python-api.md#snapshot-output) before managing baselines or custom sinks.
+Actions and observations are silent; print only useful results. `snapshot().text` is complete. `emit(snapshot)` outputs a numbered observation with explicit BEGIN/END boundaries: full text first, then useful diffs; `full=True` forces full output. Multiple emissions appear in order in the same script output, not separate agent turns. End the script when the next action requires a decision. Read [snapshot semantics](docs/python-api.md#snapshot-output) for the format, baselines or custom sinks.
 
 Pass a Python file or `-` for stdin; subsequent arguments reach `sys.argv`. For large text or JavaScript, read files in Python rather than nesting shell quoting:
 

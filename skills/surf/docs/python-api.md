@@ -41,7 +41,23 @@ thread.emit(current)              # useful diff, or full fallback
 thread.emit(current, full=True)   # explicitly complete output
 ```
 
+Every emission has matching boundaries, including full snapshots, fallback output, empty snapshots and no-change observations. Diffs use ordinary unified-diff headers naming the observations:
+
+```text
+--- BEGIN observation 2 ---
+--- observation 1
++++ observation 2
+@@ -1 +1 @@
+-Old heading
++New heading
+--- END observation 2 ---
+```
+
+Numbers start at 1 in each Python process and are shared across handles and sinks. Diff headers identify the last successful emission from that handle, which need not be the preceding number. Unchanged observations include the same header pair and a compact no-changes note. There are no titles or thread-name fields. These are readable output boundaries, not an escaping or security protocol for page text.
+
 Automatic diff falls back to full output if page identity/origin changes, the diff is too large, saves too little, or has too many hunks. There is no forced-diff mode. Nonempty output gets a terminating newline when needed, without changing the snapshot. The baseline advances only after a successful sink write.
+
+Failed or incomplete writes leave the baseline unchanged; observation numbers may have gaps so a partly written frame's number is never reused. `emit()` returns `None`, and all frames append to the selected sink; it does not pause the script for an agent decision.
 
 Baselines belong to Python handles, not persistent thread storage. A fresh script's first emission is full. Use separate handles for independent output consumers rather than sending dependent diffs to unrelated sinks.
 
