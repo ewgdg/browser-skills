@@ -32,7 +32,7 @@ Today every script is a fresh interpreter: each call re-imports, reattaches by t
 
 Two constraints settled these. First: **a cell whose outcome is uncertain must be reportable from outside the cell.** Anything that times, executes or dies inside the cell cannot report its own fault. Second: **a cell behaves exactly like a script.** No second dialect that breaks when the same code moves to `run.py FILE`, a project import, or a different kernel.
 
-- **Runtime (was open decision 1): out-of-process supervisor, `ipykernel` + thin client as the default.** The launcher that started the cell must survive it, because it is the only component able to report "your interpreter is gone". An in-process worker cannot: a timer fires inside the very code it is timing, and a crash takes the report with it. `benchmarks/persistent.py` is excluded by this rule on its own (in-process `exec` plus `SIGALRM`), independently of its other problems. A hand-rolled *out-of-process* worker remains an acceptable fallback if kernel stream/`display_data` semantics fight the observation framing.
+- **Runtime (was open decision 1): hand-rolled out-of-process worker, not `ipykernel`.** The launcher that started the cell must survive it, because it is the only component able to report "your interpreter is gone". An in-process worker cannot: a timer fires inside the very code it is timing, and a crash takes the report with it. `benchmarks/persistent.py` is excluded by this rule on its own (in-process `exec` plus `SIGALRM`), independently of its other problems. `ipykernel` was evaluated first and works; it was rejected on measured cost, not on framing, so the fallback condition named in earlier drafts never fired. See "Runtime evaluation" below.
 - **Busy and timeout behaviour (was open decision 3): per-cell, caller-set timeout that destroys the interpreter.** Not a background continuation, and never a rollback. A blocked cell makes new cells fail fast rather than interleave. The caller raises the limit for a long operation, as Codex's per-call `timeout_ms` does.
 - **Session lifecycle (was open decision 4): the interpreter lives exactly as long as the session that created it.** Established by an owner-process reference, not a heartbeat and not an idle timer. The interpreter records the process that created it and exits once that process is gone — liveness by `/proc/<pid>/cmdline` with the process start time as a pid-reuse guard, the technique `packages/surf-agent/src/surf_agent/chrome_lifecycle.py` already uses to resolve live Chrome roots. A heartbeat asks "is anyone there" when the question is "is my owner alive", and the only party that could send one would spend cells doing it. A long idle backstop may remain for pathologies. Consequence: a session restart always yields a new interpreter, which is predictable and cheap to recover from.
 - **Environment pinning (was open decision 5): fixed at interpreter creation and not re-read per cell.** `SURF_AGENT_HOME`, backend selection and bridge port cannot drift onto a different profile mid-task, and reset discards bindings without discarding configuration. Codex keeps added module directories across reset for the same reason.
@@ -42,6 +42,28 @@ Two constraints settled these. First: **a cell whose outcome is uncertain must b
 Long jobs that must outlive the session are not the session interpreter's problem; they need their own process or files on disk.
 
 No open decisions remain before implementation.
+
+## Runtime evaluation
+
+Both candidates were run against the same contract on this machine, Python 3.11.16: per-cell capture, cross-cell retention, output framing through `--- BEGIN observation N ---` boundaries, per-cell errors, busy rejection, timeout destroying the interpreter, and owner-death reaping.
+
+| | `ipykernel` + thin client | hand-rolled out-of-process worker |
+|---|---|---|
+| Session start | 418 ms kernel boot (45 ms import), 29 packages | 16 ms spawn-to-ready, 0 new packages |
+| Fault recovery | kernel reboot, 418 ms | worker respawn, ~16 ms |
+| Contract checks | all pass | all pass |
+| Busy rejection | supervisor logic; the kernel queues | pass at 0 ms, per-connection handler |
+| Owner-death reaping | not provided; supervisor must supply it | native, ~2 s watchdog interval |
+| Fault detection | process poll or iopub silence | closed control socket, immediate |
+| Channel surface | listening TCP, unencrypted (the kernel warns about this) | unix socket, mode 0600, no listening port |
+| Processes per session | 3 (per-call client, supervisor, kernel) | 2 (per-call client, worker) |
+
+`ipykernel` is rejected as the default because the supervisor exists either way — the settled owner-death and session-discovery rules cannot be delegated to a kernel that cannot see session identity — so it adds a second lifetime to reap rather than replacing anything, while its two real advantages go unused: interruption that preserves bindings contradicts the settled timeout rule, which destroys the interpreter, and per-cell capture is replaced by roughly 25 lines that proxy `sys.stdout` and `sys.stderr`. Adopt it again only if a kernel-only capability becomes required, such as rich display output or interruptible long cells.
+
+Two implementation consequences were measured, not assumed:
+
+- **A detached worker must never inherit the per-call stdout pipe.** Holding that write end open keeps the caller from ever seeing EOF, so the tool call hangs until the session ends; this was observed, not deduced. Cell output therefore travels over the control socket, and the worker's own fd 1 and 2 point at a per-session log so raw `os.write` output and subprocess output are preserved rather than lost. `ipykernel` has the same asymmetry — a cell's direct fd writes do not appear in its cell output either.
+- **Busy rejection needs a concurrent protocol, not just a flag.** With a single-threaded accept loop a second request is only read after the running cell finishes, so it queues and then executes instead of failing fast. Accepting in the main loop and handling each connection in a thread is what makes rejection immediate.
 
 ## Replay contract
 
