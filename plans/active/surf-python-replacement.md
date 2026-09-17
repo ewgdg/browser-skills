@@ -3,7 +3,7 @@
 Tracking issue: [#21 — Replace Surf command CLI with a Python-first skill and Thread handles](https://github.com/ewgdg/browser-skills/issues/21). Keep the issue open until installation, skill migration, and CLI removal are verified; implementation slices are not completion.
 
 ## Goal
-Replace the action-command `surf-agent` CLI with an importable Python interface and a thin skill-local launcher for ordinary file/stdin scripts. Local implementation and installed-artifact validation are complete; publishing and pinning the runtime remain gated.
+Replace the action-command `surf-agent` CLI with an importable Python interface and a thin skill-local launcher for ordinary file/stdin scripts. Runtime publication and no-override pinned installation are verified; skill publication and the final installed-copy refresh are underway.
 
 ## Intention
 Callers should hold a named `Thread` interaction/ownership context representing Surf's dedicated browser window. They should not parse command strings or capture CLI output to use browser operations.
@@ -16,7 +16,7 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 - Snapshot is an immutable typed value exposing `.text` and identity metadata. `snapshot()` never changes emission state. `emit(snapshot, full=False, sink=None)` writes the already captured value, auto-gating useful diffs; `full=True` always writes the full value.
 - Defer interpreter persistence to #22. The launcher runs fresh Python scripts from file/stdin; browser ownership persists independently.
 - Do not pin unpushed local code as a reachable remote dependency. Distribution/release is an explicit gate.
-- No push, session systems, MCP, or unrelated refactors.
+- Release publication and installed-skill refresh are now authorized by the user's approval to finish the pinned release. No session systems, MCP, or unrelated refactors.
 
 ## Work plan
 1. Completed: Thread actions, typed values, complete snapshots and explicit emission.
@@ -24,7 +24,7 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 3. Completed: `skills/surf/scripts/run.py`, file/stdin/argument/error handling, wheel validation override and fail-closed release marker.
 4. Completed: maintained skill/docs migration; distribution includes launcher and references without bundled runtime source.
 5. Completed: full tests, independent review, real Chrome navigation and installed-artifact acceptance outside checkout.
-6. Pending authorization: publish the tested runtime commit, pin its reachable full SHA, publish the skill pin, and run installed acceptance without the wheel override. Keep #21 open until this gate passes.
+6. Runtime publication, immutable pin and no-override packaged-skill acceptance passed. Publish the updated skill, refresh the installed copy and verify that exact installation before closing #21.
 
 ## Validation
 - `uv run pytest -q`: **227 passed, 4 skipped, 3 subtests**. Skips: opt-in live Google, two live navigation cases, and installed-browser acceptance.
@@ -34,11 +34,12 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 - Opt-in acceptance plus BFCache/reload navigation: **3 passed**. Covers stdin opening, a separate file invocation with spaces/arguments and same-name reattachment, exact multiline input through native refs, click/text wait, full/diff/full emission, screenshot, back-navigation, typed administrative inventory and cleanup. The unrelated working directory has an incompatible project config, which the launcher ignores.
 - Independent ordinary project import from the built wheel passes without the launcher; installed distribution has no console-script entry point. Launcher tests also verify sibling imports, script stdin, exception/nonzero exit propagation, missing uv, invalid dependency and fail-closed unreleased revision.
 - Separate agent shell tool invocations against the extracted skill also passed setup/profile inspection, browser continuity, back-navigation and cleanup without a prestarted bridge. All browser profiles and ports used for validation were isolated; no user login/cookies were accessed.
-- Real AXI, live credential login and a published no-override install were not exercised. Retained backend/profile/cookie lifecycle behavior has regression coverage; these are not claims of live AXI/auth validation.
+- Real AXI and live credential login were not exercised. Retained backend/profile/cookie lifecycle behavior has regression coverage; these are not claims of live AXI/auth validation.
+- Release validation: a fresh uv cache fetched the pinned runtime directly from GitHub; distribution metadata confirmed the expected full commit and Python 3.11, without borrowing Google Search's interpreter. Packaged-skill browser acceptance passed with `SURF_AGENT_DEPENDENCY` and `PYTHONPATH` unset. Launcher/distribution tests: **10 passed**, including a new red-before-green guard rejecting an unpinned shipped skill.
 
 ## Progress
 - Completed the replacement, including administrative operations, the fresh-script launcher, installed skill documentation and CLI removal. Removed obsolete DSL tests while migrating retained lifecycle/backend/cookie coverage.
-- Release constraint: no push is authorized by this plan. An unreleased launcher must fail clearly rather than pin an unavailable SHA; local built-wheel validation is separate evidence from a published pinned install.
+- Release authorization received after the sandbox session exposed the unfinished marker. Verified runtime `aa3e8d455c8c0bb26dd13a903c16e43e9c9cfdaf` is reachable at origin/main; pinning the skill to that tested runtime and validating without the local-wheel override.
 - Added `surf_agent.thread.Thread` with open/state, interaction, observation, evaluation, screenshot, and close methods; construction is `Thread(name=...)` and uses a private backend factory seam.
 - Added test-first coverage for silent snapshots, last-emitted baselines, no recapture during emission, explicit full emission, output failure, navigation/independent handles, close failure, delegation, and unsafe names.
 - Exported `Thread` from the package root.
@@ -68,10 +69,10 @@ Callers should hold a named `Thread` interaction/ownership context representing 
 - `setup()` validates prerequisites. The launcher installs the Patchright extra; Chrome installation remains explicit, outside package setup.
 - `set_backend()` stops the previous persisted backend before writing selection; `reset_backend()` only clears selection, so stop runtime explicitly first.
 - AXI `reset()` forgets local ownership without closing the window. Patchright rejects reset before mutation instead of preserving the old silent no-op for bridge-held ownership.
-- `runtime-revision` is deliberately `UNRELEASED`. The wheel override is explicit validation-only, not an implicit fallback or a claim that an unpushed commit is installable.
+- `runtime-revision` selects a verified reachable runtime commit. A new distribution regression test rejects UNRELEASED/invalid shipped pins. The wheel override remains explicit development-only; ordinary browsing reports installation defects instead of searching for alternate interpreters or cached wheels.
 
 ## Outcomes & remaining gates
-The local implementation and actual installed-artifact workflow are validated. Only authorized publication, reachable commit pinning and the final no-override install remain completion gates. No push or global user-skill replacement was performed. The plan stays active and #21 stays open.
+The implementation, runtime publication, pinning and no-override packaged-skill workflow are validated. Skill publication and actual installed-copy refresh are the remaining steps. The plan stays active and #21 stays open until those checks finish.
 
 ### Earlier checkpoints (superseded by complete-replacement validation above)
 - Thread, existing CLI, lifecycle, and all Google Search tests: **191 passed, 1 skipped, 28 subtests passed**. The skipped test is the opt-in live Google test; DOM fixture tests ran. Changed-file Ruff and diff checks passed.

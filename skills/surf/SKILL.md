@@ -13,7 +13,7 @@ Run ordinary Python through `scripts/run.py`. Each call starts a fresh interpret
 
 Set `SURF_SKILL` to the absolute directory containing this installed `SKILL.md`, not the working directory. Requires Python 3, `uv`, and Google Chrome; the launcher manages Python dependencies.
 
-If `runtime-revision` is `UNRELEASED`, stop normal setup. For dependency failures or local-wheel validation, read [launcher setup](docs/launcher.md).
+The installed skill pins its matching published runtime. If the pin is missing, invalid, or `UNRELEASED`, stop and report a release/installation defect; update or repair the skill rather than substituting cached wheels, source checkouts, or another tool's interpreter. For dependency failures, read [launcher setup](docs/launcher.md).
 
 Run setup once, or after installation changes:
 

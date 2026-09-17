@@ -1,6 +1,6 @@
 # Launcher setup and validation
 
-Read this for dependency failures, an unreleased runtime, or local-wheel validation. Normal invocation and browser workflow belong in [SKILL.md](../SKILL.md#prepare).
+Read this for dependency or release-installation failures, or deliberate local development validation. Normal invocation and browser workflow belong in [SKILL.md](../SKILL.md#prepare).
 
 ## Dependencies and execution
 
@@ -8,11 +8,15 @@ Read this for dependency failures, an unreleased runtime, or local-wheel validat
 
 The launcher executes Python directly: file-relative imports, working directory, script arguments, stdin, exceptions and exit codes follow ordinary Python behavior. It does not process inline dependency metadata. Google Chrome is a separate prerequisite; see [Patchright setup](patchright-backend.md#setup-and-selection) for detection and executable overrides.
 
-## Release and local validation
+## Published runtime
 
-`runtime-revision`, beside `SKILL.md`, selects a full 40-character Git commit for the runtime dependency. It must be published and reachable. `UNRELEASED` or an invalid revision stops the launcher before script execution; an unpushed commit is not an installable release.
+`runtime-revision`, beside `SKILL.md`, selects a full 40-character Git commit for the runtime dependency. Maintainers test and publish that runtime commit before updating the skill's pin, then validate the published skill without a dependency override. Users update the skill; the launcher installs its matching runtime.
 
-For deliberate local validation, supply an existing built wheel by absolute path:
+A missing, invalid, or `UNRELEASED` pin is a release/installation defect. Stop and report it, then update or repair the installed skill. If the pinned commit cannot be fetched, report that failure rather than substituting an unrelated runtime. Routine browsing does not require locating cached wheels, a source checkout, or another tool's interpreter.
+
+## Local development validation
+
+Only when deliberately testing local runtime changes, supply an existing built wheel by absolute path:
 
 ```bash
 export SURF_AGENT_DEPENDENCY=/absolute/path/surf_agent-0.1.0-py3-none-any.whl

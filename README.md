@@ -17,13 +17,10 @@ The Surf skill launches ordinary Python files or stdin through `skills/surf/scri
 
 The launcher requires Python 3 and `uv`, selects Python 3.11, and supplies `surf-agent[patchright]`. Google Chrome must be installed separately. Patchright is the default; AXI remains an explicitly selected alternative. Camoufox is not supported.
 
-**Release status:** `skills/surf/runtime-revision` is intentionally `UNRELEASED`. Default launch fails until an authorized push publishes a tested commit and its full commit ID is pinned. Local wheel validation is available now; it does not prove remote installation works:
+The installed skill's `runtime-revision` selects its matching published runtime. Update the skill to receive runtime updates; no separate Surf runtime installation or dependency override is needed. Set `SURF_SKILL` to the absolute directory containing the installed Surf `SKILL.md`, then validate setup:
 
 ```bash
-uv build packages/surf-agent --wheel --out-dir /tmp/surf-wheels
-# Set this to the actual absolute wheel path produced above.
-export SURF_AGENT_DEPENDENCY=/tmp/surf-wheels/surf_agent-0.1.0-py3-none-any.whl
-python3 skills/surf/scripts/run.py - <<'PY'
+python3 "$SURF_SKILL/scripts/run.py" - <<'PY'
 from surf_agent import Browser
 
 browser = Browser()
@@ -56,7 +53,7 @@ uv run pytest
 uv run ruff check packages tests benchmarks
 ```
 
-Skill payloads live under `skills/<skill>/`; Python packages under `packages/<dist-name>/`. Use the built-wheel override above to validate the launcher against local package changes before releasing.
+Skill payloads live under `skills/<skill>/`; Python packages under `packages/<dist-name>/`. For deliberate local development, build a wheel with `uv build packages/surf-agent --wheel --out-dir /tmp/surf-wheels`, then follow the [local-wheel validation procedure](skills/surf/docs/launcher.md#local-development-validation). This override is not part of normal browsing setup.
 
 Projects import the same `surf_agent` package directly, without the launcher. Install the built wheel with the Patchright extra for local development; after publication, use `uv add` with the same commit-pinned Git requirement recorded by the launcher.
 
@@ -79,4 +76,4 @@ uv run pytest tests/test_installed_workflow.py packages/surf-agent/tests/test_pa
 
 The acceptance test uses isolated temporary profiles and a local website. It checks separate file/stdin invocations, browser reattachment, exact input, observations, navigation and cleanup. Ordinary project imports and launcher failure/argument contracts are covered by `tests/test_skill_launcher.py`.
 
-Publication requires authorization: push the tested runtime commit, verify that its full SHA is reachable, write that SHA into `skills/surf/runtime-revision`, then publish the skill pin. Repeat installed acceptance with `SURF_AGENT_DEPENDENCY` unset. Keep issue #21 open until that no-override remote installation passes; an unpushed SHA is not a release.
+Publication requires authorization: test and push the runtime commit, verify that its full SHA is reachable, then write that SHA into `skills/surf/runtime-revision` and publish the updated skill. Repeat installed acceptance with `SURF_AGENT_DEPENDENCY` unset to verify the published pin, not a local wheel. Users update the skill; its launcher selects the matching runtime. An unpushed SHA is not a release.
