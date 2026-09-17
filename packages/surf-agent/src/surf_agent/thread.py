@@ -5,7 +5,8 @@ from __future__ import annotations
 import sys
 from typing import Any, TextIO
 
-from .cli import SnapshotCapture, SurfAgent, choose_snapshot_diff, safe_thread_name
+from .runtime import SurfAgent, safe_thread_name
+from .snapshots import SnapshotCapture, choose_snapshot_diff
 from .constants import DEFAULT_THREAD
 from .errors import SurfAgentError
 
@@ -39,8 +40,8 @@ class Thread:
     def is_open(self) -> bool:
         """Return managed-open state without starting a backend.
 
-        AXI reports remembered local state; local bridge backends query only a
-        running bridge. Neither path creates a missing browser window.
+        Backends verify remembered ownership against a running bridge.
+        Neither path creates a missing browser window.
         """
         return self._agent.browser_backend.is_open()
 
@@ -110,9 +111,23 @@ class Thread:
 
     def close(self) -> None:
         """Close this thread's managed browser page."""
-        status = self._agent.browser_backend.close_silently()
+        status = self._agent.browser_backend.close()
         if status not in (None, 0):
             raise SurfAgentError(f"close failed for thread {self.name}: backend returned status {status}")
+        self._baseline = None
+
+    def focus(self) -> None:
+        """Bring the managed window to the foreground."""
+        status = self._agent.browser_backend.focus()
+        if status not in (None, 0):
+            raise SurfAgentError(f"focus failed for thread {self.name}")
+
+    def reset(self) -> None:
+        """Forget AXI ownership without closing its window; unsupported on Patchright."""
+        if self._agent.backend != "axi":
+            # Patchright owns its mapping in the bridge, not the local state file.
+            raise SurfAgentError("reset is not supported by Patchright; use close() to release the thread")
+        self._agent.reset_state()
         self._baseline = None
 
     def _capture(self) -> Snapshot:

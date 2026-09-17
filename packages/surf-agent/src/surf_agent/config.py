@@ -26,7 +26,7 @@ class CookieScope:
     def from_domains(cls, values: Iterable[str]) -> "CookieScope":
         domains = normalize_domains(values)
         if not domains:
-            raise SurfAgentError("cookie source requires at least one --domain or --all-domains", exit_code=2)
+            raise SurfAgentError("cookie source requires domains or all_domains", exit_code=2)
         return cls(domains=domains)
 
     @classmethod
@@ -95,7 +95,7 @@ def normalize_domains(values: Iterable[str]) -> tuple[str, ...]:
     normalized: set[str] = set()
     for raw in values:
         if not isinstance(raw, str):
-            raise SurfAgentError("--domain must be a domain name", exit_code=2)
+            raise SurfAgentError("domain must be a domain name", exit_code=2)
         value = raw.strip().lower().removeprefix(".")
         if not value or any(marker in value for marker in (":", "/", "*", "@")) or "://" in raw:
             raise SurfAgentError(f"invalid cookie domain: {raw!r}", exit_code=2)
@@ -121,7 +121,7 @@ def normalize_domains(values: Iterable[str]) -> tuple[str, ...]:
 def validate_profile_name(value: str) -> str:
     profile = value.strip()
     if not profile or profile in {".", ".."} or Path(profile).name != profile:
-        raise SurfAgentError("--source-profile must be one profile directory name", exit_code=2)
+        raise SurfAgentError("profile must be one profile directory name", exit_code=2)
     return profile
 
 

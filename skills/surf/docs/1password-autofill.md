@@ -8,40 +8,36 @@ Pre-condition: 1Password desktop app unlocked.
 
 1Password inline suggestions may not appear as clickable DOM elements in snapshots (shadow DOM, ARIA live regions). Use keyboard navigation instead:
 
-```
-# 1. Navigate to login page
-surf-agent --thread main open https://example.com/login
+```python
+from surf_agent import Thread
 
-# 2. Click a form field to trigger 1Password inline suggestion
-surf-agent --thread main click @email-field
-
-# 3. Snapshot to confirm 1Password is responding
-#    Look for: status "1Password menu is available. Press down arrow to select."
-surf-agent --thread main snapshot
-
-# 4. Select and fill
-surf-agent --thread main press ArrowDown
-surf-agent --thread main press Enter
-
-# 5. If 1Password didn't auto-submit, click the login button
-surf-agent --thread main click @login-button
+thread = Thread("login")
+thread.open("https://example.com/login")
+thread.emit(thread.snapshot())
 ```
 
-### Composed with `do`
+Run Python through the [Surf launcher](../SKILL.md). Inspect the snapshot for the actual field target, then reattach in a fresh script:
 
-```bash
-surf-agent --thread main do <<'EOF'
-open https://example.com/login
-snapshot --baseline
-click @email-field
-snapshot --diff
-press ArrowDown
-press Enter
-snapshot --diff
-EOF
+```python
+from surf_agent import Thread
+
+thread = Thread("login")
+thread.click("@email-field")  # replace with the observed target
+thread.emit(thread.snapshot())
 ```
 
-Check the final diff: if still on the login page, 1Password didn't auto-submit — run `click @login-button`. If redirected, login succeeded.
+Look for status `1Password menu is available. Press down arrow to select.` Once confirmed, batch the deterministic keyboard actions in the next fresh script:
+
+```python
+from surf_agent import Thread
+
+thread = Thread("login")
+thread.press("ArrowDown")
+thread.press("Enter")
+thread.emit(thread.snapshot())
+```
+
+Inspect the resulting page before submitting anything else: 1Password may already have submitted the form. Click the observed login button only if still required. Confirm login from page state, not merely the absence of a form. Avoid printing passwords, cookies, or other secrets. Close `Thread("login")` when finished.
 
 ## Fallback (locked or no match)
 

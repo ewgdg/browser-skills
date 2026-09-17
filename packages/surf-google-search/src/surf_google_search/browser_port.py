@@ -106,14 +106,9 @@ class SurfBrowserPagePort:
 
 
 def selected_surf_profile_path() -> Path:
-    from surf_agent.cli import SurfAgent
+    from surf_agent import Browser
 
-    agent = SurfAgent(thread="surf-google-search-profile")
-    if agent.backend == "axi":
-        return Path(agent.chrome_profile_dir)
-    if agent.backend == "patchright":
-        return Path(agent.patchright_profile_dir)
-    raise ValueError(f"unsupported Surf backend: {agent.backend}")
+    return Browser().profile().profile_dir
 
 
 def _create_surf_agent(thread: str) -> SurfAgentPort:

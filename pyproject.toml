@@ -7,7 +7,7 @@ dev = [
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
-testpaths = ["packages"]
+testpaths = ["packages", "tests"]
 
 [tool.uv.workspace]
 members = ["packages/surf-agent", "packages/surf-google-search"]

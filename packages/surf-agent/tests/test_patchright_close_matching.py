@@ -13,7 +13,8 @@ from surf_agent.backends.bridge_common import PageSlot
 from surf_agent.backends.local_bridge import LocalBridgeClient
 from surf_agent.backends.patchright.backend import PatchrightBackend, PatchrightBridgeClient
 from surf_agent.backends.patchright.bridge import PatchrightRuntime
-from surf_agent.cli import SurfAgent, main
+from surf_agent.runtime import SurfAgent
+from surf_agent import Browser
 from surf_agent.errors import BridgeIdentityUnproven, BridgeUnavailable, SurfAgentError
 
 
@@ -325,7 +326,7 @@ def test_patchright_backend_routes_close_matching_and_maps_failures(
 
     assert backend.close_matching(" agent-* ") == expected_exit
     assert client.calls == [("close-matching", {"pattern": "agent-*"})]
-    assert json.loads(capsys.readouterr().out) == result
+    assert capsys.readouterr().out == ""
 
 
 def test_patchright_backend_returns_empty_result_when_nonstarting_call_is_unavailable(capsys: pytest.CaptureFixture[str]) -> None:
@@ -334,11 +335,7 @@ def test_patchright_backend_returns_empty_result_when_nonstarting_call_is_unavai
 
     assert backend.close_matching(" agent-* ") == 0
     assert client.calls == [("close-matching", {"pattern": "agent-*"})]
-    assert json.loads(capsys.readouterr().out) == {
-        "closed": [],
-        "failed": [],
-        "pattern": "agent-*",
-    }
+    assert capsys.readouterr().out == ""
 
 
 def test_patchright_backend_rejects_empty_close_matching_pattern() -> None:
@@ -352,13 +349,13 @@ def test_patchright_backend_rejects_empty_close_matching_pattern() -> None:
     assert client.calls == []
 
 
-def test_cli_close_all_reaches_patchright_close_matching(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_browser_close_all_reaches_patchright_close_matching(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     client = BridgeClient({"pattern": "*", "closed": [], "failed": []})
     with patch.dict("os.environ", {"SURF_AGENT_BACKEND": "patchright", "SURF_AGENT_HOME": str(tmp_path)}, clear=True):
         agent = SurfAgent(state_file=tmp_path / "state" / "thread.json")
         agent.patchright_client = client
-        with patch("surf_agent.cli.SurfAgent", return_value=agent):
-            assert main(["close-all"]) == 0
+        with patch("surf_agent.browser.SurfAgent", return_value=agent):
+            Browser().close_matching("*")
 
     assert client.calls == [("close-matching", {"pattern": "*"})]
-    assert json.loads(capsys.readouterr().out) == {"closed": [], "failed": [], "pattern": "*"}
+    assert capsys.readouterr().out == ""

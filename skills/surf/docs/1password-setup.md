@@ -1,15 +1,21 @@
 # 1Password autofill setup
 
-One-time. Run once per surf-agent profile.
+One-time. Run once per Surf profile.
 
 Linux and macOS only. Windows uses registry-based native messaging host discovery, not profile-local file manifests.
 
 ## 1. Native messaging manifest
 
-Chrome native messaging lookup follows `--user-data-dir`. The custom surf-agent profile needs its own manifest.
+Chrome native messaging lookup follows `--user-data-dir`. The dedicated Surf profile needs its own manifest.
+
+Use the [skill launcher](../SKILL.md) to resolve the actual profile:
 
 ```bash
-PROFILE_DIR=$(surf-agent profile show | jq -r '.profile_dir')
+PROFILE_DIR=$(python3 "$SURF_SKILL/scripts/run.py" - <<'PY'
+from surf_agent import Browser
+print(Browser().profile().profile_dir)
+PY
+)
 # Linux (also works with 'chromium'):
 SOURCE_MANIFEST=~/.config/google-chrome/NativeMessagingHosts/com.1password.1password.json
 # macOS:
@@ -21,11 +27,15 @@ ln -sf "$SOURCE_MANIFEST" "$PROFILE_DIR/NativeMessagingHosts/com.1password.1pass
 
 ## 2. Verify the extension
 
-```bash
-surf-agent profile open
+Close automation-owned Surf windows before opening the profile manually:
+
+```python
+from surf_agent import Browser
+
+Browser().open_profile()
 ```
 
-Opens the surf-agent Chrome profile with full browser UI. Click the 1Password extension icon — it should show your vault contents. If it says "Not connected," check that the manifest symlink is in place and the desktop app is running. Close when done.
+Run this Python through the launcher. It opens the Surf Chrome profile with full browser UI, without automation/debugging. Click the 1Password extension icon — it should show your vault contents. If it says "Not connected," check that the manifest symlink is in place and the desktop app is running. Close manual Chrome when done before restarting automation.
 
 ## 3. Pre-unlock habit
 

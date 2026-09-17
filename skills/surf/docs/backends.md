@@ -1,46 +1,31 @@
 # Surf backends
 
-`surf-agent` supports one active browser backend at a time.
+Surf supports one active backend at a time: Patchright by default, AXI as an explicit alternative.
 
 Selection priority:
-
 1. `SURF_AGENT_BACKEND`
-2. persisted platform user config (`surf-agent backend show` prints path)
-3. default `patchright`
+2. persisted platform user config
+3. `patchright`
 
-Use `surf-agent backend show` to inspect the selected backend and source.
+Run these Python snippets through the [skill launcher](../SKILL.md):
 
-## Backend selection
+```python
+from surf_agent import Browser
 
-Persist a backend:
-
-```bash
-surf-agent backend set axi
-surf-agent backend set patchright
+browser = Browser()
+print(browser.backend())  # backend, selection source, config_file
+print(browser.profile())  # actual dedicated profile and runtime settings
 ```
 
-Changing the persisted backend best-effort stops the previously selected backend runtime first, including old bridge processes and their automation-owned browser process. This prevents shared-profile lock conflicts when moving between AXI and Patchright.
+To persist a selection, call `browser.set_backend("axi")` or `browser.set_backend("patchright")`. Changing selection stops the previous persisted backend first; cleanup failure leaves configuration unchanged. Temporary environment overrides are ignored for that cleanup, but still take priority for browser use.
 
-Use one backend for one command without changing config:
+To clear selection, stop the current runtime with `browser.stop_bridge()`, then call `browser.reset_backend()`. Reset itself does not stop runtime. Stop any differently selected environment-override runtime too before moving between backends that share a profile.
 
+For one script without changing config:
 ```bash
-SURF_AGENT_BACKEND=patchright surf-agent --thread main open https://example.com
+SURF_AGENT_BACKEND=patchright python3 "$SURF_SKILL/scripts/run.py" /tmp/browse.py
 ```
 
-Clear persisted backend:
-
-```bash
-surf-agent backend reset
-```
-
-## Backend docs
-
-- [Patchright backend](patchright-backend.md) — default Chrome-channel browser backend.
-- [AXI backend](axi-backend.md) — explicit generic Chrome DevTools alternative.
-
-
-## Live cookie import
-
-AXI and Patchright share the Surf Chrome profile and can use an explicitly configured live Chrome cookie source. Configure allowed domains (or explicit all-domain consent) with `profile cookie-source set`, then inspect or force a refresh with `profile cookie-source show` and `profile import-cookies`.
-
-Automatic import occurs before starting an inactive owned profile only when the source fingerprint changes. SQLite online backup supports a running locked source. Same browser family, OS user, and `Local State.os_crypt` metadata are required. For imported Linux v11 cookies, Patchright must use Chrome’s real OS password store/keychain rather than its `--password-store=basic` and `--use-mock-keychain` automation defaults; the bridge excludes those defaults at launch. Imports upsert rows and do not remove destination-only cookies.
+- [Patchright](patchright-backend.md): Chrome-channel persistent-profile backend.
+- [AXI](axi-backend.md): Chrome DevTools alternative.
+- [Cookie import](cookie-import.md): explicitly scoped reuse of existing login state. Both backends share the default Surf Chrome profile; cookie import requires an inactive, verifiably owned destination.

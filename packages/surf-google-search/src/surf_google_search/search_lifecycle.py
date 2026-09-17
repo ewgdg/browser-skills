@@ -4,7 +4,7 @@ from typing import Callable, Protocol
 from uuid import uuid4
 from urllib.parse import urlencode, urlsplit
 
-from surf_agent.cli import surf_agent_state_dir
+from surf_agent.runtime import surf_agent_state_dir
 from surf_agent.pacing import Pacer as SurfPacer
 
 from .browser_port import (

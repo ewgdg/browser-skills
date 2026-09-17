@@ -36,9 +36,13 @@ Use returned destination URLs with the appropriate browsing or research workflow
 
 A Google challenge returns `human_intervention_required` and preserves one browser thread. Tell the user what action is required and wait for explicit confirmation. Never focus the page automatically. If useful, show the user:
 
-```bash
-surf-agent --thread '<thread>' focus
+```python
+from surf_agent import Thread
+
+Thread("<thread>").focus()
 ```
+
+Run that only on request, through the [Surf Python launcher](../surf/SKILL.md), replacing `<thread>` with the returned name. Its runtime release gate applies independently of the installed Google Search CLI.
 
 After confirmation, retry the exact search with the returned thread:
 

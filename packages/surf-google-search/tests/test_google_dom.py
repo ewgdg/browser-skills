@@ -5,7 +5,7 @@ from collections.abc import Iterator
 import pytest
 from patchright.sync_api import Browser, sync_playwright
 
-from surf_agent.cli import find_chrome_bin
+from surf_agent.runtime import find_chrome_bin
 from surf_google_search.browser_port import GOOGLE_PAGE_OBSERVATION_SCRIPT
 
 

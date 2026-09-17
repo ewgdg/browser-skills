@@ -67,7 +67,7 @@ class ChromeLifecycleCoordinator:
     def _import_if_configured(self, *, force: bool, required: bool = False) -> object | None:
         if self.importer is None:
             if required:
-                raise SurfAgentError("no cookie source is configured; run `surf-agent profile cookie-source set ...` first")
+                raise SurfAgentError("no cookie source is configured; run `Browser().set_cookie_source(...)` first")
             return None
         # Check while holding the lifecycle lock. CookieImporter checks again before
         # mutation, so an external launch between these checks still fails closed.

@@ -28,7 +28,7 @@ class PatchrightBridgeClient(LocalBridgeClient):
             port=port,
             profile_dir=profile_dir,
             startup_error=PATCHRIGHT_INSTALL_HINT,
-            timeout_hint="; restart it with `surf-agent bridge stop` if it stays wedged",
+            timeout_hint="; restart it with `Browser().stop_bridge()` if it stays wedged",
         )
 
     def _health_ok(self) -> bool:
@@ -70,7 +70,6 @@ class PatchrightBackend(LocalBridgeBackend):
 
         output = self.client.call_tool_if_running("close-matching", {"pattern": pattern})
         if output is None:
-            self._print_output(json.dumps({"pattern": pattern, "closed": [], "failed": []}, sort_keys=True) + "\n")
             return 0
         try:
             result = json.loads(output)
@@ -78,7 +77,6 @@ class PatchrightBackend(LocalBridgeBackend):
             raise SurfAgentError("Patchright bridge close-matching returned invalid JSON") from exc
         if not isinstance(result, dict) or not isinstance(result.get("failed"), list):
             raise SurfAgentError("Patchright bridge close-matching returned invalid JSON")
-        self._print_output(output)
         return 1 if result["failed"] else 0
 
     def profile_open(self, url: str, *, profile_dir: str, app_id: str, window_class: str) -> int:
@@ -86,7 +84,7 @@ class PatchrightBackend(LocalBridgeBackend):
             raise SurfAgentError("Patchright profile open requires a provable Google Chrome executable")
         with self.agent._patchright_startup_guard():
             if self.client._health_ok():
-                raise SurfAgentError("automated Surf Agent Patchright bridge is running; run `surf-agent bridge stop` before `profile open`")
+                raise SurfAgentError("automated Surf Agent Patchright bridge is running; run `Browser().stop_bridge()` before `Browser().open_profile()`")
             if not self.agent.chrome_bin:
                 raise SurfAgentError("could not find Chrome executable for profile open; set SURF_AGENT_CHROME_BIN")
             profile_path = Path(profile_dir)
@@ -101,15 +99,14 @@ class PatchrightBackend(LocalBridgeBackend):
             return 0
 
     def bridge_stop(self) -> int:
-        output = self.client.stop()
-        self._print_output(output)
-        _cli().stop_patchright_runtime(self.agent.patchright_profile_dir, port=self.agent.patchright_port)
+        self.client.stop()
+        _runtime().stop_patchright_runtime(self.agent.patchright_profile_dir, port=self.agent.patchright_port)
         return 0
 
 
-def _cli() -> Any:
-    import surf_agent.cli as cli
+def _runtime() -> Any:
+    import surf_agent.runtime as runtime
 
-    return cli
+    return runtime
 
 stable_patchright_page_id = stable_local_page_id

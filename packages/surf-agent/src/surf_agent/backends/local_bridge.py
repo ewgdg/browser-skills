@@ -12,6 +12,7 @@ from typing import Any, Callable, ContextManager
 
 from ..constants import CHROME_NEW_WINDOW_TIMEOUT_S
 from ..errors import BridgeToolError, BridgeUnavailable, SurfAgentError
+from ..snapshots import snapshot_capture_from_page
 from .base import AgentPage, ScreenshotOptions
 
 BRIDGE_HEALTH_POLL_INTERVAL_S = 0.05
@@ -183,16 +184,19 @@ class LocalBridgeBackend:
         # Tests and callers may replace backend-specific clients after construction.
         return getattr(self.agent, self.client_attr, self._client)
 
-    def print_page_id(self, *, force_new: bool = False) -> None:
-        if force_new:
-            self.new()
-        print(0)
-
-    def print_state(self, *, thread: str) -> None:
-        print(self.client.call_tool("state", {"thread": thread}), end="")
-
-    def print_list(self) -> None:
-        print(self.client.call_tool("list", {}), end="")
+    def list_threads(self) -> list[dict[str, Any]]:
+        output = self.client.call_tool_if_running("list", {})
+        if output is None:
+            return []
+        try:
+            result = json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise SurfAgentError("bridge returned invalid thread list JSON") from exc
+        if not isinstance(result, dict) or not isinstance(result.get("pages"), list):
+            raise SurfAgentError("bridge returned invalid thread list JSON")
+        if any(not isinstance(item, dict) or not isinstance(item.get("thread"), str) for item in result["pages"]):
+            raise SurfAgentError("bridge returned invalid thread list JSON")
+        return result["pages"]
 
     def is_open(self) -> bool:
         output = self.client.call_tool_if_running("state", {"thread": self.agent.state_file.stem})
@@ -207,11 +211,6 @@ class LocalBridgeBackend:
         return isinstance(data, dict) and data.get("open") is True
 
     def close(self) -> int:
-        output = self.close_page()
-        self._print_output(output)
-        return 0
-
-    def close_silently(self) -> int:
         self.close_page()
         return 0
 
@@ -219,18 +218,16 @@ class LocalBridgeBackend:
         return self._call("close")
 
     def focus(self) -> int:
-        output = self._call("focus")
-        self._print_output(output)
+        self._call("focus")
         return 0
 
     def close_matching(self, pattern: str) -> int:
         raise SurfAgentError(f"close-matching is not supported by {self.display_name} backend yet", exit_code=2)
 
     def capture_snapshot(self) -> Any:
-        cli = _cli()
         text = self.snapshot()
         current = self.capture_page_metadata()
-        return cli.snapshot_capture_from_page(text=text, page=current)
+        return snapshot_capture_from_page(text=text, page=current)
 
     def capture_page_metadata(self) -> Any:
         fallback = AgentPage(stable_local_page_id(self.agent.state_file.stem), backend=self.name)
@@ -308,9 +305,6 @@ class LocalBridgeBackend:
     def _call(self, name: str, payload: dict[str, Any] | None = None) -> str:
         return self.client.call_tool(name, {"thread": self.agent.state_file.stem, **(payload or {})})
 
-    def _print_output(self, output: str) -> None:
-        if output:
-            print(output, end="" if output.endswith("\n") else "\n")
 
 
 def stable_local_page_id(thread: str) -> int:
@@ -331,9 +325,3 @@ def coerce_int(value: Any) -> int | None:
 
 def string_or_none(value: Any) -> str | None:
     return value if isinstance(value, str) else None
-
-
-def _cli() -> Any:
-    import surf_agent.cli as cli
-
-    return cli

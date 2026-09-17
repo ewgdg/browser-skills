@@ -1,49 +1,47 @@
 # browser-skills
 
-Pi package for browser automation skills used by agents.
+Pi package for agent browser automation:
 
-Currently included:
+- `surf`: Python browser control through an agent-owned page/window.
+- `surf-google-search`: compact structured results from rendered Google Search.
 
-- `surf`: generic browser-control skill using an agent-owned one-tab window through `surf-agent`.
-- `surf-google-search`: retrieve compact structured organic results from rendered Google Search pages.
-
-## Install
+## Install skills
 
 ```bash
 pi install git:github.com/ewgdg/browser-skills
 ```
 
-## Python CLIs
+## Surf Python workflow
 
-Install the browser helper CLIs separately:
+The Surf skill launches ordinary Python files or stdin through `skills/surf/scripts/run.py`. Each call starts a fresh interpreter; the dedicated browser and named threads survive between calls. The Surf action CLI is removed. See [Surf skill](skills/surf/SKILL.md) for the execution workflow and [Python API](docs/surf-python-api.md) for the interface.
+
+The launcher requires Python 3 and `uv`, selects Python 3.11, and supplies `surf-agent[patchright]`. Google Chrome must be installed separately. Patchright is the default; AXI remains an explicitly selected alternative. Camoufox is not supported.
+
+**Release status:** `skills/surf/runtime-revision` is intentionally `UNRELEASED`. Default launch fails until an authorized push publishes a tested commit and its full commit ID is pinned. Local wheel validation is available now; it does not prove remote installation works:
 
 ```bash
-uv tool install "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"
+uv build packages/surf-agent --wheel --out-dir /tmp/surf-wheels
+# Set this to the actual absolute wheel path produced above.
+export SURF_AGENT_DEPENDENCY=/tmp/surf-wheels/surf_agent-0.1.0-py3-none-any.whl
+python3 skills/surf/scripts/run.py - <<'PY'
+from surf_agent import Browser
+
+browser = Browser()
+browser.setup()
+print(browser.backend())
+print(browser.profile())
+PY
+```
+
+## Google Search CLI
+
+Google Search retains its CLI and depends on Surf's Python API. Install both from the same intended release/source revision; installing from the repository default branch below uses remote code, not unpublished local changes:
+
+```bash
 uv tool install \
   --with "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent" \
   "surf-google-search @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-google-search"
 ```
-
-The Google Search CLI depends on the latest available `surf-agent`.
-
-## Browser backends
-
-Patchright is Surf's default backend. `surf-google-search` honors the selected
-Patchright or AXI backend. Camoufox is not supported.
-
-## Develop
-
-```bash
-uv --directory packages/surf-agent run surf-agent --help
-uv --directory packages/surf-agent run python -m unittest discover -s tests
-uv run pytest packages/surf-google-search/tests
-```
-
-Skill payload lives under `skills/<skill>/`. Python packages live under `packages/<dist-name>/`.
-
-## Google Search
-
-`surf-google-search` returns compact JSON containing primary organic results from one to three consecutive rendered Google Search pages:
 
 ```bash
 surf-google-search "latest Patchright documentation"
@@ -51,23 +49,40 @@ surf-google-search --page 2 --page-count 2 "latest Patchright documentation"
 printf 'latest Patchright documentation\n' | surf-google-search -
 ```
 
-Pass exact `-` as the required query to read it from stdin.
+Pass exact `-` as the required query to read stdin. One invocation returns compact JSON for one to three consecutive rendered Google Search pages.
 
-Searches sharing one Surf profile run one at a time with randomized natural pacing. Standard organic and visible top-level rich results are included; ads, hidden or nested answer sources, and multi-link Google modules are excluded. Every result carries its Search page and one-based page-local position; duplicate destinations are removed only within one invocation without compacting those positions. A Google challenge preserves one browser thread and blocks queued searches from repeatedly navigating until the challenge is resolved or its page is closed.
+Searches sharing one Surf profile serialize with randomized natural pacing and honor Patchright or AXI selection. Results include visible primary organic and top-level rich records; ads, hidden/nested sources, and multi-link Google modules are excluded. Each result includes its Search page and one-based page-local position. Duplicate destinations are removed within the invocation without compacting positions.
 
-## Live cookie import
+A Google challenge preserves one browser thread and blocks queued searches from repeatedly navigating until resolved or closed. Follow the [Google Search skill](skills/surf-google-search/SKILL.md) for human handoff.
 
-`surf-agent` can optionally refresh selected encrypted cookies from a running normal Chrome profile into its inactive Surf Chrome profile. Configure an explicit source and exposure scope first:
+## Profiles and login
+
+Surf uses a dedicated Chrome profile, separate from the user's main tabs. For manual login, extension setup, or existing Chrome cookie access, use the [Surf skill](skills/surf/SKILL.md) and [cookie setup](skills/surf/docs/cookie-import.md).
+
+Cookie import requires explicit scope consent and an inactive, verifiably owned destination. It refreshes changed sources before startup, not on a timer. Source Chrome may remain open. Same Chrome family, OS user, and encryption metadata are required. Imports upsert cookies without propagating source deletions; disabling imports does not remove already imported cookies.
+
+## Develop
 
 ```bash
-surf-agent profile cookie-source set \
-  --source ~/.config/google-chrome \
-  --source-profile Default \
-  --domain github.com \
-  --domain openai.com
-surf-agent profile import-cookies
+uv run pytest
+uv run ruff check packages tests benchmarks
 ```
 
-Use `--all-domains` only when that broader exposure is intentional. Imports use SQLite online backup, so the source Chrome may stay open. Source and Surf must be the same Chrome family, owned by the same OS user, and have matching `Local State.os_crypt` metadata. Patchright disables its `--password-store=basic` and `--use-mock-keychain` automation defaults so imported Linux v11 cookies use Chrome’s real OS password store/keychain. Rows are upserted only: source cookies update/add matching destination identities, while destination-only cookies (including a source logout) remain.
+Skill payloads live under `skills/<skill>/`; Python packages under `packages/<dist-name>/`. Use the built-wheel override above to validate the launcher against local package changes before releasing.
 
-Before AXI or Patchright starts an inactive configured profile, Surf automatically imports only when its source fingerprint changed. There is no timer-based refresh. Cookie import fails closed when the destination is active or identity cannot be proven; stop Surf, fix the source/configuration, then run `surf-agent profile import-cookies` to retry. After the last user-visible Surf page closes, AXI stops after a two-second recheck; Patchright stops immediately after returning the close response. If Chrome independently closes Patchright's persistent context, Surf transparently starts a fresh bridge and retries the interrupted command once.
+Projects import the same `surf_agent` package directly, without the launcher. Install the built wheel with the Patchright extra for local development; after publication, use `uv add` with the same commit-pinned Git requirement recorded by the launcher.
+
+## Installed acceptance and release
+
+Build a wheel and skill archive (`npm pack --pack-destination /tmp/surf-release`), then extract the archive outside this checkout. With Chrome available, run:
+
+```bash
+SURF_INSTALLED_SKILL=/tmp/surf-release/package/skills/surf \
+SURF_AGENT_DEPENDENCY=/tmp/surf-wheels/surf_agent-0.1.0-py3-none-any.whl \
+SURF_TEST_LIVE_PATCHRIGHT=1 \
+uv run pytest tests/test_installed_workflow.py packages/surf-agent/tests/test_patchright_navigation.py
+```
+
+The acceptance test uses isolated temporary profiles and a local website. It checks separate file/stdin invocations, browser reattachment, exact input, observations, navigation and cleanup. Ordinary project imports and launcher failure/argument contracts are covered by `tests/test_skill_launcher.py`.
+
+Publication requires authorization: push the tested runtime commit, verify that its full SHA is reachable, write that SHA into `skills/surf/runtime-revision`, then publish the skill pin. Repeat installed acceptance with `SURF_AGENT_DEPENDENCY` unset. Keep issue #21 open until that no-override remote installation passes; an unpushed SHA is not a release.

@@ -9,7 +9,7 @@ import pytest
 
 from surf_agent.backends.local_bridge import LocalBridgeBackend
 from surf_agent.backends.axi import parse_axi_eval_value
-from surf_agent.cli import SnapshotCapture
+from surf_agent.snapshots import SnapshotCapture
 from surf_agent.errors import SurfAgentError
 from surf_agent.thread import Thread
 
@@ -33,10 +33,6 @@ class FakeBackend:
     def close(self) -> int:
         self.closed += 1
         return self.close_status
-
-    def close_silently(self) -> int:
-        return self.close()
-
 
 @dataclass
 class FakeAgent:
@@ -206,7 +202,7 @@ def test_close_is_silent_through_real_local_backend(monkeypatch: pytest.MonkeyPa
     assert capsys.readouterr().out == ""
 
     backend.close()
-    assert capsys.readouterr().out == "closed by bridge\n"
+    assert capsys.readouterr().out == ""
 
 
 def test_thread_rejects_unsafe_names(monkeypatch: pytest.MonkeyPatch) -> None:

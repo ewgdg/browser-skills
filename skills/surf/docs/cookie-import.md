@@ -1,68 +1,65 @@
 # Cookie import setup and debugging
 
-Read this for initial cookie-source setup, when expected login state is missing, or when cookie import prevents Surf from starting. During normal browsing, configured cookie import runs automatically and needs no agent action.
+Read this for initial setup, missing login state, or cookie-import startup failures. Run Python through the [skill launcher](../SKILL.md).
 
-## Normal behavior
+## Consent and behavior
 
-Cookie import is opt-in and limited to explicitly allowed domains unless the user deliberately consents to `--all-domains`.
+Live cookie import is Linux-only, opt-in, and limited to explicitly allowed domains unless the user deliberately consents to all-domain exposure. Do not set, broaden, or reset access without user intent.
 
-For AXI and Patchright, Surf checks for changed source cookies before starting an inactive dedicated profile and imports them automatically. It does not refresh on a timer.
+Before starting an inactive dedicated profile, AXI and Patchright import configured cookies only when the source fingerprint changed. There is no timed refresh. Imports upsert matching identities; destination-only cookies survive. Logging out in source Chrome therefore does not delete the corresponding Surf cookie.
 
-Imports add or update matching cookies but do not delete destination-only cookies. Logging out in the source browser therefore does not propagate that deletion to Surf.
+Inspect configuration without exposing cookie values:
 
-## Inspect configuration
+```python
+from surf_agent import Browser
 
-```bash
-surf-agent profile cookie-source show
+print(Browser().cookie_source())
 ```
 
-Do not set, broaden, or reset the cookie source without user intent: the configuration controls which browser authentication data Surf may access.
+After consent, configure a scoped source:
 
-Initial scoped configuration example:
+```python
+from surf_agent import Browser
 
-```bash
-surf-agent profile cookie-source set \
-  --source /path/to/chrome-user-data \
-  --source-profile Default \
-  --domain github.com
+browser = Browser()
+browser.set_cookie_source(
+    "/path/to/chrome-user-data",
+    "Default",
+    domains=["github.com"],
+)
 ```
 
-Use `--all-domains` only when the user explicitly wants that broader exposure.
+Use `all_domains=True` instead of `domains` only for explicit broader consent. The source path names Chrome's user-data directory; the second argument names its profile.
 
-## Force a refresh
+## Force refresh
 
-First close Surf pages:
+Close Surf pages first. Global cleanup below is appropriate only when the user owns all remembered threads; otherwise coordinate with their owners:
 
-```bash
-surf-agent close-all
+```python
+from surf_agent import Browser
+
+browser = Browser()
+browser.close_matching("*")
+browser.stop_bridge()
+print(browser.import_cookies())
 ```
 
-Wait for the bridge to stop (Patchright stops immediately; AXI rechecks after two seconds), then run:
-
-```bash
-surf-agent profile import-cookies
-```
-
-An explicit import bypasses automatic source-fingerprint suppression. If the destination profile is still active, stop the process using it before retrying.
+An explicit import bypasses source-fingerprint suppression. It still refuses an active or unproven destination. Close any manual Chrome process using that profile before retrying. Stopping the bridge can affect other tasks; do not interrupt their work silently.
 
 ## Compatibility failures
 
-The source and destination must:
+Source and destination must use the same Chrome family, belong to the same OS user, and have matching `Local State.os_crypt` metadata. Source Chrome can stay open: Surf reads its cookie database with SQLite online backup. Imported Linux v11 cookies require Chrome's real password store/keychain; Patchright disables its incompatible automation defaults.
 
-- use the same Chrome browser family;
-- belong to the same OS user;
-- have matching `Local State.os_crypt` metadata.
+Validation and identity failures stop startup instead of silently accepting stale cookies. Correct the reported mismatch and retry explicit import with the destination inactive. For AXI identity overrides, see [AXI backend](axi-backend.md).
 
-The source Chrome may remain open because Surf reads its cookie database with SQLite online backup. Imported Linux v11 cookies also require Chrome's real OS password store or keychain; Patchright disables its incompatible automation defaults for this reason.
+## Disable future imports
 
-Validation and identity failures stop startup rather than silently using stale cookies. Correct the reported source, profile, browser-family, or encryption mismatch, then retry the explicit import while the destination is inactive.
+Only with user intent:
 
-## Reset configuration
+```python
+from surf_agent import Browser
 
-Only reset when the user intends to disable future imports:
-
-```bash
-surf-agent profile cookie-source reset
+Browser().reset_cookie_source()
 ```
 
-Resetting configuration does not remove cookies already present in the Surf profile.
+Resetting configuration does not remove cookies already present in Surf.

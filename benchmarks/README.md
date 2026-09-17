@@ -1,5 +1,7 @@
 # Three-mode local browser benchmark
 
+Historical comparison: the CLI arm requires checkout `24aa940` (the recorded pilot implementation). The current Python replacement intentionally removes that CLI; do not restore it to rerun this comparison. The fixture, analyzer, and experimental persistent worker remain usable independently.
+
 Benchmark infrastructure only; no changes to Surf's production lifecycle. Run from the repository root. Each participant gets a fresh fixture process, dedicated Surf home and thread name, and identical task turns from `benchmarks/tasks.md`. Use the same model/settings. The runner owns scoring, timing and transcript/token collection.
 
 ## Runner setup
