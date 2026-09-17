@@ -20,7 +20,7 @@ A missing or invalid pin is an installation defect. Stop and report it, then upd
 
 Each session has a socket and a log in `$XDG_RUNTIME_DIR/surf-agent/` (the state directory when `XDG_RUNTIME_DIR` is unset). Cell output travels over the socket; raw file-descriptor writes and subprocess output from a cell appear only in the session log.
 
-If a call reports that the interpreter did not answer, that process is stopped or wedged and the message names its pid. Stop that process and retry: the next call starts a fresh interpreter, and browser threads survive the replacement.
+If a call reports that the interpreter did not answer, the process it names is suspended or wedged. Resume it (`kill -CONT <pid>`) to keep its bindings, or stop it (`kill <pid>`) so the next call starts a fresh interpreter; browser threads survive either way.
 
 ## Local development validation
 

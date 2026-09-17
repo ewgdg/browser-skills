@@ -21,7 +21,6 @@ import os
 import re
 import signal
 import socket
-import struct
 import subprocess
 import sys
 import threading
@@ -259,6 +258,13 @@ def _connect(socket_path: Path, timeout_s: float) -> socket.socket:
         connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         connection.settimeout(timeout_s)
         connection.connect(str(socket_path))
+    except TimeoutError as exc:
+        # A unix connect only blocks when the accept queue is full, so a listener
+        # exists but is not accepting: the stalled condition, not a stale socket.
+        raise _InterpreterGone(f"could not reach the interpreter: {exc}", stalled=True) from exc
+    except BlockingIOError as exc:
+        # A saturated accept queue reports EAGAIN immediately instead of blocking.
+        raise _InterpreterGone(f"could not reach the interpreter: {exc}", stalled=True) from exc
     except OSError as exc:
         raise _InterpreterGone(f"could not reach the interpreter: {exc}") from exc
     return connection
@@ -302,22 +308,29 @@ def _exchange_cell(
 
 
 def _listener_pid(socket_path: Path) -> int | None:
-    """The process listening on this socket, even while it is not accepting.
+    """The worker process whose command line names this session socket.
 
-    The kernel completes a connect to a listening socket without the listener
-    accepting it, and SO_PEERCRED then names the listener.
+    Reading /proc keeps the diagnostic independent of the socket's accept queue,
+    which can be full exactly when a suspended worker is not accepting.
     """
+    wanted = str(socket_path)
     try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
-            probe.settimeout(1.0)
-            probe.connect(str(socket_path))
-            raw = probe.getsockopt(
-                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII")
-            )
-        pid = struct.unpack("iII", raw)[0]
-        return pid if pid > 0 else None
+        entries = list(Path("/proc").iterdir())
     except OSError:
         return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            raw = (entry / "cmdline").read_bytes()
+        except OSError:
+            continue
+        arguments = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+        if not arguments or not Path(arguments[0]).name.startswith("python"):
+            continue
+        if wanted in arguments and "surf_agent.session" in arguments and "worker" in arguments:
+            return int(entry.name)
+    return None
 
 
 def _hello(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
@@ -333,8 +346,8 @@ def _hello(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
             pid = _listener_pid(socket_path)
             who = f" (pid {pid})" if pid is not None else ""
             raise SessionError(
-                f"the session interpreter{who} did not answer; stop that process to "
-                "start a fresh interpreter for this session"
+                f"the session interpreter{who} did not answer; resume or stop that "
+                "process and retry this session"
             ) from exc
         return None
 
@@ -406,6 +419,8 @@ def _spawn_interpreter(
             raise SessionError(f"session interpreter failed to start; see {log_path}")
         time.sleep(0.02)
     process.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=WORKER_START_TIMEOUT_S)
     raise SessionError(f"session interpreter did not become ready; see {log_path}")
 
 
@@ -709,7 +724,11 @@ def _handle_connection(connection: socket.socket, state: _WorkerState) -> None:
             elif request.get("op") == "reset":
                 reply = _reset_request(state)
             else:
-                reply = {"status": "error", "error": f"unknown operation {request.get('op')!r}"}
+                reply = {
+                    "status": "error",
+                    "pid": os.getpid(),
+                    "error": f"unknown operation {request.get('op')!r}",
+                }
         except Exception as exc:  # keep the interpreter alive for the next cell
             reply = {
                 "status": "error",

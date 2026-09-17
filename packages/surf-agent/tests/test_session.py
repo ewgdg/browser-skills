@@ -50,6 +50,16 @@ def wait_for_exit(pid: int, timeout_s: float = 10.0) -> str:
     return "alive"
 
 
+def wait_for_state(pid: int, state: str, timeout_s: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        info = session.read_process(pid)
+        if info is not None and info.state == state:
+            return True
+        time.sleep(0.02)
+    return False
+
+
 def run_when_ready(name: str, code: str, owner: session.OwnerRef, timeout_s: float = 10.0):
     """Run a cell, waiting out a cell that another client left running."""
     deadline = time.monotonic() + timeout_s
@@ -305,17 +315,21 @@ def test_caller_kills_an_interpreter_that_misses_its_own_deadline(monkeypatch, o
     assert wait_for_exit(first.interpreter_pid) in {"gone", "Z"}
 
 
-def test_stopped_interpreter_reports_instead_of_replacing(monkeypatch, owner):
-    monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
+def test_stopped_interpreter_is_reported_not_replaced(monkeypatch, owner):
+    monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.25)
     first = session.run_cell("work", "kept = 1", owner=owner)
+    socket_path = session.session_socket_path("work")
     os.kill(first.interpreter_pid, signal.SIGSTOP)
     try:
-        with pytest.raises(session.SessionError) as failure:
-            session.run_cell("work", "print('while stopped')", owner=owner)
-        # The error names the process that has to be stopped before recovery.
-        assert str(first.interpreter_pid) in str(failure.value)
-        # Fail fast, not replacement: the interpreter and its bindings are untouched.
-        assert session.read_process(first.interpreter_pid) is not None
+        assert wait_for_state(first.interpreter_pid, "T")
+        # More attempts than the accept queue holds: none may replace the worker,
+        # and every failure names the process that has to be resumed or stopped.
+        for _ in range(session.SOCKET_BACKLOG + 4):
+            with pytest.raises(session.SessionError) as failure:
+                session.run_cell("work", "print('while stopped')", owner=owner)
+            assert str(first.interpreter_pid) in str(failure.value)
+        assert session.read_process(first.interpreter_pid).state == "T"
+        assert socket_path.exists()
     finally:
         os.kill(first.interpreter_pid, signal.SIGCONT)
     after = session.run_cell("work", "print('resumed', kept)", owner=owner)
