@@ -60,7 +60,7 @@ thread.press("Enter")
 thread.emit(thread.snapshot())
 ```
 
-A persistent session keeps the initialized handle, its emission baseline and any helper or data from earlier cells. Use the same session name for the whole task:
+A persistent session keeps the initialized handle, its emission baseline and any helper or data from earlier cells. Use the same session name for the whole task. Session mode always reads the cell from stdin; run a file without `--session` for an ordinary script:
 
 ```bash
 python3 "$SURF_SKILL/scripts/run.py" --session research-42 - <<'PY'

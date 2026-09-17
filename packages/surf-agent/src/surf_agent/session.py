@@ -58,7 +58,15 @@ class SessionError(SurfAgentError):
 
 
 class _InterpreterGone(Exception):
-    """The interpreter's control channel is closed; its bindings are gone."""
+    """The interpreter's control channel is closed; its bindings are gone.
+
+    A *stalled* channel was reachable but did not answer, which means the
+    interpreter may still be alive and must not be replaced silently.
+    """
+
+    def __init__(self, message: str, *, stalled: bool = False) -> None:
+        super().__init__(message)
+        self.stalled = stalled
 
 
 @dataclass(frozen=True)
@@ -82,7 +90,7 @@ class OwnerRef:
 class CellResult:
     status: str  # "ok", "error", "busy" or "replaced"
     interpreter_pid: int
-    cell_number: int
+    cell_number: int | None  # None when no cell started
     created: bool
     detail: str | None
     stdout: bytes
@@ -230,6 +238,8 @@ def _session_lock(name: str):
 def _read_reply(stream: Any) -> dict[str, Any]:
     try:
         line = stream.readline()
+    except TimeoutError as exc:
+        raise _InterpreterGone(f"interpreter did not answer: {exc}", stalled=True) from exc
     except OSError as exc:
         raise _InterpreterGone(f"interpreter did not answer: {exc}") from exc
     if not line:
@@ -263,19 +273,24 @@ def _exchange(socket_path: Path, request: dict[str, Any], timeout_s: float) -> d
 def _exchange_cell(
     socket_path: Path,
     request: dict[str, Any],
-    timeout_s: float,
-    on_started: Callable[[int], None],
+    wait_s: float,
+    on_started: Callable[[int, int], None],
 ) -> dict[str, Any]:
-    """Send one cell and report the worker-assigned number before it executes."""
+    """Send one cell and report the worker-assigned number before it executes.
+
+    *wait_s* covers the cell deadline plus reply transfer. The worker enforces
+    the deadline itself, so this wait is only a backstop; keeping the whole
+    allowance after the assignment lets a long result finish transferring.
+    """
     started_at = time.monotonic()
-    with _connect(socket_path, timeout_s) as connection, connection.makefile("rwb") as stream:
+    with _connect(socket_path, wait_s) as connection, connection.makefile("rwb") as stream:
         stream.write(json.dumps(request).encode() + b"\n")
         stream.flush()
         started = _read_reply(stream)
         if started.get("status") != "started":
             return started
-        on_started(int(started["cells"]))
-        connection.settimeout(max(0.1, timeout_s - (time.monotonic() - started_at)))
+        on_started(int(started["pid"]), int(started["cells"]))
+        connection.settimeout(max(0.1, wait_s - (time.monotonic() - started_at)))
         return _read_reply(stream)
 
 
@@ -284,7 +299,13 @@ def _hello(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
         return None
     try:
         return _exchange(socket_path, {"op": "hello"}, timeout_s)
-    except _InterpreterGone:
+    except _InterpreterGone as exc:
+        if exc.stalled:
+            # A live interpreter that cannot answer is running a cell that blocks
+            # its own thread; spawning a successor would interleave two of them.
+            raise SessionError(
+                "the session interpreter did not answer; a running cell is blocking it"
+            ) from exc
         return None
 
 
@@ -304,26 +325,34 @@ def _worker_command() -> list[str]:
         command = json.loads(configured)
     except ValueError as exc:
         raise SessionError(f"{WORKER_COMMAND_ENV} is not valid JSON: {exc}") from exc
-    if not isinstance(command, list) or not all(isinstance(part, str) for part in command):
-        raise SessionError(f"{WORKER_COMMAND_ENV} must be a JSON list of strings")
+    if not isinstance(command, list) or not command or not all(
+        isinstance(part, str) for part in command
+    ):
+        raise SessionError(f"{WORKER_COMMAND_ENV} must be a non-empty JSON list of strings")
     return command
 
 
 def _spawn_interpreter(
     socket_path: Path, log_path: Path, owner: OwnerRef
 ) -> tuple[int, int, bool, int]:
-    descriptor = os.open(log_path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
     try:
-        process = subprocess.Popen(
-            [
-                *_worker_command(),
-                str(socket_path), str(owner.pid), str(owner.start_time),
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=descriptor,
-            stderr=descriptor,
-            start_new_session=True,
-        )
+        descriptor = os.open(log_path, os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+    except OSError as exc:
+        raise SessionError(f"could not open the session log {log_path}: {exc}") from exc
+    try:
+        try:
+            process = subprocess.Popen(
+                [
+                    *_worker_command(),
+                    str(socket_path), str(owner.pid), str(owner.start_time),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=descriptor,
+                stderr=descriptor,
+                start_new_session=True,
+            )
+        except OSError as exc:
+            raise SessionError(f"could not start the session interpreter: {exc}") from exc
     finally:
         os.close(descriptor)
     deadline = time.monotonic() + WORKER_START_TIMEOUT_S
@@ -413,10 +442,10 @@ def run_cell(
     started = time.monotonic()
     number = cells + 1
 
-    def on_started(assigned: int) -> None:
+    def on_started(interpreter_pid: int, assigned: int) -> None:
         nonlocal number
         number = assigned
-        _frame(f"--- interpreter {pid} (cell #{number}, {origin}) ---")
+        _frame(f"--- interpreter {interpreter_pid} (cell #{number}, {origin}) ---")
 
     try:
         reply = _exchange_cell(
@@ -440,7 +469,7 @@ def run_cell(
     status = reply.get("status")
     if status == "busy":
         _frame(f"--- interpreter {pid} busy; no cell started ---")
-        return CellResult("busy", pid, number, created, None, b"", b"", elapsed)
+        return CellResult("busy", pid, None, created, None, b"", b"", elapsed)
     if status not in {"ok", "error"}:
         raise SessionError(f"interpreter sent an unexpected reply: {reply!r}")
     stdout, stderr = _decode(reply.get("stdout")), _decode(reply.get("stderr"))
@@ -484,28 +513,64 @@ def reset_bindings(name: str, *, owner: OwnerRef | None = None) -> ResetResult:
 class _WorkerState:
     def __init__(self, socket_path: Path) -> None:
         self.socket_path = socket_path
+        self.socket_inode: int | None = None
         self.namespace: dict[str, Any] = {"__name__": "__main__"}
         self.cells = 0
         self.running = False
         self.lock = threading.Lock()
 
 
+def _remove_socket(state: _WorkerState) -> None:
+    """Remove our socket name only while it still belongs to this worker.
+
+    A replacement interpreter may already have bound a fresh socket at the same
+    path; removing that one would detach it from future clients.
+    """
+    try:
+        if state.socket_inode is None:
+            return
+        if os.stat(state.socket_path).st_ino == state.socket_inode:
+            state.socket_path.unlink()
+    except OSError:
+        pass
+
+
 def _shutdown(state: _WorkerState, status: int) -> None:
     # Do not leave a socket name behind for a process that no longer accepts cells.
-    with contextlib.suppress(OSError):
-        state.socket_path.unlink()
+    _remove_socket(state)
     os._exit(status)
 
 
-def _capture_stream() -> io.TextIOWrapper:
-    # write_through keeps text and sys.stdout.buffer writes ordered in one buffer.
+class _LogFd(io.BytesIO):
+    """Captured cell bytes that still report this worker's own descriptor.
+
+    A cell that hands sys.stdout to a subprocess, or asks for its fileno, then
+    writes to the session log exactly as os.write(1, ...) does.
+    """
+
+    def __init__(self, file_descriptor: int) -> None:
+        super().__init__()
+        self._file_descriptor = file_descriptor
+
+    def fileno(self) -> int:
+        return self._file_descriptor
+
+
+def _capture_stream(errors: str, file_descriptor: int) -> io.TextIOWrapper:
+    # write_through keeps text and buffer writes ordered in one buffer. The error
+    # handler mirrors CPython's own stdout (strict) and stderr (backslashreplace),
+    # so cells encode text exactly as a script would.
     return io.TextIOWrapper(
-        io.BytesIO(), encoding="utf-8", errors="replace", newline="", write_through=True
+        _LogFd(file_descriptor), encoding="utf-8", errors=errors, newline="",
+        write_through=True,
     )
 
 
 def _expire(state: _WorkerState, number: int) -> None:
-    print(f"cell #{number} exceeded its deadline; interpreter exiting", file=sys.stderr, flush=True)
+    # The cell thread redirected sys.stderr to a capture buffer it never returns,
+    # so write the reason directly to this process's log descriptor.
+    with contextlib.suppress(OSError):
+        os.write(2, f"cell #{number} exceeded its deadline; interpreter exiting\n".encode())
     _shutdown(state, 1)
 
 
@@ -524,17 +589,21 @@ def _run_cell_request(
         state.cells += 1
         number = state.cells
         namespace = state.namespace
-    # Report the assigned number before executing: the caller frames a cell that
-    # then dies, and concurrent callers must not both claim the same number.
-    _write_reply(stream, {"status": "started", "cells": number})
-    timeout_s = float(request.get("timeout_s", DEFAULT_CELL_TIMEOUT_S))
-    argv = [str(part) for part in request.get("argv") or ["-"]]
-    stdout, stderr = _capture_stream(), _capture_stream()
-    expiration = threading.Timer(timeout_s, _expire, args=(state, number))
-    expiration.daemon = True
-    expiration.start()
+    # Every exit path below must clear the flag: a worker left claiming a cell
+    # would reject every later cell and reset until its owner dies.
+    expiration: threading.Timer | None = None
+    stdout = _capture_stream("strict", 1)
+    stderr = _capture_stream("backslashreplace", 2)
     status, detail = "ok", None
     try:
+        # Report the assigned number before executing: the caller frames a cell
+        # that then dies, and concurrent callers must not claim the same number.
+        _write_reply(stream, {"status": "started", "pid": os.getpid(), "cells": number})
+        timeout_s = float(request.get("timeout_s", DEFAULT_CELL_TIMEOUT_S))
+        argv = [str(part) for part in request.get("argv") or ["-"]]
+        expiration = threading.Timer(timeout_s, _expire, args=(state, number))
+        expiration.daemon = True
+        expiration.start()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             sys.argv = argv
             try:
@@ -544,7 +613,8 @@ def _run_cell_request(
                 traceback.print_exc()
                 detail = traceback.format_exc().strip().splitlines()[-1]
     finally:
-        expiration.cancel()
+        if expiration is not None:
+            expiration.cancel()
         with state.lock:
             state.running = False
     return {
@@ -593,7 +663,11 @@ def _handle_connection(connection: socket.socket, state: _WorkerState) -> None:
                 reply = {"status": "error", "error": f"unknown operation {request.get('op')!r}"}
         except Exception as exc:  # keep the interpreter alive for the next cell
             reply = {"status": "error", "exception": f"{type(exc).__name__}: {exc}", "cells": state.cells}
-        _write_reply(stream, reply)
+        try:
+            _write_reply(stream, reply)
+        except OSError:
+            # The caller went away; the interpreter remains available.
+            return
 
 
 def _watch_owner(state: _WorkerState, owner: OwnerRef) -> None:
@@ -611,6 +685,7 @@ def serve(socket_path: Path, owner: OwnerRef) -> None:
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(str(socket_path))
     os.chmod(socket_path, 0o600)
+    state.socket_inode = os.stat(socket_path).st_ino
     server.listen(SOCKET_BACKLOG)
     threading.Thread(target=_watch_owner, args=(state, owner), daemon=True).start()
     print(f"surf session interpreter ready (pid {os.getpid()})", file=sys.stderr, flush=True)
@@ -622,8 +697,7 @@ def serve(socket_path: Path, owner: OwnerRef) -> None:
             ).start()
     finally:
         server.close()
-        with contextlib.suppress(OSError):
-            socket_path.unlink()
+        _remove_socket(state)
 
 
 _USAGE = """usage:
@@ -652,7 +726,7 @@ def _main_cell(arguments: list[str]) -> int:
             print(_USAGE, file=sys.stderr, end="")
             return 2
     argv = arguments[index:]
-    if name is None or not argv or argv[0] != "-":
+    if not name or not argv or argv[0] != "-":
         print(_USAGE, file=sys.stderr, end="")
         return 2
     try:
@@ -673,7 +747,7 @@ def _main_reset(arguments: list[str]) -> int:
         else:
             print(_USAGE, file=sys.stderr, end="")
             return 2
-    if name is None or index != len(arguments):
+    if not name or index != len(arguments):
         print(_USAGE, file=sys.stderr, end="")
         return 2
     try:

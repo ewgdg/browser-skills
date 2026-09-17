@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -46,6 +48,45 @@ def wait_for_exit(pid: int, timeout_s: float = 10.0) -> str:
             return "gone" if info is None else "Z"
         time.sleep(0.05)
     return "alive"
+
+
+def run_when_ready(name: str, code: str, owner: session.OwnerRef, timeout_s: float = 10.0):
+    """Run a cell, waiting out a cell that another client left running."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        result = session.run_cell(name, code, owner=owner)
+        if result.status != "busy" or time.monotonic() > deadline:
+            return result
+        time.sleep(0.05)
+
+
+def start_blocking_cell(owner, tmp_path, name: str = "work"):
+    """Start a cell that blocks until the returned release file appears."""
+    marker, release = tmp_path / "marker", tmp_path / "release"
+    code = (
+        "import pathlib, time\n"
+        f"pathlib.Path({str(marker)!r}).touch()\n"
+        "deadline = time.monotonic() + 30\n"
+        f"while not pathlib.Path({str(release)!r}).exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+    )
+    thread = threading.Thread(
+        target=session.run_cell, args=(name, code),
+        kwargs={"owner": owner, "timeout_s": 60.0},
+    )
+    thread.start()
+    deadline = time.monotonic() + 10.0
+    while not marker.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert marker.exists(), "blocking cell never started"
+    return thread, release
+
+
+def send_raw_request(socket_path, request) -> socket.socket:
+    connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    connection.connect(str(socket_path))
+    connection.sendall(json.dumps(request).encode() + b"\n")
+    return connection
 
 
 def test_cells_run_in_order_and_retain_bindings(owner):
@@ -143,26 +184,73 @@ def test_concurrent_first_cells_converge_on_one_interpreter(capfd, owner):
     assert sorted(re.findall(r"--- cell #(\d+) ok", frames)) == [str(number) for number in finished]
 
 
-def test_busy_cell_fails_fast_instead_of_queueing(owner, tmp_path):
-    marker = tmp_path / "started"
-    code = f"import time\nopen({str(marker)!r}, 'w').close()\ntime.sleep(1.5)"
-    slow = threading.Thread(
-        target=session.run_cell, args=("work", code), kwargs={"owner": owner, "timeout_s": 30.0}
-    )
-    slow.start()
+def test_reset_while_a_cell_runs_is_rejected(owner, tmp_path):
+    slow, release = start_blocking_cell(owner, tmp_path)
     try:
-        deadline = time.monotonic() + 5.0
-        while not marker.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        assert marker.exists(), "slow cell never started"
+        assert session.reset_bindings("work", owner=owner).status == "busy"
+    finally:
+        release.touch()
+        slow.join(timeout=60.0)
 
+
+def test_busy_cell_fails_fast_instead_of_queueing(owner, tmp_path):
+    slow, release = start_blocking_cell(owner, tmp_path)
+    try:
         started = time.monotonic()
         result = session.run_cell("work", "print('never runs')", owner=owner)
         assert result.status == "busy"
         assert time.monotonic() - started < 1.0
         assert result.stdout == b""
+        assert result.cell_number is None
     finally:
-        slow.join(timeout=30.0)
+        release.touch()
+        slow.join(timeout=60.0)
+
+
+def test_client_that_disconnects_early_does_not_wedge_the_session(owner):
+    session.run_cell("work", "value = 1", owner=owner)
+    connection = send_raw_request(
+        session.session_socket_path("work"),
+        {"op": "cell", "code": "print('orphan')", "argv": ["-"], "timeout_s": 30},
+    )
+    connection.close()  # never reads the started reply
+    result = run_when_ready("work", "print('after orphan', value)", owner)
+    assert result.status == "ok", result.detail
+    assert result.stdout == b"after orphan 1\n"
+
+
+def test_malformed_request_does_not_wedge_the_session(owner):
+    session.run_cell("work", "value = 2", owner=owner)
+    connection = send_raw_request(
+        session.session_socket_path("work"),
+        {"op": "cell", "code": "print('bad')", "argv": ["-"], "timeout_s": None},
+    )
+    with connection, connection.makefile("rb") as stream:
+        assert json.loads(stream.readline())["status"] == "started"
+        assert json.loads(stream.readline())["status"] == "error"
+    result = run_when_ready("work", "print('after malformed', value)", owner)
+    assert result.status == "ok", result.detail
+    assert result.stdout == b"after malformed 2\n"
+
+
+def test_configured_worker_command_starts_the_interpreter(monkeypatch, owner):
+    bootstrap = (
+        "import sys; from surf_agent.session import main; "
+        "raise SystemExit(main(['worker', *sys.argv[1:]]))"
+    )
+    monkeypatch.setenv(
+        session.WORKER_COMMAND_ENV, json.dumps([sys.executable, "-c", bootstrap])
+    )
+    result = session.run_cell("work", "print('configured command')", owner=owner)
+    assert result.status == "ok"
+    assert result.stdout == b"configured command\n"
+
+
+def test_invalid_worker_command_is_rejected(monkeypatch, owner):
+    for value in ("not json", json.dumps([]), json.dumps(["python", 3])):
+        monkeypatch.setenv(session.WORKER_COMMAND_ENV, value)
+        with pytest.raises(session.SessionError):
+            session.run_cell("work", "pass", owner=owner)
 
 
 def test_timeout_replaces_interpreter_and_reports_new_identity(owner):
@@ -171,6 +259,7 @@ def test_timeout_replaces_interpreter_and_reports_new_identity(owner):
     assert slow.status == "replaced"
     assert "exceeded 0.5" in (slow.detail or "")
     assert slow.duration_s < 5.0
+    assert "exceeded its deadline" in session.session_log_path("work").read_text()
     assert wait_for_exit(first.interpreter_pid) in {"gone", "Z"}
 
     after = session.run_cell("work", "print(kept)", owner=owner)
@@ -194,6 +283,26 @@ def test_cell_that_kills_its_worker_prints_nothing(capfd, owner):
     # The header is printed outside the cell, so the caller can still see where it died.
     frames = capfd.readouterr().err
     assert f"--- interpreter {first.interpreter_pid} (cell #2, attached) ---" in frames
+
+
+def test_caller_kills_an_interpreter_that_misses_its_own_deadline(monkeypatch, owner):
+    # The worker's own timer is the primary deadline; the caller must still kill
+    # an interpreter whose cell prevents that timer from running.
+    monkeypatch.setattr(session, "REPLY_GRACE_S", 0.5)
+    first = session.run_cell("work", "kept = 1", owner=owner)
+    result = session.run_cell(
+        "work",
+        "import threading, time\n"
+        "for thread in threading.enumerate():\n"
+        "    if isinstance(thread, threading.Timer):\n"
+        "        thread.cancel()\n"
+        "time.sleep(30)\n",
+        timeout_s=0.5,
+        owner=owner,
+    )
+    assert result.status == "replaced"
+    assert "exceeded 0.5" in (result.detail or "")
+    assert wait_for_exit(first.interpreter_pid) in {"gone", "Z"}
 
 
 def test_dead_worker_is_replaced_on_the_next_cell(owner):
@@ -247,29 +356,34 @@ def test_environment_is_pinned_when_the_interpreter_is_created(monkeypatch, owne
 
 def test_owner_liveness_distinguishes_reuse_and_zombies():
     process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
-    info = session.read_process(process.pid)
-    assert info is not None
-    assert session.process_alive(process.pid, info.start_time) is True
-    assert session.process_alive(process.pid, info.start_time + 1) is False
-    process.kill()
-    process.wait()
-    assert session.process_alive(process.pid, info.start_time) is False
-
-    # A reaped child lingers as a zombie while its parent lives; it is not an owner.
-    pid = os.fork()
-    if pid == 0:
-        os._exit(0)
     try:
-        deadline = time.monotonic() + 5.0
-        info = session.read_process(pid)
-        while info is not None and info.state != "Z" and time.monotonic() < deadline:
-            time.sleep(0.05)
+        info = session.read_process(process.pid)
+        assert info is not None
+        assert session.process_alive(process.pid, info.start_time) is True
+        assert session.process_alive(process.pid, info.start_time + 1) is False
+        process.kill()
+        process.wait()
+        assert session.process_alive(process.pid, info.start_time) is False
+
+        # A reaped child lingers as a zombie while its parent lives; it is not an owner.
+        pid = os.fork()
+        if pid == 0:
+            os._exit(0)
+        try:
+            deadline = time.monotonic() + 5.0
             info = session.read_process(pid)
-        assert info is not None and info.state == "Z"
-        start_time = info.start_time
-        assert session.process_alive(pid, start_time) is False
+            while info is not None and info.state != "Z" and time.monotonic() < deadline:
+                time.sleep(0.05)
+                info = session.read_process(pid)
+            assert info is not None and info.state == "Z"
+            start_time = info.start_time
+            assert session.process_alive(pid, start_time) is False
+        finally:
+            os.waitpid(pid, 0)
     finally:
-        os.waitpid(pid, 0)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
 
 
 def test_owner_death_reaps_the_worker():
@@ -277,19 +391,24 @@ def test_owner_death_reaps_the_worker():
     info = session.read_process(process.pid)
     assert info is not None
     owner = session.OwnerRef(pid=process.pid, start_time=info.start_time)
-    result = session.run_cell("work", "kept = 1", owner=owner)
-    assert result.status == "ok"
-
-    process.kill()
-    process.wait()
-    assert wait_for_exit(result.interpreter_pid) in {"gone", "Z"}
-    # The reaped worker cleans up its socket name on the way out.
-    assert not session.session_socket_path("work").exists()
-    # The worker is our child in-process; reap it so it does not linger as a zombie.
     try:
-        os.waitpid(result.interpreter_pid, os.WNOHANG)
-    except ChildProcessError:
-        pass
+        result = session.run_cell("work", "kept = 1", owner=owner)
+        assert result.status == "ok"
+
+        process.kill()
+        process.wait()
+        assert wait_for_exit(result.interpreter_pid) in {"gone", "Z"}
+        # The reaped worker cleans up its socket name on the way out.
+        assert not session.session_socket_path("work").exists()
+        # The worker is our child in-process; reap it so it does not linger as a zombie.
+        try:
+            os.waitpid(result.interpreter_pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
 
 
 def stop_worker(pid: int, socket_path: Path) -> None:
@@ -302,23 +421,35 @@ def stop_worker(pid: int, socket_path: Path) -> None:
         os.kill(pid, signal.SIGKILL)
 
 
-def test_worker_never_inherits_the_callers_stdout(monkeypatch, tmp_path):
+def test_worker_never_inherits_the_callers_stdout(monkeypatch):
     monkeypatch.setenv("PI_SESSION_ID", "fd-test")
-    code = "import os\nos.write(1, b'raw bytes\\n')\nprint('after raw')"
+    code = (
+        "import os, subprocess, sys\n"
+        "assert sys.stdout.fileno() == 1 and sys.stderr.fileno() == 2\n"
+        "subprocess.run(['/bin/echo', 'child output'], check=True, stdout=sys.stdout)\n"
+        "os.write(1, b'raw bytes\\n')\n"
+        "print('after raw')\n"
+    )
     result = subprocess.run(
         [sys.executable, "-m", "surf_agent.session", "cell", "--session", "fd", "-"],
         input=code, capture_output=True, text=True, timeout=30,
     )
-    assert result.returncode == 0, result.stderr
-    # If the detached worker inherited this pipe, the call would never see EOF.
-    assert result.stdout == "after raw\n"
-    assert "raw bytes" not in result.stdout
+    try:
+        assert result.returncode == 0, result.stderr
+        # If the detached worker inherited this pipe, the call would never see EOF.
+        assert result.stdout == "after raw\n"
+        assert "raw bytes" not in result.stdout
+        assert "child output" not in result.stdout
 
-    log_path = session.session_log_path("fd")
-    assert "raw bytes" in log_path.read_text()
+        logged = session.session_log_path("fd").read_text()
+        assert "raw bytes" in logged
+        assert "child output" in logged
 
-    worker_pid = int(result.stderr.split("--- interpreter ")[1].split(" ")[0])
-    assert os.readlink(f"/proc/{worker_pid}/fd/1") == str(log_path)
-    assert os.readlink(f"/proc/{worker_pid}/fd/2") == str(log_path)
-    # The launcher resolved the harness ancestor as owner; this test stops it directly.
-    stop_worker(worker_pid, session.session_socket_path("fd"))
+        worker_pid = int(result.stderr.split("--- interpreter ")[1].split(" ")[0])
+        assert os.readlink(f"/proc/{worker_pid}/fd/1") == str(session.session_log_path("fd"))
+        assert os.readlink(f"/proc/{worker_pid}/fd/2") == str(session.session_log_path("fd"))
+    finally:
+        # The launcher resolved the harness ancestor as owner; this test stops it directly.
+        match = re.search(r"--- interpreter (\d+) ", result.stderr)
+        if match:
+            stop_worker(int(match.group(1)), session.session_socket_path("fd"))

@@ -1,5 +1,6 @@
 """Process-level contracts for the independently installed Surf skill."""
 
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -256,6 +257,48 @@ def test_options_after_the_source_belong_to_python(installed_skill):
     )
     assert result.returncode == 0, result.stderr
     assert result.stdout == "['-', '--session', 'x', '--reset']\n"
+
+
+def load_launcher():
+    """Import the launcher for its pure argument handling, without resolving dependencies."""
+    spec = importlib.util.spec_from_file_location(
+        "surf_launcher", ROOT / "skills/surf/scripts/run.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_launcher_option_scoping():
+    launcher = load_launcher()
+    assert launcher.split_options(["script.py", "--session", "x"]) == (
+        None, None, False, ["script.py", "--session", "x"]
+    )
+    assert launcher.split_options(["--", "script.py"]) == (None, None, False, ["--", "script.py"])
+    assert launcher.split_options(["--session", "workflow", "--timeout", "5", "-", "arg"]) == (
+        "workflow", "5", False, ["-", "arg"]
+    )
+    assert launcher.split_options(["--reset"]) == (None, None, True, [])
+    # A launcher option without its value falls through to ordinary Python.
+    assert launcher.split_options(["--session"]) == (None, None, False, ["--session"])
+
+
+def test_launcher_rejects_invalid_session_arguments():
+    launcher = load_launcher()
+    assert launcher.session_arguments("workflow", None, False, ["-"]) == [
+        "-m", "surf_agent.session", "cell", "--session", "workflow", "-"
+    ]
+    assert launcher.session_arguments("workflow", "5", False, ["-"]) == [
+        "-m", "surf_agent.session", "cell", "--session", "workflow", "--timeout", "5", "-"
+    ]
+    assert launcher.session_arguments("workflow", None, True, []) == [
+        "-m", "surf_agent.session", "reset", "--session", "workflow"
+    ]
+    # A file source, an empty name, a bad timeout, and --reset with a timeout are all refused.
+    for arguments in (("workflow", None, False, ["cell.py"]), ("", None, False, ["-"]),
+                      ("workflow", "0", False, ["-"]), ("workflow", "nan", False, ["-"]),
+                      ("workflow", "5", True, []), ("workflow", None, True, ["-"])):
+        assert launcher.session_arguments(*arguments) is None, arguments
 
 
 def test_release_pin_requests_exact_git_revision_and_extra(installed_skill):

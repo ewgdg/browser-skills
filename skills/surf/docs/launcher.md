@@ -16,7 +16,7 @@ A missing or invalid pin is an installation defect. Stop and report it, then upd
 
 ## Persistent sessions
 
-`run.py --session NAME -` runs one cell in a per-session interpreter instead of a fresh one; [SKILL.md](../SKILL.md) covers when to use it. The interpreter keeps the environment, working directory and Python bindings of the call that created it, runs cells sequentially, and exits with the agent session.
+`run.py --session NAME -` runs one cell in a per-session interpreter instead of a fresh one; [SKILL.md](../SKILL.md) covers when to use it. `--timeout SECONDS` bounds a cell (default 300) and `--reset` discards bindings without replacing the interpreter. The interpreter keeps the environment, working directory and Python bindings of the call that created it, runs cells sequentially, and exits with the process that created it: the agent harness in an agent session, otherwise the terminal or service that launched the call.
 
 Each session has a socket and a log in `$XDG_RUNTIME_DIR/surf-agent/` (the state directory when `XDG_RUNTIME_DIR` is unset). Cell output travels over the socket; raw file-descriptor writes and subprocess output from a cell appear only in the session log.
 
