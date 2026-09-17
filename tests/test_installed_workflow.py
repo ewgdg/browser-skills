@@ -10,10 +10,13 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import re
+import signal
 import socket
 import subprocess
 import sys
 import threading
+import time
 
 import pytest
 
@@ -128,6 +131,99 @@ b.close_matching('installed-*')
 assert not Thread('installed-acceptance').is_open()
 print('cleanup passed')
 ''').strip() == "cleanup passed"
+
+        def invoke_session(source, *arguments, expect=0):
+            result = subprocess.run(
+                [sys.executable, str(launcher), "--session", session_name, "-", *arguments],
+                input=source, capture_output=True, text=True, cwd=workdir, env=environment, timeout=90,
+            )
+            assert result.returncode == expect, f"{result.stdout}\n{result.stderr}"
+            return result
+
+        def stop_session_worker(pid):
+            try:
+                command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
+            except OSError:
+                return
+            if session_name.encode() in command:
+                os.kill(pid, signal.SIGKILL)
+
+        # Persistent session: initialize once, act across cells, replace the
+        # interpreter, reattach to the surviving browser thread, then close.
+        # A unique name keeps a rerun from attaching to an earlier run's worker.
+        session_name = f"installed-session-{os.getpid()}"
+        first_cell = invoke_session('''
+import sys
+from surf_agent import Thread
+t = Thread('installed-acceptance-session')
+t.open(sys.argv[1] + '/index.html')
+records = 100
+t.emit(t.snapshot())
+''', base_url)
+        created = re.search(r"--- interpreter (\d+) \(cell #1, created", first_cell.stderr)
+        assert created, first_cell.stderr
+        assert "+++ observation" not in first_cell.stdout, "first emission must be full"
+
+        second_cell = invoke_session('''
+from surf_agent import Thread
+assert records == 100, 'bindings did not survive the previous cell'
+assert t.evaluate('document.title') == 'Installed Surf'
+t.emit(t.snapshot())
+''')
+        # The handle and its baseline survived: observation 2 diffs against observation 1.
+        assert second_cell.stdout.startswith(
+            "--- BEGIN observation 2 ---\n--- observation 1\n+++ observation 2\n"
+        ), second_cell.stdout[:200]
+
+        worker_pid = int(created.group(1))
+        os.kill(worker_pid, signal.SIGKILL)
+        deadline = time.time() + 5
+        while time.time() < deadline and os.path.exists(f"/proc/{worker_pid}"):
+            time.sleep(0.05)
+        assert not os.path.exists(f"/proc/{worker_pid}")
+
+        replaced = invoke_session("print(records)\n", expect=1)
+        assert "cell #1, created" in replaced.stderr, replaced.stderr
+        assert "NameError" in replaced.stderr, replaced.stderr
+
+        reattached = invoke_session('''
+import io
+from surf_agent import Thread
+t = Thread('installed-acceptance-session')
+assert t.is_open(), 'the browser must survive interpreter replacement'
+capture = io.StringIO()
+t.emit(t.snapshot(), sink=capture)
+frame = capture.getvalue()
+assert frame.startswith('--- BEGIN observation 1 ---\\n'), frame[:80]
+assert '+++ observation' not in frame, 'the new interpreter must emit full output first'
+print('reattached')
+''')
+        assert reattached.stdout == "reattached\n"
+
+        # A later cell must be able to start the bridge process itself: the
+        # session worker cannot rely on the temporary environment of its creator.
+        restarted = invoke_session('''
+import subprocess, sys
+from surf_agent import Browser
+Browser().stop_bridge()
+subprocess.run([sys.executable, '-c', 'import surf_agent'], check=True)
+from surf_agent import Thread
+t = Thread('installed-acceptance-session')
+t.open(sys.argv[1] + '/index.html')
+assert t.evaluate('document.title') == 'Installed Surf'
+print('bridge restarted')
+''', base_url)
+        assert restarted.stdout == "bridge restarted\n"
+
+        closed = invoke_session('''
+from surf_agent import Thread
+Thread('installed-acceptance-session').close()
+print('session thread closed')
+''')
+        assert closed.stdout == "session thread closed\n"
+        survivor = re.search(r"--- interpreter (\d+) \(cell #3, attached", restarted.stderr)
+        assert survivor, restarted.stderr
+        stop_session_worker(int(survivor.group(1)))
     finally:
         try:
             invoke("from surf_agent import Browser\nBrowser().stop_bridge()\n")
