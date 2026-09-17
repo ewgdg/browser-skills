@@ -18,7 +18,7 @@ The interpreter already existed; the complexity came from how sessions were addr
 
 ## Scope & constraints
 
-- `--new-session [--name SLUG] [--ttl SECONDS] -` creates an interpreter and appends a metadata block to stdout as the final output of that call. Later calls print no metadata at all.
+- `--new-session [--name SLUG] [--ttl SECONDS] -` creates an interpreter and appends a `--- BEGIN session metadata ---` … `--- END session metadata ---` block to stdout as the final output of that call. Later calls print no metadata at all.
 - `--session ID -` reuses exactly that interpreter. An unknown id is an error listing live sessions: no implicit creation, no bare-name reuse, so a typo cannot silently start a fresh interpreter.
 - **TTL**: idle timeout measured between cells. A running cell is never interrupted by it — that is `--timeout`'s job. Default `DEFAULT_SESSION_IDLE_TIMEOUT_S` = 1800, overridable per session at creation.
 - `--kill-session ID` kills immediately. A cell in flight dies with it and its side effects are unknown, exactly as with a timeout.
@@ -35,23 +35,30 @@ The interpreter already existed; the complexity came from how sessions were addr
 3. **Discovery is required** (`--list-sessions`), because an opaque id cannot be re-derived from memory the way a name could. Working directory plus idle time is the identification hint.
 4. **Kill is immediate and documented as such**; clean shutdown removes the socket, and the listing skips sockets with no listener.
 5. **One metadata block, create call only**: the id is reported once, as a delimited key-value block appended to stdout at the end of the create call. No later call and no stderr frame repeats it.
+6. **No session log file.** The worker's own stdout and stderr point at `/dev/null`; a file exists only when a worker fails to start, so the launcher can report why.
 
 ### Metadata block
 
 ```text
----
+--- BEGIN session metadata ---
 session_id: surf-7f3a91c2
 idle_timeout_s: 1800
-log: /run/user/1000/surf-agent/surf-7f3a91c2-a1b2c3d4e5f60718.log
----
+--- END session metadata ---
 ```
 
 - **Why stdout**: a consumer that captures only stdout, or routes stderr into its own channel, would lose the one value the caller cannot re-derive. pi's bash tool returns both streams together, so either would be readable there, but stdout is the safer bet across harnesses.
 - **Why last**: ordering between the streams is not stable — the same command shape produced stderr-first once and interleaved output another time — so the block anchors itself at the end of the cell's own stdout rather than depending on a position among frames. It is written after the cell's output, so it is still the final stdout content when the first cell raises.
+- **Why BEGIN/END rather than bare `---` fences**: the same tool result can contain observation frames and unified diffs, whose headers are `--- observation 1` and `+++ observation 2`. A bare fence would read as a diff header; named delimiters match the existing observation convention and make a truncated block detectable.
 - **Why not on every call**: the id is already in the caller's command line, which is in its context. Repetition adds noise without adding recoverability; `--list-sessions` is the recovery path after context loss.
 - **Why key-value rather than prose**: fields can be added later without a new format, and a caller that parses has exactly one shape to parse.
 - **Not an escaping protocol**: page text is arbitrary, so a cell can print a lookalike block. The rule is that the *final* block on stdout of the create call is the launcher's and nothing else can be trusted, which is the same standing the frames have today.
 - Printing every frame on stdout stays rejected: each cell's stdout would carry launcher noise and `run.py --session ID - | jq` would stop working.
+
+### Why the log file goes away
+
+The log exists for one hard reason and two soft ones. Hard: a detached worker must never hold the per-call stdout pipe, or the caller never sees EOF and the tool call hangs until the session ends — this was observed, not deduced. Pointing fd 1 and 2 at `/dev/null` satisfies that requirement with no file. Soft: raw `os.write(1, …)` and subprocess output, and the worker's own note when it exits on a deadline, currently land there rather than being lost.
+
+Consequences to document rather than hide: only Python-level `print()` and `emit()` output reaches the agent; a cell that shells out or writes to fd 1 produces nothing visible, and the deadline note becomes invisible — the client's replacement report stays the only signal, which is the contract anyway. The failure-only file keeps startup failures debuggable: the worker writes the reason only if it cannot start, and the launcher reads it, prints it, and removes it when readiness times out.
 
 ## Rejected
 
@@ -65,7 +72,9 @@ log: /run/user/1000/surf-agent/surf-7f3a91c2-a1b2c3d4e5f60718.log
 1. Test-first, before implementation:
    - creating a session appends a metadata block whose `session_id` is the final stdout content, including when the first cell raises;
    - a reusing call writes no metadata block and nothing extra to stdout, so cell output stays pipeable;
-   - a cell that prints its own lookalike `--- session_id: … ---` block does not change the rule: the final block is the launcher's;
+   - a cell that prints its own lookalike `--- BEGIN session metadata ---` block does not change the rule: the final block is the launcher's;
+   - no log file is created in the runtime directory, and a cell that writes with `os.write(1, …)` or runs a subprocess produces no agent-visible output and leaves nothing behind;
+   - a worker that cannot start leaves its failure file, which the launcher reports and removes;
    - reusing that id attaches and the cell counter continues;
    - an unknown id errors and lists live sessions;
    - idle past the TTL → the interpreter is gone and the id is unknown;
@@ -89,6 +98,8 @@ log: /run/user/1000/surf-agent/surf-7f3a91c2-a1b2c3d4e5f60718.log
 - **Lost id** (context compaction, a long interruption): loud — `unknown session` plus a live list — and the cost is rebuilding state, never contamination. The id is reported once, in the create call's metadata block; `--list-sessions` is the recovery path, and a long task should write the id next to its notes.
 - **TTL expiry during a human handoff**: the recovery cell covers it, at the cost of one cell. `--ttl` exists for tasks that involve a human.
 - **Leak bounded by TTL rather than by owner death**: a crashed agent leaves one interpreter until it idles out. Accepted, bounded and measured.
+- **fd-level output is discarded**: subprocess output and raw fd writes no longer reach the agent or a file. Documented, and the deliberate cost of dropping the log; the deferred alternative is capturing fd writes into the cell's output, which risks flooding a tool result when a cell shells out.
+- **Startup diagnostics** now depend on the failure-only file. If the worker dies before writing it, the launcher can only report that the interpreter did not become ready.
 - **Migration**: every existing name-keyed session becomes unreachable; those interpreters expire on their own, and no cleanup step is needed because deleting a live session's socket would break it.
 
 ## Trigger to revisit checkpoints
