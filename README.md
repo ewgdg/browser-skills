@@ -13,7 +13,7 @@ pi install git:github.com/ewgdg/browser-skills
 
 ## Surf Python workflow
 
-The Surf skill launches ordinary Python files or stdin through `skills/surf/scripts/run.py`. Each call starts a fresh interpreter; the dedicated browser and named threads survive between calls. The Surf action CLI is removed. See [Surf skill](skills/surf/SKILL.md) for the execution workflow and [Python API](docs/surf-python-api.md) for the interface.
+The Surf skill launches ordinary Python files or stdin through `skills/surf/scripts/run.py`. Each ordinary call starts a fresh interpreter, while `--session NAME` keeps one interpreter alive across calls; the dedicated browser and named threads survive either way. The Surf action CLI is removed. See [Surf skill](skills/surf/SKILL.md) for the execution workflow and [Python API](docs/surf-python-api.md) for the interface.
 
 The launcher requires Python 3 and `uv`, selects Python 3.11, and supplies `surf-agent[patchright]`. Google Chrome must be installed separately. Patchright is the default; AXI remains an explicitly selected alternative. Camoufox is not supported.
 
@@ -74,6 +74,6 @@ SURF_TEST_LIVE_PATCHRIGHT=1 \
 uv run pytest tests/test_installed_workflow.py packages/surf-agent/tests/test_patchright_navigation.py
 ```
 
-The acceptance test uses isolated temporary profiles and a local website. It checks separate file/stdin invocations, browser reattachment, exact input, observations, navigation and cleanup. Ordinary project imports and launcher failure/argument contracts are covered by `tests/test_skill_launcher.py`.
+The acceptance test uses isolated temporary profiles and a local website. It checks separate file/stdin invocations, browser reattachment, exact input, observations, navigation, persistent session retention, interpreter replacement with the browser preserved, and cleanup. Ordinary project imports and launcher failure/argument contracts are covered by `tests/test_skill_launcher.py`.
 
 Publication requires authorization: test and push the runtime commit, verify that its full SHA is reachable, then write that SHA into `skills/surf/runtime-revision` and publish the updated skill. Repeat installed acceptance with `SURF_AGENT_DEPENDENCY` unset to verify the published pin, not a local wheel. Users update the skill; its launcher selects the matching runtime. An unpushed SHA is not a release.
