@@ -354,6 +354,16 @@ def test_listener_pid_finds_the_worker_for_both_spawn_forms(monkeypatch, owner):
     )
 
 
+def test_interpreter_closing_before_a_request_is_reported_not_raised():
+    left, right = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
+    right.close()
+    # Unbuffered: the failed write must not linger for a later close to flush.
+    with left, left.makefile("wb", buffering=0) as stream:
+        with pytest.raises(session._InterpreterGone) as failure:
+            session._send_request(stream, {"op": "cell", "code": "pass"})
+    assert failure.value.stalled is False
+
+
 def test_stalled_interpreter_before_a_cell_starts_reports_a_stall(monkeypatch, owner):
     first = session.run_cell("work", "kept = 1", owner=owner)
 

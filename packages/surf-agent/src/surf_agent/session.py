@@ -270,10 +270,20 @@ def _connect(socket_path: Path, timeout_s: float) -> socket.socket:
     return connection
 
 
-def _exchange(socket_path: Path, request: dict[str, Any], timeout_s: float) -> dict[str, Any]:
-    with _connect(socket_path, timeout_s) as connection, connection.makefile("rwb") as stream:
+def _send_request(stream: Any, request: dict[str, Any]) -> None:
+    try:
         stream.write(json.dumps(request).encode() + b"\n")
         stream.flush()
+    except TimeoutError as exc:
+        raise _InterpreterGone(f"interpreter did not accept the request: {exc}", stalled=True) from exc
+    except OSError as exc:
+        # The interpreter died or closed between attaching and this request.
+        raise _InterpreterGone(f"interpreter did not accept the request: {exc}") from exc
+
+
+def _exchange(socket_path: Path, request: dict[str, Any], timeout_s: float) -> dict[str, Any]:
+    with _connect(socket_path, timeout_s) as connection, connection.makefile("rwb") as stream:
+        _send_request(stream, request)
         return _read_reply(stream)
 
 
@@ -291,8 +301,7 @@ def _exchange_cell(
     """
     started_at = time.monotonic()
     with _connect(socket_path, wait_s) as connection, connection.makefile("rwb") as stream:
-        stream.write(json.dumps(request).encode() + b"\n")
-        stream.flush()
+        _send_request(stream, request)
         started = _read_reply(stream)
         if started.get("status") != "started":
             return started
@@ -328,9 +337,12 @@ def _listener_pid(socket_path: Path) -> int | None:
         arguments = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
         if not arguments or not Path(arguments[0]).name.startswith("python"):
             continue
-        # The worker's own command names the module either as an argument (`-m`) or
-        # inside an inline `-c` bootstrap, so match the joined command line too.
-        if wanted in arguments and "surf_agent.session" in " ".join(arguments):
+        joined = " ".join(arguments)
+        # Worker shape: `python -m surf_agent.session worker ...` or that command
+        # inside an inline `-c` bootstrap, always with this session's socket path.
+        if wanted not in arguments or "surf_agent.session" not in joined:
+            continue
+        if ("-m" in arguments or "-c" in arguments) and "worker" in joined:
             return int(entry.name)
     return None
 
