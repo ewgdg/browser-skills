@@ -217,7 +217,14 @@ class PatchrightRuntime:
                 return self._format_opened(slot.page)
         slot = await self._page(thread)
         if name == "back":
-            await self._maybe_await(slot.page.go_back(wait_until="domcontentloaded"))
+            # BFCache restores do not emit DOMContentLoaded again. Wait for the
+            # history commit, then inspect document readiness rather than waiting
+            # for a lifecycle event that may already belong to the cached page.
+            await self._maybe_await(slot.page.go_back(wait_until="commit"))
+            await self._maybe_await(slot.page.wait_for_function(
+                "document.readyState === 'complete' || "
+                "(performance.getEntriesByType('navigation')[0]?.domContentLoadedEventEnd ?? 0) > 0"
+            ))
             return self._format_opened(slot.page)
         if name == "text":
             return await self._body_text(slot.page)
