@@ -3,7 +3,9 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
+import signal
 import subprocess
 import sys
 
@@ -151,6 +153,109 @@ def test_missing_uv_explains_installation(installed_skill):
     )
     assert result.returncode == 127
     assert "Surf requires uv" in result.stderr
+
+
+@pytest.fixture
+def session_launcher(installed_skill, tmp_path):
+    """The installed launcher with a private runtime dir and harness session id."""
+    launcher, working, env = installed_skill
+    runtime = tmp_path / "runtime"
+    env = {**env, "XDG_RUNTIME_DIR": str(runtime), "PI_SESSION_ID": "launcher-tests"}
+    interpreters: list[int] = []
+    yield launcher, working, env, interpreters
+    for pid in interpreters:
+        # Only signal a process that is still this test's session worker.
+        try:
+            command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
+        except OSError:
+            continue
+        if b"surf_agent.session" in command and str(runtime).encode() in command:
+            os.kill(pid, signal.SIGKILL)
+
+
+def run_session(launcher, working, env, interpreters, *arguments, source=""):
+    result = subprocess.run(
+        [sys.executable, str(launcher), *arguments], input=source, text=True,
+        capture_output=True, cwd=working, env=env, timeout=120,
+    )
+    interpreters.extend(int(pid) for pid in re.findall(r"--- interpreter (\d+) ", result.stderr))
+    return result
+
+
+def test_session_mode_retains_bindings_across_launcher_invocations(session_launcher):
+    launcher, working, env, interpreters = session_launcher
+    first = run_session(
+        launcher, working, env, interpreters, "--session", "workflow", "-",
+        source="answer = 41\nprint('initialized')",
+    )
+    assert first.returncode == 0, first.stderr
+    assert first.stdout == "initialized\n"
+    assert "cell #1, created" in first.stderr
+
+    second = run_session(
+        launcher, working, env, interpreters, "--session", "workflow", "-", "two words",
+        source=(
+            "import subprocess, sys\n"
+            "assert answer == 41\n"
+            "# The detached worker must keep a usable interpreter and environment:\n"
+            "# uv removes the temporary environment that started the first call.\n"
+            "subprocess.run([sys.executable, '-c', 'import surf_agent'], check=True)\n"
+            "print(answer + 1, sys.argv)\n"
+        ),
+    )
+    assert second.returncode == 0, second.stderr
+    assert second.stdout == "42 ['-', 'two words']\n"
+    assert "cell #2, attached" in second.stderr
+    assert "--- cell #2 ok" in second.stderr
+
+
+def test_session_reset_clears_bindings(session_launcher):
+    launcher, working, env, interpreters = session_launcher
+    assert run_session(
+        launcher, working, env, interpreters, "--session", "workflow", "-",
+        source="value = 7",
+    ).returncode == 0
+    reset = run_session(launcher, working, env, interpreters, "--session", "workflow", "--reset")
+    assert reset.returncode == 0, reset.stderr
+    assert "bindings cleared" in reset.stderr
+
+    after = run_session(
+        launcher, working, env, interpreters, "--session", "workflow", "-", source="print(value)",
+    )
+    assert after.returncode == 1
+    assert "NameError" in after.stderr
+
+
+def test_session_timeout_reports_replacement(session_launcher):
+    launcher, working, env, interpreters = session_launcher
+    result = run_session(
+        launcher, working, env, interpreters, "--session", "workflow", "--timeout", "0.5", "-",
+        source="import time\ntime.sleep(30)",
+    )
+    assert result.returncode == 1
+    assert "interpreter replaced" in result.stderr
+    assert "exceeded 0.5" in result.stderr
+
+
+def test_session_mode_rejects_a_file_source(session_launcher):
+    launcher, working, env, interpreters = session_launcher
+    script = working / "cell.py"
+    script.write_text("print('must not run')\n")
+    result = run_session(launcher, working, env, interpreters, "--session", "workflow", str(script))
+    assert result.returncode == 2
+    assert "stdin" in result.stderr
+    assert result.stdout == ""
+
+
+def test_options_after_the_source_belong_to_python(installed_skill):
+    launcher, working, env = installed_skill
+    result = subprocess.run(
+        [sys.executable, str(launcher), "-", "--session", "x", "--reset"],
+        input="import sys; print(sys.argv)", text=True, capture_output=True,
+        cwd=working, env=env, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "['-', '--session', 'x', '--reset']\n"
 
 
 def test_release_pin_requests_exact_git_revision_and_extra(installed_skill):

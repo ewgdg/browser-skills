@@ -1,6 +1,6 @@
 # Persistent Python interpreter for Surf agent sessions
 
-Tracking issue: [#22](https://github.com/ewgdg/browser-skills/issues/22). Status: proposed, not started. This plan is written for a fresh agent continuing the work with no prior conversation.
+Tracking issue: [#22](https://github.com/ewgdg/browser-skills/issues/22). Status: active; the execution seam, launcher path, guidance and acceptance test are in place. The retention benchmark rerun from the validation plan is not started. This plan is written for a fresh agent continuing the work with no prior conversation.
 
 ## Goal
 
@@ -82,6 +82,20 @@ Rules:
 - The recovery cell is the initialization cell: `Thread(name)` reattaches idempotently and `emit(snapshot(), full=True)` re-establishes both the handle and the baseline. It is correct whether the interpreter is new or old, so the agent does not branch on the header before acting.
 - Rebind before acting; inspect before repeating. Replaying a pure observation is harmless and replaying a submission is not, and a cell cannot be classified reliably enough to tell them apart.
 
+## Implementation decisions (settled while building the seam)
+
+The seam lives in `packages/surf-agent/src/surf_agent/session.py` (worker plus client protocol); the agent-facing path is `skills/surf/scripts/run.py`.
+
+- **Launcher interface: `run.py --session NAME - [script arguments...]`.** Session cells read code from stdin, exactly like `run.py -`. A file argument in session mode is rejected: running a file as a cell would silently change `__file__`, `sys.path[0]` and relative imports, which is the second dialect the explicit-imports decision rejects. `run.py --session NAME --reset` discards bindings without replacing the interpreter. `--timeout SECONDS` sets the per-cell deadline (default 300 s).
+- **Deadline enforcement is in the interpreter, not only the caller.** The worker starts a timer for the cell it is running and exits when it fires, so an interrupted or killed caller cannot leave a session stuck busy. The caller waits for the reply with a grace period and kills the recorded pid as a backstop when native code blocks the worker's own timer. Both paths report the same replacement contract.
+- **Socket location and key.** Socket and log live in `$XDG_RUNTIME_DIR/surf-agent/`, with the state directory as the fallback when `XDG_RUNTIME_DIR` is unset. Socket mode is 0600 and the directory 0700. The key combines the harness session identity (`PI_SESSION_ID`, else the `PI_SESSION_FILE` stem) with the caller's `--session` name, so two concurrent agent sessions cannot share globals even when they pick the same name.
+- **Owner reference.** The client walks its `/proc` ancestor chain and records the nearest harness ancestor (the `pi` process), falling back to the outermost non-init ancestor for direct shell use. The worker reaps itself when the owner's start time changes or its state is no longer live; start time is the pid-reuse guard, matching the technique `chrome_lifecycle.py` uses for live browser roots.
+- **Framing goes to stderr; cell bytes go to stdout/stderr.** A cell's `print()`/`emit()` output is relayed verbatim on stdout, its traceback on stderr, and launcher frames (identity, cell counter, created-vs-attached, replacement) on stderr, so stdout stays ordinary script output.
+- **A detached worker's fd 1 and 2 point at a per-session log**, never the per-call pipe. Cell output travels over the control socket; raw `os.write` and subprocess output are preserved in the log rather than lost.
+- **Cell output is captured per cell and relayed as bytes.** Python-level `sys.stdout`/`sys.stderr` are proxied through a byte buffer so binary writes survive; output is delivered only with the completed reply, so a cell that dies mid-execution prints nothing, as the replay contract requires.
+- **The worker is started by the launcher's own dependency command.** Under `uv run --with`, `sys.executable` points into a temporary environment that uv deletes when its caller exits, so a detached worker could not start the Patchright bridge from a later cell. `run.py` passes its resolved command through `SURF_SESSION_WORKER_COMMAND`; the worker re-enters uv's resolution, which keeps that environment alive for the worker's lifetime. Warm `uv run` adds roughly 30 ms to spawn-to-ready. Direct `python -m surf_agent.session` use keeps spawning with `sys.executable`.
+- **The worker assigns the cell number before execution and reports it in a `started` reply.** The caller frames the cell from that reply, so concurrent callers cannot both claim the same number and a cell that dies still gets its header.
+
 Design reference, not an implementation dependency: installed Codex bundle `26.908.61612`, package label `0.1.0-premerge-…`. Its `js` tool takes an optional per-call `timeout_ms` (default 30000), and any execution fault destroys the kernel and says so — `js execution timed out; kernel reset, rerun your request`, `trusted Node process exited unexpectedly; kernel reset, rerun your request`, `js sandbox changed; kernel reset, rerun your request`. Replay stays a fresh model decision rather than an automatic resend, and the fault text never states whether effects landed. Its workflow compensates structurally: `getAXState()` after every action batch, element indices re-derived from fresh text, and idempotent getters (`getTab`, `getState`) as the rebind path. Read from `/usr/lib/chatgpt/resources/cua_node/bin/node_repl` (strings) and the shipped markdown under `.../@oai/cua/docs/` and `.../@oai/cua-repl/instructions/`.
 
 ## Evidence from the first benchmark
@@ -111,6 +125,18 @@ Treat that as a harness/wording defect to fix, not a verdict on persistence.
 - Live browser acceptance extending `tests/test_installed_workflow.py`: initialize once, act across several cells, replace the interpreter, reattach to the surviving browser thread, close.
 - Rerun the retention-focused benchmark from #22: larger dataset, unrevealed follow-up queries, equivalent batching/retention guidance for every mode, files allowed for fresh scripts, counterbalanced order, distributions and uncertainty-side-effect recovery reported separately.
 - Confirm the ordinary file/stdin launcher and project import paths still work unchanged.
+
+## Surprises and discoveries
+
+- `uv run --with` gives `sys.executable` a path under a temporary environment that uv removes when the caller exits (`~/.cache/uv/builds-v0/.tmp*/bin/python`). An interpreter that outlives its launcher cannot start the Patchright bridge from that path; the live acceptance test failed with `No such file or directory` before the worker-command handoff was added. Executing already-running cells is unaffected because the interpreter is loaded before the directory disappears.
+- Concurrent first cells once printed the same cell number twice: the number came from the `hello` counter before execution. Assigning it in the worker and reporting it in a `started` reply removes the race; a test asserts that each number appears once in headers and trailers.
+
+## Progress
+
+- [x] Execution seam: `session.py` worker and client protocol, covered by `packages/surf-agent/tests/test_session.py`.
+- [x] Launcher path: `run.py --session NAME -`, `--reset` and `--timeout`, covered by `tests/test_skill_launcher.py`.
+- [x] Agent-facing documentation: SKILL.md persistence guidance and API/launcher notes.
+- [x] Opt-in live browser acceptance in `tests/test_installed_workflow.py` (passed against Chrome on this machine).
 
 ## References
 
