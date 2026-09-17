@@ -21,6 +21,7 @@ import os
 import re
 import signal
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -278,9 +279,9 @@ def _exchange_cell(
 ) -> dict[str, Any]:
     """Send one cell and report the worker-assigned number before it executes.
 
-    *wait_s* covers the cell deadline plus reply transfer. The worker enforces
-    the deadline itself, so this wait is only a backstop; keeping the whole
-    allowance after the assignment lets a long result finish transferring.
+    *wait_s* covers the cell deadline plus reply transfer. The worker owns the
+    deadline, so this wait is only a backstop and the remaining allowance is
+    still wide enough for a long result to finish transferring.
     """
     started_at = time.monotonic()
     with _connect(socket_path, wait_s) as connection, connection.makefile("rwb") as stream:
@@ -289,9 +290,34 @@ def _exchange_cell(
         started = _read_reply(stream)
         if started.get("status") != "started":
             return started
-        on_started(int(started["pid"]), int(started["cells"]))
+        try:
+            interpreter_pid, number = int(started["pid"]), int(started["cells"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SessionError(
+                f"interpreter sent an incomplete started reply: {started!r}"
+            ) from exc
+        on_started(interpreter_pid, number)
         connection.settimeout(max(0.1, wait_s - (time.monotonic() - started_at)))
         return _read_reply(stream)
+
+
+def _listener_pid(socket_path: Path) -> int | None:
+    """The process listening on this socket, even while it is not accepting.
+
+    The kernel completes a connect to a listening socket without the listener
+    accepting it, and SO_PEERCRED then names the listener.
+    """
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            probe.settimeout(1.0)
+            probe.connect(str(socket_path))
+            raw = probe.getsockopt(
+                socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII")
+            )
+        pid = struct.unpack("iII", raw)[0]
+        return pid if pid > 0 else None
+    except OSError:
+        return None
 
 
 def _hello(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
@@ -301,11 +327,23 @@ def _hello(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
         return _exchange(socket_path, {"op": "hello"}, timeout_s)
     except _InterpreterGone as exc:
         if exc.stalled:
-            # A live interpreter that cannot answer is running a cell that blocks
-            # its own thread; spawning a successor would interleave two of them.
+            # A live interpreter that cannot answer any thread is stopped or
+            # wedged. Replacing it would run two interpreters against one session,
+            # so fail fast and name the process that has to be stopped first.
+            pid = _listener_pid(socket_path)
+            who = f" (pid {pid})" if pid is not None else ""
             raise SessionError(
-                "the session interpreter did not answer; a running cell is blocking it"
+                f"the session interpreter{who} did not answer; stop that process to "
+                "start a fresh interpreter for this session"
             ) from exc
+        return None
+
+
+def _hello_quietly(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
+    """Spawn-time probe: an interpreter that cannot answer is not ready yet."""
+    try:
+        return _hello(socket_path, timeout_s)
+    except SessionError:
         return None
 
 
@@ -357,12 +395,12 @@ def _spawn_interpreter(
         os.close(descriptor)
     deadline = time.monotonic() + WORKER_START_TIMEOUT_S
     while time.monotonic() < deadline:
-        reply = _hello(socket_path, HELLO_TIMEOUT_S)
+        reply = _hello_quietly(socket_path, HELLO_TIMEOUT_S)
         if reply is not None:
             return int(reply["pid"]), int(reply["start_time"]), True, int(reply["cells"])
         if process.poll() is not None:
             # Another client may have won the bind race; adopt its interpreter.
-            reply = _hello(socket_path, HELLO_TIMEOUT_S)
+            reply = _hello_quietly(socket_path, HELLO_TIMEOUT_S)
             if reply is not None:
                 return int(reply["pid"]), int(reply["start_time"]), True, int(reply["cells"])
             raise SessionError(f"session interpreter failed to start; see {log_path}")
@@ -412,7 +450,11 @@ def _write_bytes(stream: Any, data: bytes) -> None:
 
 
 def _encode(stream: Any) -> str:
-    return base64.b64encode(stream.buffer.getvalue()).decode("ascii")
+    try:
+        return base64.b64encode(stream.buffer.getvalue()).decode("ascii")
+    except (ValueError, OSError):
+        # A cell that closed its own stdout or stderr already discarded its bytes.
+        return ""
 
 
 def _decode(value: Any) -> bytes:
@@ -441,10 +483,12 @@ def run_cell(
 
     started = time.monotonic()
     number = cells + 1
+    result_pid = pid
 
     def on_started(interpreter_pid: int, assigned: int) -> None:
-        nonlocal number
+        nonlocal number, result_pid
         number = assigned
+        result_pid = interpreter_pid
         _frame(f"--- interpreter {interpreter_pid} (cell #{number}, {origin}) ---")
 
     try:
@@ -463,22 +507,24 @@ def run_cell(
             else f"worker exited during cell #{number}"
         )
         _frame(f"--- interpreter replaced ({reason}); bindings lost; side effects unknown ---")
-        return CellResult("replaced", pid, number, created, reason, b"", b"", elapsed)
+        return CellResult("replaced", result_pid, number, created, reason, b"", b"", elapsed)
 
     elapsed = time.monotonic() - started
     status = reply.get("status")
     if status == "busy":
-        _frame(f"--- interpreter {pid} busy; no cell started ---")
-        return CellResult("busy", pid, None, created, None, b"", b"", elapsed)
+        busy_pid = int(reply.get("pid", pid))
+        _frame(f"--- interpreter {busy_pid} busy; no cell started ---")
+        return CellResult("busy", busy_pid, None, created, None, b"", b"", elapsed)
     if status not in {"ok", "error"}:
         raise SessionError(f"interpreter sent an unexpected reply: {reply!r}")
+    result_pid = int(reply.get("pid", result_pid))
     stdout, stderr = _decode(reply.get("stdout")), _decode(reply.get("stderr"))
     _write_bytes(sys.stdout, stdout)
     _write_bytes(sys.stderr, stderr)
     detail = reply.get("exception")
     suffix = f": {detail}" if detail else ""
     _frame(f"--- cell #{number} {status}{suffix} ({elapsed * 1000:.0f} ms) ---")
-    return CellResult(status, pid, number, created, detail, stdout, stderr, elapsed)
+    return CellResult(status, result_pid, number, created, detail, stdout, stderr, elapsed)
 
 
 def reset_bindings(name: str, *, owner: OwnerRef | None = None) -> ResetResult:
@@ -501,13 +547,14 @@ def reset_bindings(name: str, *, owner: OwnerRef | None = None) -> ResetResult:
         _frame(f"--- interpreter {pid} vanished before reset; bindings are gone ---")
         return ResetResult("absent", None, None)
     status = answer.get("status")
+    answered_pid = int(answer.get("pid", pid))
     if status == "busy":
-        _frame(f"--- interpreter {pid} busy; bindings not cleared ---")
-        return ResetResult("busy", pid, cells)
+        _frame(f"--- interpreter {answered_pid} busy; bindings not cleared ---")
+        return ResetResult("busy", answered_pid, cells)
     if status != "ok":
         raise SessionError(f"interpreter sent an unexpected reply: {answer!r}")
-    _frame(f"--- interpreter {pid} bindings cleared (cell #{cells}) ---")
-    return ResetResult("ok", pid, cells)
+    _frame(f"--- interpreter {answered_pid} bindings cleared (cell #{cells}) ---")
+    return ResetResult("ok", answered_pid, cells)
 
 
 class _WorkerState:
@@ -524,7 +571,8 @@ def _remove_socket(state: _WorkerState) -> None:
     """Remove our socket name only while it still belongs to this worker.
 
     A replacement interpreter may already have bound a fresh socket at the same
-    path; removing that one would detach it from future clients.
+    path; removing that one would detach it from future clients. Our own
+    listening socket keeps the inode alive, so it cannot be reused by then.
     """
     try:
         if state.socket_inode is None:
@@ -584,7 +632,7 @@ def _run_cell_request(
 ) -> dict[str, Any]:
     with state.lock:
         if state.running:
-            return {"status": "busy", "cells": state.cells}
+            return {"status": "busy", "pid": os.getpid(), "cells": state.cells}
         state.running = True
         state.cells += 1
         number = state.cells
@@ -592,10 +640,10 @@ def _run_cell_request(
     # Every exit path below must clear the flag: a worker left claiming a cell
     # would reject every later cell and reset until its owner dies.
     expiration: threading.Timer | None = None
-    stdout = _capture_stream("strict", 1)
-    stderr = _capture_stream("backslashreplace", 2)
-    status, detail = "ok", None
     try:
+        stdout = _capture_stream("strict", 1)
+        stderr = _capture_stream("backslashreplace", 2)
+        status, detail = "ok", None
         # Report the assigned number before executing: the caller frames a cell
         # that then dies, and concurrent callers must not claim the same number.
         _write_reply(stream, {"status": "started", "pid": os.getpid(), "cells": number})
@@ -619,6 +667,7 @@ def _run_cell_request(
             state.running = False
     return {
         "status": status,
+        "pid": os.getpid(),
         "cells": number,
         "exception": detail,
         "stdout": _encode(stdout),
@@ -629,11 +678,11 @@ def _run_cell_request(
 def _reset_request(state: _WorkerState) -> dict[str, Any]:
     with state.lock:
         if state.running:
-            return {"status": "busy", "cells": state.cells}
+            return {"status": "busy", "pid": os.getpid(), "cells": state.cells}
         # Old bindings are dropped, not mutated: their objects survive only if the
         # cell itself kept a reference elsewhere. Browser threads are untouched.
         state.namespace = {"__name__": "__main__"}
-        return {"status": "ok", "cells": state.cells}
+        return {"status": "ok", "pid": os.getpid(), "cells": state.cells}
 
 
 def _hello_reply(state: _WorkerState) -> dict[str, Any]:
@@ -662,7 +711,12 @@ def _handle_connection(connection: socket.socket, state: _WorkerState) -> None:
             else:
                 reply = {"status": "error", "error": f"unknown operation {request.get('op')!r}"}
         except Exception as exc:  # keep the interpreter alive for the next cell
-            reply = {"status": "error", "exception": f"{type(exc).__name__}: {exc}", "cells": state.cells}
+            reply = {
+                "status": "error",
+                "pid": os.getpid(),
+                "exception": f"{type(exc).__name__}: {exc}",
+                "cells": state.cells,
+            }
         try:
             _write_reply(stream, reply)
         except OSError:
@@ -683,13 +737,13 @@ def serve(socket_path: Path, owner: OwnerRef) -> None:
     os.chmod(socket_path.parent, 0o700)
     state = _WorkerState(socket_path)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server.bind(str(socket_path))
-    os.chmod(socket_path, 0o600)
-    state.socket_inode = os.stat(socket_path).st_ino
-    server.listen(SOCKET_BACKLOG)
-    threading.Thread(target=_watch_owner, args=(state, owner), daemon=True).start()
-    print(f"surf session interpreter ready (pid {os.getpid()})", file=sys.stderr, flush=True)
     try:
+        server.bind(str(socket_path))
+        state.socket_inode = os.stat(socket_path).st_ino
+        os.chmod(socket_path, 0o600)
+        server.listen(SOCKET_BACKLOG)
+        threading.Thread(target=_watch_owner, args=(state, owner), daemon=True).start()
+        print(f"surf session interpreter ready (pid {os.getpid()})", file=sys.stderr, flush=True)
         while True:
             connection, _ = server.accept()
             threading.Thread(

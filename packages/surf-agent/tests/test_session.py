@@ -305,6 +305,25 @@ def test_caller_kills_an_interpreter_that_misses_its_own_deadline(monkeypatch, o
     assert wait_for_exit(first.interpreter_pid) in {"gone", "Z"}
 
 
+def test_stopped_interpreter_reports_instead_of_replacing(monkeypatch, owner):
+    monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
+    first = session.run_cell("work", "kept = 1", owner=owner)
+    os.kill(first.interpreter_pid, signal.SIGSTOP)
+    try:
+        with pytest.raises(session.SessionError) as failure:
+            session.run_cell("work", "print('while stopped')", owner=owner)
+        # The error names the process that has to be stopped before recovery.
+        assert str(first.interpreter_pid) in str(failure.value)
+        # Fail fast, not replacement: the interpreter and its bindings are untouched.
+        assert session.read_process(first.interpreter_pid) is not None
+    finally:
+        os.kill(first.interpreter_pid, signal.SIGCONT)
+    after = session.run_cell("work", "print('resumed', kept)", owner=owner)
+    assert after.status == "ok"
+    assert after.created is False
+    assert after.stdout == b"resumed 1\n"
+
+
 def test_dead_worker_is_replaced_on_the_next_cell(owner):
     first = session.run_cell("work", "kept = 2", owner=owner)
     os.kill(first.interpreter_pid, signal.SIGKILL)
