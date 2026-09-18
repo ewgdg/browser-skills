@@ -8,50 +8,6 @@ Read this for dependency or release-installation failures, or deliberate local d
 
 The launcher executes Python directly: file-relative imports, working directory, script arguments, stdin, exceptions and exit codes follow ordinary Python behavior. It does not process inline dependency metadata. Google Chrome is a separate prerequisite; see [Patchright setup](patchright-backend.md#setup-and-selection) for detection and executable overrides.
 
-### Runtime environment
-
-The launcher keeps one uv project of its own under `$XDG_CACHE_HOME/surf-agent`
-(`~/Library/Caches` on macOS; `SURF_AGENT_ENV_DIR` puts it elsewhere): a small
-`pyproject.toml` pins the requirement, `uv sync` builds and updates the `.venv` inside it,
-and the launcher then executes that interpreter directly. uv owns the environment, its
-lock file and its updates, so `uv.lock` and a managed environment are normal contents of
-that cache directory, and a new revision updates the one environment instead of adding
-another. A call whose requirement is already installed starts no uv process at all.
-
-The project is named for the skill directory it belongs to: `surf-<digest>`, the first eight
-hex characters of the sha256 of that directory's absolute path - for example `surf-bc19eee9`.
-An installed skill and a development checkout therefore keep separate environments instead
-of rewriting one as calls alternate, and a project whose skill directory no longer exists is
-deleted at the next call.
-
-One environment exists per skill location, and a new requirement updates it in place, so this
-directory does not grow: there is nothing to prune. The revisions themselves live in uv's
-shared cache, which uv manages - `uv cache prune` reclaims cache entries nothing is using.
-
-A session's interpreter is therefore an ordinary persistent one: `sys.executable` in a
-cell points at it, and a worker started from it can still import - or start the browser
-bridge - after the call that created the session has exited. The environment is about
-140 MB. A rebuilt development wheel is declared by digest, so it is installed again
-rather than silently reused.
-
-One consequence of uv owning a single environment: updating the skill updates it in
-place, so a session started under an older revision can see a package that changed
-underneath it. Start a new session after updating the skill, or wait until the sessions
-you care about have ended.
-
-To keep the environment inside the skill directory instead - a self-contained installation
-that travels with the copy, for example on a machine whose cache is cleaned aggressively -
-set `SURF_AGENT_ENV_DIR` to a path under it, which the shipped `.gitignore` already covers:
-
-```sh
-export SURF_AGENT_ENV_DIR="$SURF_SKILL/.surf-agent/env"
-```
-
-The default keeps it out of the skill directory on purpose: the installer replaces that
-directory when the skill updates, which would delete the environment underneath any session
-still running from it, and a skills directory is configuration that harnesses index and
-users sometimes keep read-only.
-
 ## Published runtime
 
 `runtime-revision`, beside `SKILL.md`, selects a full 40-character Git commit for the runtime dependency. Users update the skill; the launcher installs its matching runtime.
@@ -103,7 +59,3 @@ PY
 ```
 
 This override bypasses the revision pin and installs the wheel with its Patchright extra. It accepts a wheel, not a source checkout or arbitrary dependency string. Successful local validation does not verify remote installation. Unset `SURF_AGENT_DEPENDENCY` when testing a published pin.
-
-Each rebuilt wheel gets its own environment (the file's modification time and size are
-part of the key), so validation after a rebuild never runs against the previous bytes,
-and the environments it replaces are pruned once nothing is using them.

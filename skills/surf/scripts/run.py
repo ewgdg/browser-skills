@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Run ordinary Python with the skill's released Surf dependency."""
 
-import contextlib
-import hashlib
 import json
 import math
 import os
@@ -10,9 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import re
 import shutil
-import subprocess
 import sys
-from urllib.parse import unquote, urlparse
 
 USAGE = (
     "Usage: python3 run.py FILE|- [script arguments...]\n"
@@ -28,29 +24,9 @@ SESSION_COMMAND = ["-m", "surf_agent.session"]
 SESSION_MODES = ("--new-session", "--session", "--kill-session", "--list-sessions")
 SESSION_VALUES = ("--name", "--ttl", "--timeout")
 
-# What the runtime is installed into. The launcher keeps one uv project of its own
-# instead of letting uv build a temporary environment per call: `uv run --with` forks
-# the child and stays alive as its parent so that it can delete that environment
-# afterwards, which for a session means a uv process for its whole idle timeout.
-# `uv tool install` cannot be used here at all - it requires console scripts, and this
-# package deliberately has none, so uv removes the tool again.
-PYTHON_REQUEST = "3.11"
-PROJECT_FILE = "pyproject.toml"
-LOCK_FILE = "uv.lock"
-INSTALLED_STAMP = "installed-requirement"
-SKILL_PATH_STAMP = "skill-path"
-ENVIRONMENT_DIR_ENV = "SURF_AGENT_ENV_DIR"
-PROJECT_TEMPLATE = """\
-# Written by the Surf launcher: it owns the environment in .venv, do not edit.
-[project]
-name = "surf-runtime"
-version = "0"
-requires-python = ">=3.11"
-dependencies = ["{requirement}"]
-
-[tool.uv]
-package = false
-"""
+# Read by surf_agent.session so a detached worker re-enters this same dependency
+# resolution instead of trusting the temporary environment uv removes on exit.
+WORKER_COMMAND_ENV = "SURF_SESSION_WORKER_COMMAND"
 
 
 def dependency_requirement() -> str | None:
@@ -75,132 +51,6 @@ def dependency_requirement() -> str | None:
         "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git@"
         f"{revision}#subdirectory=packages/surf-agent"
     )
-
-
-def environment_root() -> Path:
-    """The directory holding the environments uv manages for installed skills.
-
-    A cache rather than a state directory: it is rebuildable from the requirement, so
-    losing it costs one install and never data. `SURF_AGENT_ENV_DIR` moves it.
-    """
-    override = os.environ.get(ENVIRONMENT_DIR_ENV)
-    if override:
-        return Path(override).expanduser()
-    if sys.platform == "darwin":
-        base = Path.home() / "Library" / "Caches"
-    else:
-        cache_home = os.environ.get("XDG_CACHE_HOME")
-        base = Path(cache_home).expanduser() if cache_home else Path.home() / ".cache"
-    return base / "surf-agent"
-
-
-def project_root() -> Path:
-    """The uv project belonging to this copy of the skill.
-
-    One environment per skill copy, not per machine: a development checkout and an
-    installed skill pin different requirements, and a shared environment would have
-    them rewriting each other's 140 MB on every alternation. The name stays readable
-    and the digest keeps two copies with the same directory name apart.
-    """
-    skill = Path(__file__).resolve().parents[1]
-    digest = hashlib.sha256(str(skill).encode()).hexdigest()[:8]
-    return environment_root() / f"{skill.name}-{digest}"
-
-
-def _discard_projects_of_missing_skills(root: Path, keep: Path) -> None:
-    """Delete environments whose recorded skill copy no longer exists.
-
-    Only a project that named a path now gone is removed, so a deleted worktree does
-    not leave 140 MB behind and a live copy's environment is never touched.
-    """
-    try:
-        entries = list(root.iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        if entry == keep or not entry.is_dir():
-            continue
-        try:
-            recorded = (entry / SKILL_PATH_STAMP).read_text()
-        except OSError:
-            continue  # not one of ours, or a build another call is still finishing
-        if not Path(recorded).is_dir():
-            shutil.rmtree(entry, ignore_errors=True)
-
-
-def declared_requirement(requirement: str) -> str:
-    """The requirement as uv should see it, with a file's digest when it names one.
-
-    A rebuilt development wheel keeps its path, and uv's lock refuses the changed
-    bytes with a hash mismatch rather than installing them; declaring the digest turns
-    a rebuild into a requirement change, which is answered by re-resolving.
-    """
-    head, separator, tail = requirement.partition("file://")
-    if not separator:
-        return requirement
-    location = unquote(urlparse("file://" + tail).path)
-    try:
-        digest = hashlib.sha256(Path(location).read_bytes()).hexdigest()
-    except OSError:
-        return requirement
-    return f"{head}file://{tail.split('#', 1)[0]}#sha256={digest}"
-
-
-def _installed_requirement(project: Path) -> str:
-    try:
-        return (project / INSTALLED_STAMP).read_text()
-    except OSError:
-        return ""
-
-
-def _report_installer_failure(result: subprocess.CompletedProcess) -> None:
-    detail = (result.stderr or result.stdout or "").strip()
-    tail = "\n".join(detail.splitlines()[-5:]) or "no output"
-    print(f"surf: could not prepare the Surf runtime:\n{tail}", file=sys.stderr)
-
-
-def ensure_environment(uv: str, requirement: str) -> Path | None:
-    """The interpreter of the environment uv keeps for *requirement*.
-
-    Built once and then reused by every later call, including the session workers
-    that outlive the launcher: uv owns the project directory, its lock file and the
-    virtual environment inside it, so a new revision updates this copy's environment
-    instead of accumulating them. Returns None after reporting why it could not be
-    prepared.
-    """
-    project = project_root()
-    python = project / ".venv" / "bin" / "python"
-    declared = declared_requirement(requirement)
-    if python.exists() and _installed_requirement(project) == declared:
-        # Nothing to do: a steady-state call starts no uv process at all.
-        _discard_projects_of_missing_skills(project.parent, project)
-        return python
-    try:
-        project.mkdir(parents=True, exist_ok=True)
-        (project / PROJECT_FILE).write_text(PROJECT_TEMPLATE.format(requirement=declared))
-        # A lock from the previous requirement refuses the new one outright, and
-        # re-resolving costs one cached resolution.
-        with contextlib.suppress(OSError):
-            (project / LOCK_FILE).unlink()
-    except OSError as exc:
-        print(f"surf: could not prepare {project}: {exc}", file=sys.stderr)
-        return None
-    result = subprocess.run(
-        [uv, "sync", "--project", str(project), "--python", PYTHON_REQUEST, "--no-config"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        _report_installer_failure(result)
-        return None
-    try:
-        (project / INSTALLED_STAMP).write_text(declared)
-        (project / SKILL_PATH_STAMP).write_text(str(Path(__file__).resolve().parents[1]))
-    except OSError as exc:
-        print(f"surf: could not record the installed runtime: {exc}", file=sys.stderr)
-        return None
-    _discard_projects_of_missing_skills(project.parent, project)
-    return python
 
 
 @dataclass(frozen=True)
@@ -358,13 +208,18 @@ def main():
         print("Surf requires uv: https://docs.astral.sh/uv/getting-started/installation/",
               file=sys.stderr)
         return 127
-    python = ensure_environment(uv, dependency)
-    if python is None:
-        return 2
-    # Execute the environment's Python directly: uv must not reinterpret script
-    # metadata or change ordinary Python's stdin, sibling imports, arguments or
-    # exception behavior, and a session worker keeps running after this exits.
-    os.execve(str(python), [str(python), *invocation.python_arguments], dict(os.environ))
+    uv_command = [
+        uv, "run", "--no-project", "--no-config", "--isolated", "--python", "3.11",
+        "--with", dependency, "--", "python",
+    ]
+    environment = dict(os.environ)
+    if invocation.session_mode:
+        environment[WORKER_COMMAND_ENV] = json.dumps(
+            [*uv_command, *SESSION_COMMAND, "worker"]
+        )
+    # Execute Python directly: uv must not reinterpret script metadata or change
+    # ordinary Python's stdin, sibling imports, arguments, or exception behavior.
+    os.execve(uv, [*uv_command, *invocation.python_arguments], environment)
 
 
 if __name__ == "__main__":

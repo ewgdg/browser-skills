@@ -56,6 +56,9 @@ IDLE_POLL_S = 0.5
 CELL_OUTPUT_MAX_BYTES = 4 * 1024 * 1024
 # A process-table listing is a diagnostic, so it is bounded rather than trusted.
 PS_TIMEOUT_S = 5.0
+# The launcher resolves its dependency manager into this handoff. Direct imports
+# of this module (tests, other harnesses) start the worker with sys.executable.
+WORKER_COMMAND_ENV = "SURF_SESSION_WORKER_COMMAND"
 SOCKET_BACKLOG = 8
 # Linux allows 107 bytes for sun_path plus the terminating NUL.
 SOCKET_PATH_LIMIT = 107
@@ -592,12 +595,24 @@ def _stalled_error(socket_path: Path, session_id: str, pid: int | None = None) -
 def _worker_command() -> list[str]:
     """The command that starts a worker process.
 
-    The worker is this interpreter, which is the launcher's environment and stays
-    on disk for as long as any session does - unlike the temporary environment
-    `uv run --with` builds, which used to make the worker a child of a uv process
-    that had to outlive it, or make a later cell unable to import at all.
+    Under `uv run --with`, sys.executable points into a temporary environment
+    that uv removes when its caller exits, so a detached worker could not start
+    the browser bridge from a later cell. The launcher therefore supplies a
+    command that re-enters its own dependency resolution and keeps it alive for
+    the worker's lifetime.
     """
-    return [sys.executable, "-m", "surf_agent.session", "worker"]
+    configured = os.environ.get(WORKER_COMMAND_ENV)
+    if configured is None:
+        return [sys.executable, "-m", "surf_agent.session", "worker"]
+    try:
+        command = json.loads(configured)
+    except ValueError as exc:
+        raise SessionError(f"{WORKER_COMMAND_ENV} is not valid JSON: {exc}") from exc
+    if not isinstance(command, list) or not command or not all(
+        isinstance(part, str) for part in command
+    ):
+        raise SessionError(f"{WORKER_COMMAND_ENV} must be a non-empty JSON list of strings")
+    return command
 
 
 # A worker started by an earlier runtime answers hello without these fields. It
