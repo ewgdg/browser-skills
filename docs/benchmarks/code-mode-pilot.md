@@ -101,6 +101,8 @@ The initial CLI turn was excluded before continuing: this shell runner reaped an
 
 The persistent helper is trusted-code benchmark infrastructure, not a sandbox or production runtime. Its namespace `reset` retains prior objects and differs from replacing the process; the pilot used actual process replacement. Timeout delivery cannot reliably preempt native blocking code and never implies browser rollback.
 
+That helper has since been removed: the persistent arm now drives the shipped session runtime (`scripts/run.py --new-session`, then `--session ID -`), whose cells are bounded by the launcher's own `--timeout`, so a rerun measures the released path rather than the harness.
+
 Independent review also found and corrected two analysis defects before final scoring: nested Pi tool-result text was initially counted as zero, and incomplete runs could distort efficiency normalization. Regression tests cover both. Neither changes the provider usage totals in this completed three-arm pilot.
 
 ## What this does not establish

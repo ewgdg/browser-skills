@@ -1,6 +1,6 @@
 # Three-mode local browser benchmark
 
-Historical comparison: the CLI arm requires checkout `24aa940` (the recorded pilot implementation). The current Python replacement intentionally removes that CLI; do not restore it to rerun this comparison. The fixture, analyzer, and experimental persistent worker remain usable independently.
+Historical comparison: the CLI arm requires checkout `24aa940` (the recorded pilot implementation). The current Python replacement intentionally removes that CLI; do not restore it to rerun this comparison. The fixture and analyzer remain usable independently, and the persistent arm drives the shipped session runtime rather than a benchmark-only worker.
 
 Benchmark infrastructure only; no changes to Surf's production lifecycle. Run from the repository root. Each participant gets a fresh fixture process, dedicated Surf home and thread name, and identical task turns from `benchmarks/tasks.md`. Use the same model/settings. The runner owns scoring, timing and transcript/token collection.
 
@@ -34,40 +34,47 @@ Give participants only their URL, mode, thread name, isolated environment, API/C
 
 - **Optimized CLI:** `uv run --package surf-agent surf-agent …`; allow existing `do`, suppressed output, selected observations, diff and evaluate capabilities. Shell parsing and `/tmp` state files are allowed. Do not force full snapshots.
 - **Fresh Python:** `uv run --package surf-agent python /tmp/task.py` or `uv run --package surf-agent python -`; use `from surf_agent import Thread`. Each invocation gets a fresh interpreter but reacquires the same named browser thread. Persist values explicitly in `/tmp` if desired. Close the browser only after all task turns.
-- **Persistent Python:** ordinary Python source via the helper below; globals and `Thread` handles survive between cells. Same browser API and observation freedom as fresh Python.
+- **Persistent Python:** one shipped session interpreter, created once and driven cell by cell below; globals and `Thread` handles survive between cells. Same browser API and observation freedom as fresh Python.
 
 `uv run --package surf-agent` makes imports work for scripts outside the repository. No new dependencies are needed.
 
 ## Persistent session
 
-In a dedicated terminal, with the participant's isolated `SURF_AGENT_HOME` and unique `SURF_AGENT_PATCHRIGHT_PORT` exported:
+Export `SURF_SKILL` to the installed skill directory and keep the participant's isolated
+`SURF_AGENT_HOME` and unique `SURF_AGENT_PATCHRIGHT_PORT` in the environment, then create the
+session once:
 
 ```sh
-uv run --package surf-agent python benchmarks/persistent.py serve --session "$RUN/python"
-```
-
-In another terminal (set `RUN` to the same path):
-
-```sh
-uv run python benchmarks/persistent.py exec --session "$RUN/python" --timeout 30 <<'PY'
+python3 "$SURF_SKILL/scripts/run.py" --new-session --name bench - <<'PY'
 from surf_agent import Thread
 thread = Thread('benchmark-persistent')
 values = []
 print('ready')
 PY
-uv run python benchmarks/persistent.py exec --session "$RUN/python" <<'PY'
+# The call ends with --- BEGIN session metadata --- / session_id: bench-xxxxxxxx
+```
+
+Later cells pass that id back and read their source from stdin, exactly like `run.py -`:
+
+```sh
+python3 "$SURF_SKILL/scripts/run.py" --session bench-xxxxxxxx - <<'PY'
 values.append(42)
 print(values)
 PY
-uv run python benchmarks/persistent.py reset --session "$RUN/python"
-uv run python benchmarks/persistent.py stop --session "$RUN/python"
 ```
 
-Send cells sequentially. Output/error streams are captured separately and command exit status reflects success. Reset clears participant globals while retaining old references privately, so it does not call `Thread.close()` or trigger handle cleanup; reacquire the same named thread afterward. Stop ends only the interpreter. Explicitly close the benchmark browser thread before stop if cleanup is desired.
+Cells run sequentially: a second call while one is running is refused immediately. `--ttl SECONDS`
+at creation sets the idle timeout for arms that wait on a human, `--session ID --reset` clears
+participant bindings without replacing the interpreter, and `--kill-session ID` ends the session.
+Cell output is capped like any other tool result (50 KB or 2000 lines per stream, with a marker that
+says what was dropped), and only `print()`/`emit()` reaches the caller: descriptor writes and
+subprocess output are dropped by design, so an arm that needs more writes a file under `/tmp`.
 
-The `reset` command tests loss of participant bindings, not process death. For turn 4's interpreter-loss injection, stop the worker and start a new `serve` process at the same session path, leaving the separately owned browser bridge running. Confirm the worker PID changed and the browser remains open before delivering turn 4. Model conversation and scratch files remain available equally in all modes.
-
-Timeout raises `TimeoutError` using a Unix alarm; browser side effects may already have occurred. Neither server nor client retries. This is a trusted-code helper, not a sandbox or reliable preemptor of native code/uncooperative Python that catches the alarm. A client timeout leaves outcome uncertain; inspect before any manual recovery. Runtime socket and browser state stay under `/tmp`.
+For turn 4's interpreter-loss injection, run a cell that exceeds its own `--timeout`: the shipped
+runtime destroys that interpreter, the call reports the replacement, the id stops existing and the
+browser thread survives, so the participant has to create a new session and reattach with
+`Thread(name)` before continuing. That is the recovery the skill documents, so the injection
+measures the real path. Model conversation and scratch files remain available equally in all modes.
 
 ## Independent oracle
 
@@ -103,7 +110,8 @@ Weights, gates and limitations are frozen in `plans/done/code-mode-benchmark.md`
 ```sh
 uv run pytest benchmarks -q
 uv run python benchmarks/fixture.py --help
-uv run python benchmarks/persistent.py --help
 ```
 
-Tests cover persistence/reset/errors/deadline, real socket CLI execution and cleanup, oracle authentication, exact storage and idempotency. They do not launch a browser. Browser interaction and comparative scoring are runner-owned.
+Tests cover oracle authentication, exact storage and idempotency. They do not launch a browser, and
+the session runtime's own behaviour is covered by `packages/surf-agent/tests/test_session.py` and
+`tests/test_skill_launcher.py`. Browser interaction and comparative scoring are runner-owned.

@@ -19,7 +19,7 @@ Today every script is a fresh interpreter: each call re-imports, reattaches by t
 - Browser threads already persist across interpreter lifetimes. Only Python-level state does not.
 - Observations use numbered `--- BEGIN observation N ---` / `--- END observation N ---` frames; diffs use `--- observation PREV` / `+++ observation N`. IDs are per-process; baselines are per-handle and last-successful-write.
 - Release guardrail: `tests/test_skill_distribution.py` fails if the shipped skill has a missing/invalid runtime pin.
-- Do not promote `benchmarks/persistent.py` as production. It is a trusted-code benchmark helper; its `reset()` clears names but keeps old objects alive, it uses `SIGALRM`, and it cannot preempt native blocking code.
+- `benchmarks/persistent.py` was a trusted-code benchmark helper whose `reset()` cleared names but kept old objects alive, which used `SIGALRM`, and which could not preempt native blocking code. It has been removed: the benchmark's persistent arm drives this runtime's session path instead of a prototype.
 
 ## Decisions already made (do not relitigate)
 
@@ -34,7 +34,7 @@ Today every script is a fresh interpreter: each call re-imports, reattaches by t
 
 Two constraints settled these. First: **a cell whose outcome is uncertain must be reportable from outside the cell.** Anything that times, executes or dies inside the cell cannot report its own fault. Second: **a cell behaves exactly like a script.** No second dialect that breaks when the same code moves to `run.py FILE`, a project import, or a different kernel.
 
-- **Runtime (was open decision 1): hand-rolled out-of-process worker, not `ipykernel`.** The launcher that started the cell must survive it, because it is the only component able to report "your interpreter is gone". An in-process worker cannot: a timer fires inside the very code it is timing, and a crash takes the report with it. `benchmarks/persistent.py` is excluded by this rule on its own (in-process `exec` plus `SIGALRM`), independently of its other problems. `ipykernel` was evaluated first and works; it was rejected on measured cost, not on framing, so the fallback condition named in earlier drafts never fired. See "Runtime evaluation" below.
+- **Runtime (was open decision 1): hand-rolled out-of-process worker, not `ipykernel`.** The launcher that started the cell must survive it, because it is the only component able to report "your interpreter is gone". An in-process worker cannot: a timer fires inside the very code it is timing, and a crash takes the report with it. `benchmarks/persistent.py` (since removed) was excluded by this rule on its own (in-process `exec` plus `SIGALRM`), independently of its other problems. `ipykernel` was evaluated first and works; it was rejected on measured cost, not on framing, so the fallback condition named in earlier drafts never fired. See "Runtime evaluation" below.
 - **Busy and timeout behaviour (was open decision 3): per-cell, caller-set timeout that destroys the interpreter.** Not a background continuation, and never a rollback. A blocked cell makes new cells fail fast rather than interleave. The caller raises the limit for a long operation, as Codex's per-call `timeout_ms` does.
 - **Session lifecycle (superseded): the interpreter lives until it has been idle for its session timeout.** The earlier design tied lifetime to an owner process discovered by walking `/proc`; explicit session ids removed that inference, so the timeout, `--kill-session` and the socket file's existence are the whole story. The consequence is unchanged: an expired session yields a new interpreter with no bindings, which is predictable and cheap to recover from.
 - **Environment pinning (was open decision 5): fixed at interpreter creation and not re-read per cell.** `SURF_AGENT_HOME`, backend selection and bridge port cannot drift onto a different profile mid-task, and reset discards bindings without discarding configuration. Codex keeps added module directories across reset for the same reason.
@@ -142,5 +142,5 @@ Treat that as a harness/wording defect to fix, not a verdict on persistence.
 
 - `skills/surf/SKILL.md` — agent workflow; `skills/surf/docs/python-api.md` — Thread/Browser contracts; `skills/surf/docs/launcher.md` — execution/release.
 - `packages/surf-agent/src/surf_agent/thread.py`, `snapshots.py` — emission framing and baselines.
-- `benchmarks/persistent.py` — benchmark-only prototype, do not promote.
+- Benchmark persistent arm: the shipped session path (`skills/surf/scripts/run.py`), not a harness worker; see `benchmarks/README.md`.
 - `tests/test_installed_workflow.py`, `tests/test_skill_launcher.py` — existing installed-skill coverage.
