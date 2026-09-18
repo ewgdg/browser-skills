@@ -23,6 +23,7 @@ import os
 import re
 import secrets
 import select
+import shlex
 import signal
 import socket
 import subprocess
@@ -32,7 +33,7 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 from .errors import SurfAgentError
 from .runtime import surf_agent_state_dir
@@ -45,6 +46,8 @@ HELLO_TIMEOUT_S = 5.0
 WORKER_START_TIMEOUT_S = 10.0
 # How often an idle worker checks whether its timeout has passed.
 IDLE_POLL_S = 0.5
+# A process-table listing is a diagnostic, so it is bounded rather than trusted.
+PS_TIMEOUT_S = 5.0
 # The launcher resolves its dependency manager into this handoff. Direct imports
 # of this module (tests, other harnesses) start the worker with sys.executable.
 WORKER_COMMAND_ENV = "SURF_SESSION_WORKER_COMMAND"
@@ -68,15 +71,22 @@ class SessionError(SurfAgentError):
 
 
 class _InterpreterGone(Exception):
-    """The interpreter's control channel is closed; its bindings are gone.
+    """The interpreter's control channel is unusable.
 
-    A *stalled* channel was reachable but did not answer, which means the
-    interpreter may still be alive and must not be replaced silently.
+    *kind* is what recovery depends on. A "stalled" channel was reachable but did
+    not answer, which means the interpreter may still be alive with its bindings
+    and must never be replaced silently. "refused" means nothing is listening on
+    the socket path. "closed" means a listener accepted the connection and went
+    away before answering, so the interpreter exists but is on its way out.
     """
 
-    def __init__(self, message: str, *, stalled: bool = False) -> None:
+    def __init__(self, message: str, *, kind: str = "refused") -> None:
         super().__init__(message)
-        self.stalled = stalled
+        self.kind = kind
+
+    @property
+    def stalled(self) -> bool:
+        return self.kind == "stalled"
 
 
 @dataclass(frozen=True)
@@ -102,12 +112,13 @@ class ResetResult:
 @dataclass(frozen=True)
 class SessionEntry:
     session_id: str
-    interpreter_pid: int
-    cells: int
-    idle_s: float
-    uptime_s: float
-    idle_timeout_s: float
+    interpreter_pid: int | None  # None when an unresponsive interpreter cannot be identified
+    cells: int | None
+    idle_s: float | None
+    uptime_s: float | None
+    idle_timeout_s: float | None
     cwd: str
+    state: str = "live"  # "live" or "unresponsive"
 
 
 def new_session_id(name: str | None = None) -> str:
@@ -160,11 +171,11 @@ def _read_reply(stream: Any) -> dict[str, Any]:
     try:
         line = stream.readline()
     except TimeoutError as exc:
-        raise _InterpreterGone(f"interpreter did not answer: {exc}", stalled=True) from exc
+        raise _InterpreterGone(f"interpreter did not answer: {exc}", kind="stalled") from exc
     except OSError as exc:
-        raise _InterpreterGone(f"interpreter did not answer: {exc}") from exc
+        raise _InterpreterGone(f"interpreter did not answer: {exc}", kind="closed") from exc
     if not line:
-        raise _InterpreterGone("interpreter closed the control channel")
+        raise _InterpreterGone("interpreter closed the control channel", kind="closed")
     try:
         reply = json.loads(line)
     except ValueError as exc:
@@ -182,10 +193,10 @@ def _connect(socket_path: Path, timeout_s: float) -> socket.socket:
     except TimeoutError as exc:
         # A unix connect only blocks when the accept queue is full, so a listener
         # exists but is not accepting: the stalled condition, not a stale socket.
-        raise _InterpreterGone(f"could not reach the interpreter: {exc}", stalled=True) from exc
+        raise _InterpreterGone(f"could not reach the interpreter: {exc}", kind="stalled") from exc
     except BlockingIOError as exc:
         # A saturated accept queue reports EAGAIN immediately instead of blocking.
-        raise _InterpreterGone(f"could not reach the interpreter: {exc}", stalled=True) from exc
+        raise _InterpreterGone(f"could not reach the interpreter: {exc}", kind="stalled") from exc
     except OSError as exc:
         raise _InterpreterGone(f"could not reach the interpreter: {exc}") from exc
     return connection
@@ -196,10 +207,14 @@ def _send_request(stream: Any, request: dict[str, Any]) -> None:
         stream.write(json.dumps(request).encode() + b"\n")
         stream.flush()
     except TimeoutError as exc:
-        raise _InterpreterGone(f"interpreter did not accept the request: {exc}", stalled=True) from exc
+        raise _InterpreterGone(
+            f"interpreter did not accept the request: {exc}", kind="stalled"
+        ) from exc
     except OSError as exc:
         # The interpreter died or closed between attaching and this request.
-        raise _InterpreterGone(f"interpreter did not accept the request: {exc}") from exc
+        raise _InterpreterGone(
+            f"interpreter did not accept the request: {exc}", kind="closed"
+        ) from exc
 
 
 def _exchange(socket_path: Path, request: dict[str, Any], timeout_s: float) -> dict[str, Any]:
@@ -237,18 +252,16 @@ def _exchange_cell(
         return _read_reply(stream)
 
 
-def _listener_pid(socket_path: Path) -> int | None:
-    """The worker process whose command line names this session socket.
+def _proc_available() -> bool:
+    """Whether this host exposes /proc, which costs less than asking `ps`."""
+    return Path("/proc").is_dir()
 
-    Reading /proc keeps the diagnostic independent of the socket's accept queue,
-    which can be full exactly when a suspended worker is not accepting, and it is
-    what makes killing safe: a recycled pid cannot claim this socket's name.
-    """
-    wanted = str(socket_path)
+
+def _proc_commands() -> Iterator[tuple[int, list[str]]]:
     try:
         entries = list(Path("/proc").iterdir())
     except OSError:
-        return None
+        return
     for entry in entries:
         if not entry.name.isdigit():
             continue
@@ -256,48 +269,129 @@ def _listener_pid(socket_path: Path) -> int | None:
             raw = (entry / "cmdline").read_bytes()
         except OSError:
             continue
-        arguments = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
-        if not arguments or not Path(arguments[0]).name.startswith("python"):
+        yield int(entry.name), [part.decode(errors="replace") for part in raw.split(b"\0") if part]
+
+
+def _ps_commands() -> Iterator[tuple[int, list[str]]]:
+    """The same view on a host without /proc, such as macOS."""
+    try:
+        listing = subprocess.run(
+            ["ps", "-Ao", "pid=,command="],
+            capture_output=True,
+            text=True,
+            timeout=PS_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return
+    for line in listing.stdout.splitlines():
+        pid, _, command = line.strip().partition(" ")
+        if not pid.isdigit() or not command.strip():
             continue
-        joined = " ".join(arguments)
-        # Worker shape: `python -m surf_agent.session worker ...` or that command
-        # inside an inline `-c` bootstrap, always with this session's socket path.
-        if wanted not in arguments or "surf_agent.session" not in joined:
-            continue
-        if ("-m" in arguments or "-c" in arguments) and "worker" in joined:
-            return int(entry.name)
+        try:
+            arguments = shlex.split(command)
+        except ValueError:
+            arguments = command.split()
+        yield int(pid), arguments
+
+
+def _process_commands() -> Iterator[tuple[int, list[str]]]:
+    if _proc_available():
+        yield from _proc_commands()
+    else:
+        yield from _ps_commands()
+
+
+def _names_session_socket(arguments: list[str], socket_path: Path) -> bool:
+    """Whether this command line is a worker for exactly this socket path.
+
+    Stricter than it reads: it decides which process may be signalled. The socket
+    path must be an argument of a python process that also names this module and
+    the worker command, so a process that merely mentions the path - the `uv run`
+    wrapper around the worker, a shell command in an agent transcript - cannot
+    match, and a pid we kill is the interpreter rather than its parent.
+    """
+    if not arguments or not Path(arguments[0]).name.startswith("python"):
+        return False
+    joined = " ".join(arguments)
+    # Worker shape: `python -m surf_agent.session worker ...` or that command
+    # inside an inline `-c` bootstrap, always with this session's socket path.
+    if str(socket_path) not in arguments or "surf_agent.session" not in joined:
+        return False
+    return ("-m" in arguments or "-c" in arguments) and "worker" in joined
+
+
+def _listener_pid(socket_path: Path) -> int | None:
+    """The worker process whose command line names this session socket.
+
+    Reading the process table keeps the diagnostic independent of the socket's
+    accept queue, which can be full exactly when a suspended worker is not
+    accepting, and it is what makes killing safe: a recycled pid cannot claim this
+    socket's name.
+    """
+    for pid, arguments in _process_commands():
+        if _names_session_socket(arguments, socket_path):
+            return pid
     return None
 
 
-def _stalled_error(socket_path: Path, session_id: str) -> SessionError:
-    pid = _listener_pid(socket_path)
-    who = f" (pid {pid})" if pid is not None else ""
-    return SessionError(
-        f"the session interpreter{who} did not answer; stop it with "
-        f"--kill-session {session_id} and retry, or resume that process"
-    )
-
-
-def _hello(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
-    if not socket_path.exists():
-        return None
+def _process_exists(pid: int) -> bool:
     try:
-        return _exchange(socket_path, {"op": "hello"}, timeout_s)
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        # EPERM: the process exists, it is just not ours to signal.
+        return True
+    return True
+
+
+def _session_id_of(socket_path: Path) -> str:
+    return socket_path.name[: -len(_SOCKET_SUFFIX)]
+
+
+@dataclass(frozen=True)
+class _Probe:
+    """What a socket path says about the interpreter behind it."""
+
+    state: str  # "live", "wedged" or "gone"
+    reply: dict[str, Any] | None
+    pid: int | None  # the listener, only where it can be identified
+    kind: str  # "ok", "stalled", "refused" or "closed"
+    detail: str
+
+
+def _probe(socket_path: Path, timeout_s: float) -> _Probe:
+    """Ask the interpreter to identify itself, and classify what that means.
+
+    The three outcomes are the whole recovery contract: a live interpreter takes a
+    request, a wedged one may still hold bindings and must be named rather than
+    treated as absent, and only a refused connection proves nothing is listening.
+    """
+    if not socket_path.exists():
+        return _Probe("gone", None, None, "refused", "no socket file")
+    try:
+        return _Probe("live", _exchange(socket_path, {"op": "hello"}, timeout_s), None, "ok", "")
     except _InterpreterGone as exc:
         if exc.stalled:
-            # A live interpreter that cannot answer any thread is stopped or
-            # wedged. Treating it as absent would leave the id pointing at a
-            # process nobody can talk to, so fail fast and name it.
-            raise _stalled_error(socket_path, socket_path.name[: -len(_SOCKET_SUFFIX)]) from exc
-        return None
+            return _Probe("wedged", None, _listener_pid(socket_path), exc.kind, str(exc))
+        return _Probe("gone", None, None, exc.kind, str(exc))
 
 
-def _hello_quietly(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
-    """Spawn-time and listing probe: an interpreter that cannot answer is not usable."""
-    try:
-        return _hello(socket_path, timeout_s)
-    except SessionError:
-        return None
+def _live_reply_quietly(socket_path: Path, timeout_s: float) -> dict[str, Any] | None:
+    """Spawn-time probe: an interpreter that cannot answer is not usable."""
+    probe = _probe(socket_path, timeout_s)
+    return probe.reply if probe.state == "live" else None
+
+
+def _stalled_error(socket_path: Path, session_id: str, pid: int | None = None) -> SessionError:
+    if pid is None:
+        pid = _listener_pid(socket_path)
+    who = f" (pid {pid})" if pid is not None else ""
+    resume = f", or keep its bindings with kill -CONT {pid}" if pid is not None else ""
+    return SessionError(
+        f"the session interpreter{who} did not answer; stop it with "
+        f"--kill-session {session_id}{resume}"
+    )
 
 
 def _worker_command() -> list[str]:
@@ -405,7 +499,7 @@ def _start_interpreter(socket_path: Path, idle_timeout_s: float) -> tuple[int, i
         raise SessionError(f"could not start the session interpreter: {exc}") from exc
     deadline = time.monotonic() + WORKER_START_TIMEOUT_S
     while time.monotonic() < deadline:
-        reply = _hello_quietly(socket_path, HELLO_TIMEOUT_S)
+        reply = _live_reply_quietly(socket_path, HELLO_TIMEOUT_S)
         if reply is not None:
             _release_startup_pipe(process)
             _children.append(process)
@@ -423,13 +517,37 @@ def _start_interpreter(socket_path: Path, idle_timeout_s: float) -> tuple[int, i
     )
 
 
-def _kill_interpreter(socket_path: Path, pid: int) -> None:
-    # Only the process that still names this socket may be killed: a recycled pid
-    # must never be signalled.
-    if _listener_pid(socket_path) != pid:
-        return
+def _stop_interpreter(socket_path: Path, pid: int) -> str:
+    """Try to stop the worker that holds this socket path.
+
+    "stopped" means the confirmed worker was signalled, "gone" that no process
+    names the socket any more, and "unconfirmed" that a process lives under this
+    pid but this host cannot tie it to the socket. Only a confirmed worker may be
+    signalled: an unconfirmed pid may have been recycled, so the honest answer is
+    that nothing was stopped.
+    """
+    if _listener_pid(socket_path) == pid:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+        return "stopped"
+    return "unconfirmed" if _process_exists(pid) else "gone"
+
+
+def _wait_for_stop(socket_path: Path, pid: int, timeout_s: float) -> None:
+    """Wait until the worker is gone, then drop the socket name.
+
+    A worker removes its own socket just before exiting; a killed one cannot, so
+    the name is removed here once the process is known to be gone. Reaping keeps a
+    stopped session from leaving a zombie behind its own confirmation.
+    """
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not socket_path.exists() or not _process_exists(pid):
+            break
+        time.sleep(0.02)
+    _reap_children(wait_s=min(timeout_s, 2.0))
     with contextlib.suppress(OSError):
-        os.kill(pid, signal.SIGKILL)
+        socket_path.unlink()
 
 
 def _frame(text: str) -> None:
@@ -452,7 +570,8 @@ def _encode(stream: Any) -> str:
     try:
         return base64.b64encode(stream.buffer.getvalue()).decode("ascii")
     except (ValueError, OSError):
-        # A cell that closed its own stdout or stderr already discarded its bytes.
+        # A cell can still detach or replace the stream around its buffer; bytes
+        # that are gone cannot be reported.
         return ""
 
 
@@ -486,7 +605,9 @@ def _discard_stale_socket(socket_path: Path) -> None:
     """Remove a socket file nothing is listening on.
 
     Only once it is older than a worker start: a worker that has just bound its
-    socket but is not yet accepting would otherwise lose its name.
+    socket but is not yet accepting would otherwise lose its name. Callers pass
+    only sockets whose connections are refused; a socket that is bound but silent
+    belongs to a live interpreter and keeps its name.
     """
     try:
         if time.time() - socket_path.stat().st_mtime < WORKER_START_TIMEOUT_S:
@@ -514,6 +635,12 @@ def _session_entry(session_id: str, reply: dict[str, Any]) -> SessionEntry:
     )
 
 
+def _unresponsive_entry(session_id: str, pid: int | None) -> SessionEntry:
+    # Nothing about the interpreter's bindings or age is knowable while it cannot
+    # answer; all that is established is that a live process holds this name.
+    return SessionEntry(session_id, pid, None, None, None, None, "", "unresponsive")
+
+
 def list_sessions() -> list[SessionEntry]:
     """Live sessions, discovered from the socket directory that names them."""
     _reap_children()
@@ -523,11 +650,17 @@ def list_sessions() -> list[SessionEntry]:
         return []
     entries: list[SessionEntry] = []
     for path in paths:
-        session_id = path.name[: -len(_SOCKET_SUFFIX)]
-        reply = _hello_quietly(path, HELLO_TIMEOUT_S)
-        if reply is None:
+        session_id = _session_id_of(path)
+        probe = _probe(path, HELLO_TIMEOUT_S)
+        if probe.state == "wedged":
+            # A suspended or wedged interpreter is reported, not swept: it can be
+            # resumed, and the id that names it must stay stoppable.
+            entries.append(_unresponsive_entry(session_id, probe.pid))
+            continue
+        if probe.state == "gone":
             _discard_stale_socket(path)
             continue
+        reply = probe.reply
         if not all(field in reply for field in _HELLO_FIELDS):
             _frame(f"--- ignoring session {session_id}: different interpreter protocol ---")
             continue
@@ -542,28 +675,41 @@ def _unknown_session_error(session_id: str) -> SessionError:
 
 
 def kill_session(session_id: str, *, timeout_s: float = WORKER_START_TIMEOUT_S) -> bool:
-    """Stop a session interpreter; True when one was there to stop."""
+    """Stop a session interpreter; True when one was there to stop.
+
+    An interpreter that cannot answer the shutdown request is killed instead, so
+    "stop it with --kill-session" is never advice that runs into the same failure.
+    A worker this host cannot identify is left alone and reported: signalling an
+    unconfirmed pid could hit a recycled one.
+    """
     _reap_children()
     _validate_session_id(session_id)
     socket_path = session_socket_path(session_id)
-    reply = _hello(socket_path, HELLO_TIMEOUT_S)
-    if reply is None:
+    probe = _probe(socket_path, HELLO_TIMEOUT_S)
+    if probe.state == "gone":
         _discard_stale_socket(socket_path)
         return False
-    _compatible_reply(reply, session_id)
+    if probe.state == "wedged":
+        pid = probe.pid
+        if pid is None or _stop_interpreter(socket_path, pid) == "unconfirmed":
+            named = f"kill -9 {pid}" if pid is not None else "kill -9 <pid>"
+            raise SessionError(
+                f"session {session_id!r} did not answer and its interpreter could not be "
+                f"identified; stop it with {named} and remove {socket_path}"
+            )
+        _wait_for_stop(socket_path, pid, timeout_s)
+        return True
+    reply = _compatible_reply(probe.reply, session_id)
+    try:
+        pid = int(reply["pid"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise SessionError(f"interpreter sent an incomplete hello reply: {reply!r}") from exc
     answer = _exchange(socket_path, {"op": "shutdown"}, HELLO_TIMEOUT_S)
     if answer.get("status") != "ok":
         raise SessionError(f"interpreter sent an unexpected reply: {answer!r}")
     # The worker removes its own socket; waiting keeps a following --list-sessions
     # from reporting a session that is already gone.
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline and socket_path.exists():
-        time.sleep(0.02)
-    # A worker removes its socket just before exiting, so wait for the exit too:
-    # otherwise a stopped session leaves a zombie behind its own confirmation.
-    _reap_children(wait_s=min(timeout_s, 2.0))
-    with contextlib.suppress(OSError):
-        socket_path.unlink()
+    _wait_for_stop(socket_path, pid, timeout_s)
     return True
 
 
@@ -597,11 +743,22 @@ def run_cell(
         pid, cells = _start_interpreter(socket_path, idle_timeout_s)
         origin = f"created; idle timeout {idle_timeout_s:g} s"
     else:
-        reply = _hello(socket_path, HELLO_TIMEOUT_S)
-        if reply is None:
+        probe = _probe(socket_path, HELLO_TIMEOUT_S)
+        if probe.state == "wedged":
+            # No cell can be accepted, and the id must not be re-pointed at a new
+            # interpreter while a process still holds this session's bindings.
+            raise _stalled_error(socket_path, session_id, probe.pid)
+        if probe.state == "gone":
             _discard_stale_socket(socket_path)
+            if probe.kind == "closed":
+                # A listener took the connection and went away: the interpreter
+                # exists, so "unknown session" would send the agent to create one.
+                raise SessionError(
+                    f"the interpreter for session {session_id!r} is going away and took no "
+                    "cell; retry, or create a session with --new-session if it is gone"
+                )
             raise _unknown_session_error(session_id)
-        _compatible_reply(reply, session_id)
+        reply = _compatible_reply(probe.reply, session_id)
         try:
             pid, cells = int(reply["pid"]), int(reply["cells"])
         except (KeyError, TypeError, ValueError) as exc:
@@ -632,14 +789,22 @@ def run_cell(
             # No cell was accepted yet, so the session is stuck rather than lost.
             raise _stalled_error(socket_path, session_id) from exc
         elapsed = time.monotonic() - started
-        _kill_interpreter(socket_path, pid)
+        stopped = _stop_interpreter(socket_path, pid) != "unconfirmed"
         if elapsed >= timeout_s:
             reason = f"cell #{number} exceeded {timeout_s:g} s"
         elif exc.stalled:
             reason = f"interpreter stopped responding during cell #{number}"
         else:
             reason = f"worker exited during cell #{number}"
-        _frame(f"--- interpreter replaced ({reason}); bindings lost; side effects unknown ---")
+        if stopped:
+            _frame(f"--- interpreter replaced ({reason}); bindings lost; side effects unknown ---")
+        else:
+            # Nothing was signalled, so nothing here may claim the interpreter died.
+            _frame(
+                f"--- interpreter {result_pid} not stopped ({reason}); it may still hold this "
+                f"session's bindings; resume it with kill -CONT {result_pid} or stop it with "
+                f"kill -9 {result_pid}; side effects unknown ---"
+            )
         return CellResult("replaced", session_id, result_pid, number, create, reason, b"", b"", elapsed)
 
     elapsed = time.monotonic() - started
@@ -671,12 +836,17 @@ def reset_bindings(session_id: str) -> ResetResult:
     _validate_session_id(session_id)
     socket_path = session_socket_path(session_id)
     _prepare_directory(socket_path.parent)
-    reply = _hello(socket_path, HELLO_TIMEOUT_S)
-    if reply is None:
+    probe = _probe(socket_path, HELLO_TIMEOUT_S)
+    if probe.state == "wedged":
+        # An interpreter that cannot answer cannot clear bindings either, and its
+        # id must stay usable once it resumes, so this is reported rather than
+        # treated as an absent session.
+        raise _stalled_error(socket_path, session_id, probe.pid)
+    if probe.state == "gone":
         _discard_stale_socket(socket_path)
         _frame(f"--- no live session {session_id}; bindings are already gone ---")
         return ResetResult("absent", None, None)
-    _compatible_reply(reply, session_id)
+    reply = _compatible_reply(probe.reply, session_id)
     pid, cells = int(reply["pid"]), int(reply["cells"])
     try:
         answer = _exchange(socket_path, {"op": "reset"}, HELLO_TIMEOUT_S)
@@ -751,6 +921,12 @@ class _NullBackedBuffer(io.BytesIO):
 
     def fileno(self) -> int:
         return self._file_descriptor
+
+    def close(self) -> None:
+        # `sys.stdout.close()` inside a cell must not discard what that cell already
+        # wrote: those bytes are its whole result, and this buffer is the only copy.
+        # The capture is released with the stream object instead of on request.
+        pass
 
 
 def _capture_stream(errors: str, file_descriptor: int) -> io.TextIOWrapper:
@@ -991,6 +1167,15 @@ def _print_sessions() -> int:
         print("no live sessions")
         return 0
     for entry in entries:
+        if entry.state != "live":
+            pid = entry.interpreter_pid
+            where = f"pid {pid}" if pid is not None else "pid unknown"
+            resume = f"kill -CONT {pid}" if pid is not None else "resume the process"
+            print(
+                f"{entry.session_id}  {where}  unresponsive: it did not answer, so it was kept; "
+                f"resume it ({resume}) or stop it (--kill-session {entry.session_id})"
+            )
+            continue
         print(
             f"{entry.session_id}  pid {entry.interpreter_pid}  cell #{entry.cells}  "
             f"idle {_duration(entry.idle_s)}  up {_duration(entry.uptime_s)}  "

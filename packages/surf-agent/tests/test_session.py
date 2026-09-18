@@ -234,7 +234,7 @@ def test_create_prints_the_metadata_block_last_on_stdout(capfd):
     captured = capfd.readouterr()
     assert captured.out == "cell output\n" + metadata_block(created.session_id, 90.0)
     assert created.session_id.startswith("demo-")
-    assert f"(cell #1, created; idle timeout 90 s)" in captured.err
+    assert "(cell #1, created; idle timeout 90 s)" in captured.err
 
 
 def test_create_prints_the_block_when_the_first_cell_raises(capfd):
@@ -288,6 +288,51 @@ def test_kill_session_stops_it_and_removes_its_files():
     assert session.kill_session(created.session_id) is False
     with pytest.raises(session.SessionError, match="unknown session"):
         run_in(created.session_id, "pass")
+
+
+def test_kill_session_stops_an_interpreter_that_cannot_answer(monkeypatch):
+    """The advice for a wedged interpreter must not be the command that just failed."""
+    monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
+    created = create("pass")
+    os.kill(created.interpreter_pid, signal.SIGSTOP)
+    try:
+        assert session.kill_session(created.session_id) is True
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(created.interpreter_pid, signal.SIGCONT)
+    assert wait_for_exit(created.interpreter_pid)
+    assert not session.session_socket_path(created.session_id).exists()
+
+
+def test_list_sessions_reports_an_interpreter_that_cannot_answer(monkeypatch):
+    """A live interpreter that stops answering keeps its name and stays stoppable."""
+    monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
+    created = create("pass")
+    socket_path = session.session_socket_path(created.session_id)
+    # Older than the stale-socket grace, so only the new rule can protect it.
+    old = time.time() - 600
+    os.utime(socket_path, (old, old))
+    os.kill(created.interpreter_pid, signal.SIGSTOP)
+    try:
+        entries = session.list_sessions()
+        assert [entry.session_id for entry in entries] == [created.session_id]
+        assert entries[0].state == "unresponsive"
+        assert entries[0].interpreter_pid == created.interpreter_pid
+        assert socket_path.exists()
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(created.interpreter_pid, signal.SIGCONT)
+    assert session.kill_session(created.session_id) is True
+    assert wait_for_exit(created.interpreter_pid)
+
+
+def test_listener_is_found_when_proc_is_unavailable(monkeypatch):
+    """A host without /proc must still be able to identify, and therefore stop, a worker."""
+    created = create("pass")
+    monkeypatch.setattr(session, "_proc_available", lambda: False)
+    socket_path = session.session_socket_path(created.session_id)
+    assert session._listener_pid(socket_path) == created.interpreter_pid
+    assert session.kill_session(created.session_id) is True
 
 
 def test_list_sessions_reports_live_sessions():
@@ -441,6 +486,34 @@ def test_caller_replaces_a_worker_that_cannot_answer(monkeypatch):
     assert wait_for_exit(created.interpreter_pid)
 
 
+def test_timeout_that_cannot_confirm_the_pid_is_reported_not_claimed(monkeypatch, capfd):
+    """A pid this host cannot tie to the socket is never signalled, and the call says so."""
+    monkeypatch.setattr(session, "REPLY_GRACE_S", 0.5)
+    created = create("pass")
+    monkeypatch.setattr(session, "_listener_pid", lambda socket_path: None)
+    outcome: list[session.CellResult] = []
+    thread = threading.Thread(
+        target=lambda: outcome.append(
+            run_in(created.session_id, "import time\ntime.sleep(30)", timeout_s=1.0)
+        )
+    )
+    thread.start()
+    assert wait_for(lambda: process_state(created.interpreter_pid) is not None)
+    time.sleep(0.3)
+    os.kill(created.interpreter_pid, signal.SIGSTOP)
+    thread.join(timeout=30)
+    assert not thread.is_alive()
+    assert outcome and outcome[0].status == "replaced"
+    frames = capfd.readouterr().err
+    assert "not stopped" in frames
+    assert f"kill -9 {created.interpreter_pid}" in frames
+    # It is still there: the call reported that instead of claiming it was destroyed.
+    assert process_state(created.interpreter_pid) == "T"
+    os.kill(created.interpreter_pid, signal.SIGCONT)
+    os.kill(created.interpreter_pid, signal.SIGKILL)
+    assert wait_for_exit(created.interpreter_pid)
+
+
 def test_stopped_interpreter_is_reported_not_replaced(monkeypatch):
     monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
     created = create("pass")
@@ -453,10 +526,12 @@ def test_stopped_interpreter_is_reported_not_replaced(monkeypatch):
     assert wait_for_exit(created.interpreter_pid)
 
 
-def test_interpreter_that_closes_the_channel_is_not_replaced():
+def test_interpreter_that_closes_the_channel_is_reported_as_going_away():
     socket_path = session.session_socket_path(session.new_session_id("closer"))
     with fake_interpreter(socket_path, None):
-        with pytest.raises(session.SessionError, match="unknown session"):
+        # An interpreter that accepted the connection is not an absent one; the
+        # difference decides whether the agent should retry or start over.
+        with pytest.raises(session.SessionError, match="going away"):
             run_in(session_id_from(socket_path), "pass")
 
 
@@ -528,6 +603,14 @@ def test_session_files_are_private_and_leave_no_artifacts():
     assert [path.name for path in directory.iterdir()] == [socket_path.name]
     assert os.readlink(f"/proc/{created.interpreter_pid}/fd/1") == os.devnull
     assert os.readlink(f"/proc/{created.interpreter_pid}/fd/2") == os.devnull
+
+
+def test_a_cell_that_closes_its_stream_keeps_what_it_printed():
+    # Closing a stream is the cell's own business; the bytes it already wrote are
+    # the cell's whole result and must not disappear with the stream.
+    created = create("import sys\nprint('kept')\nsys.stdout.close()")
+    assert created.status == "ok"
+    assert created.stdout == b"kept\n"
 
 
 def test_descriptor_writes_are_dropped_without_a_file():
