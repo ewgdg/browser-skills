@@ -328,23 +328,27 @@ def _names_session_socket(arguments: list[str], socket_path: Path) -> bool:
 
 
 def _listener_pid(socket_path: Path) -> int | None:
-    """The process that owns this session socket.
+    """The process that owns this session socket, when exactly one does.
 
-    Two sources, strongest first. Where /proc exists, the owner is the process
-    holding the listening socket open: that cannot be satisfied by a process which
-    merely names the path, nor by a recycled pid, which is what makes signalling
-    safe. Elsewhere the worker's command line is matched instead, which is a weaker
-    claim and is therefore only consulted on a host where the exact answer does not
-    exist. Reading the socket rather than the process table also keeps the answer
+    Two sources, strongest first: the process holding the listening socket open
+    where /proc can say so, and the worker's command line where it cannot. Both
+    must be unique. Two owners mean the path was rebound while an older listener is
+    still alive, and no table says which of them is current; the command-line claim
+    can also be satisfied by a process that merely mentions the path. A pid chosen
+    from either ambiguous case could be the wrong process, so ambiguity is reported
+    to the caller as an owner that could not be established rather than guessed at.
+    Reading the socket rather than the process table also keeps the answer
     independent of the accept queue, which is full exactly when a suspended worker
     is not accepting.
     """
-    if _proc_available():
-        return _socket_owner(socket_path)
-    for pid, arguments in _ps_commands():
-        if _names_session_socket(arguments, socket_path):
-            return pid
-    return None
+    owners = _socket_owners(socket_path) if _proc_available() else []
+    if not owners:
+        owners = [
+            pid
+            for pid, arguments in _ps_commands()
+            if _names_session_socket(arguments, socket_path)
+        ]
+    return owners[0] if len(owners) == 1 else None
 
 
 def _bound_socket_inodes(socket_path: Path) -> list[int]:
@@ -375,21 +379,24 @@ def _bound_socket_inodes(socket_path: Path) -> list[int]:
     return found
 
 
-def _socket_owner(socket_path: Path) -> int | None:
-    """The pid holding this socket open, read from /proc.
+def _socket_owners(socket_path: Path) -> list[int]:
+    """Every pid holding this socket open, read from /proc.
 
-    Exact where /proc exists, and deliberately not followed by a command-line
-    guess: an owner that cannot be established must leave the pid unsignalled
-    rather than risk a process that only mentions the path.
+    Exact where /proc exists: the listening socket is one of the worker's own
+    descriptors, so a process that merely mentions the path, or a recycled pid,
+    cannot match. An empty list covers both "nothing holds it" and "this /proc
+    cannot say", which is why callers fall back to the command line rather than
+    concluding that no interpreter is there.
     """
     inodes = _bound_socket_inodes(socket_path)
     if not inodes:
-        return None
+        return []
     wanted = {f"socket:[{inode}]" for inode in inodes}
     try:
         entries = list(Path("/proc").iterdir())
     except OSError:
-        return None
+        return []
+    owners: list[int] = []
     for entry in entries:
         if not entry.name.isdigit():
             continue
@@ -400,10 +407,11 @@ def _socket_owner(socket_path: Path) -> int | None:
         for descriptor in descriptors:
             try:
                 if os.readlink(descriptor) in wanted:
-                    return int(entry.name)
+                    owners.append(int(entry.name))
+                    break
             except OSError:
                 continue
-    return None
+    return owners
 
 
 def _proc_process_state(pid: int) -> str | None:

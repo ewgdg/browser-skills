@@ -37,6 +37,8 @@ If a call reports that the interpreter did not answer, it is suspended or wedged
 
 Confirmation is what makes that safe: the process that may be signalled is the one holding that session's socket open, so neither a recycled pid nor a process that merely mentions the path is killed. A host that cannot identify the process says so instead of signalling an unconfirmed pid, and names the `kill -9 <pid>` command to use instead.
 
+Identification also has to be unique. If two processes are bound to one socket path (an older listener whose socket file was deleted, plus a newer one), or the socket's owner cannot be established at all, nothing is signalled and the command says so: a pid chosen from an ambiguous answer could be the wrong process, and stopping the wrong interpreter is worse than leaving a wedged one for `kill -9 <pid>`.
+
 An interpreter that is busy inside a cell holds the lock that would answer the probe, so it reads as unresponsive exactly like a wedged one; the message says which two states it could be in, and `kill -CONT` keeps the bindings of either.
 
 ## Local development validation

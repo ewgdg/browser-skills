@@ -368,6 +368,68 @@ def test_listener_ignores_a_process_that_merely_names_the_socket():
         decoy.wait(timeout=5)
 
 
+def test_two_listeners_at_one_path_are_not_guessed_between(monkeypatch):
+    """A rebound path has two owners, and the table cannot say which one is current."""
+    monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
+    session_id = session.new_session_id("twins")
+    first = session.run_cell(session_id, "pass", create=True)
+    socket_path = session.session_socket_path(session_id)
+    os.unlink(socket_path)  # the first listener keeps running, unnamed
+    second = session.run_cell(session_id, "pass", create=True)
+    assert second.interpreter_pid != first.interpreter_pid
+    os.kill(second.interpreter_pid, signal.SIGSTOP)
+    try:
+        assert session._listener_pid(socket_path) is None
+        with pytest.raises(session.SessionError, match="could not be identified"):
+            session.kill_session(session_id)
+        # Neither process was signalled: the innocent listener is still there.
+        assert process_state(first.interpreter_pid) is not None
+        assert process_state(second.interpreter_pid) == "T"
+    finally:
+        with contextlib.suppress(OSError):
+            os.kill(second.interpreter_pid, signal.SIGCONT)
+    for pid in (first.interpreter_pid, second.interpreter_pid):
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+        assert wait_for_exit(pid)
+
+
+def test_a_second_process_naming_the_socket_makes_it_ambiguous(monkeypatch):
+    """Without /proc the command line is the only claim, so two claimants prove nothing."""
+    monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(session, "_proc_available", lambda: False)
+    session_id = session.new_session_id("claim")
+    socket_path = session.session_socket_path(session_id)
+    decoy = subprocess.Popen([
+        sys.executable, "-c",
+        "import time; time.sleep(600)  # surf_agent.session worker -m",
+        str(socket_path),
+    ])
+    created = session.run_cell(session_id, "pass", create=True)
+    os.kill(created.interpreter_pid, signal.SIGSTOP)
+    try:
+        assert session._listener_pid(socket_path) is None
+        with pytest.raises(session.SessionError, match="could not be identified"):
+            session.kill_session(session_id)
+        assert decoy.poll() is None
+        assert process_state(created.interpreter_pid) == "T"
+    finally:
+        decoy.kill()
+        decoy.wait(timeout=5)
+        os.kill(created.interpreter_pid, signal.SIGCONT)
+        os.kill(created.interpreter_pid, signal.SIGKILL)
+    assert wait_for_exit(created.interpreter_pid)
+
+
+def test_command_line_identity_is_used_when_proc_cannot_name_the_socket(monkeypatch):
+    """A /proc that cannot say who holds the socket falls back to the one match it finds."""
+    created = create("pass")
+    monkeypatch.setattr(session, "_socket_owners", lambda socket_path: [])
+    socket_path = session.session_socket_path(created.session_id)
+    assert session._listener_pid(socket_path) == created.interpreter_pid
+    assert session.kill_session(created.session_id) is True
+
+
 def test_list_sessions_reports_live_sessions():
     created = create("pass", name="listed", idle_timeout_s=42.0)
     entries = {entry.session_id: entry for entry in session.list_sessions()}
