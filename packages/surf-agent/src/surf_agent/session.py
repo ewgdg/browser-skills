@@ -276,7 +276,9 @@ def _ps_commands() -> Iterator[tuple[int, list[str]]]:
     """The same view on a host without /proc, such as macOS."""
     try:
         listing = subprocess.run(
-            ["ps", "-Ao", "pid=,command="],
+            # -ww disables the width truncation BSD ps applies by default, which
+            # would cut the command line before the socket path it must match.
+            ["ps", "-ww", "-Ao", "pid=,command="],
             capture_output=True,
             text=True,
             timeout=PS_TIMEOUT_S,
@@ -321,28 +323,120 @@ def _names_session_socket(arguments: list[str], socket_path: Path) -> bool:
 
 
 def _listener_pid(socket_path: Path) -> int | None:
-    """The worker process whose command line names this session socket.
+    """The process that owns this session socket.
 
-    Reading the process table keeps the diagnostic independent of the socket's
-    accept queue, which can be full exactly when a suspended worker is not
-    accepting, and it is what makes killing safe: a recycled pid cannot claim this
-    socket's name.
+    Two sources, strongest first. Where /proc exists, the owner is the process
+    holding the listening socket open: that cannot be satisfied by a process which
+    merely names the path, nor by a recycled pid, which is what makes signalling
+    safe. Elsewhere the worker's command line is matched instead, which is a weaker
+    claim and is therefore only consulted on a host where the exact answer does not
+    exist. Reading the socket rather than the process table also keeps the answer
+    independent of the accept queue, which is full exactly when a suspended worker
+    is not accepting.
     """
-    for pid, arguments in _process_commands():
+    if _proc_available():
+        return _socket_owner(socket_path)
+    for pid, arguments in _ps_commands():
         if _names_session_socket(arguments, socket_path):
             return pid
     return None
 
 
-def _process_exists(pid: int) -> bool:
+def _bound_socket_inodes(socket_path: Path) -> list[int]:
+    """Kernel inodes of the sockets bound to this path, read from /proc/net/unix.
+
+    A socket file's own inode is not the number a process reports for its
+    descriptor, so this table is what connects the path to the socket a worker
+    holds open, and therefore to the worker itself. More than one row can name the
+    path, and a row whose inode is zero describes a socket no process holds a
+    descriptor for, so every candidate with an inode is returned instead of the
+    first row that happens to match.
+    """
+    try:
+        listing = Path("/proc/net/unix").read_text(errors="replace")
+    except OSError:
+        return []
+    found: list[int] = []
+    for line in listing.splitlines()[1:]:
+        fields = line.split(None, 7)
+        if len(fields) < 8 or fields[7] != str(socket_path):
+            continue
+        try:
+            inode = int(fields[6])
+        except ValueError:
+            continue
+        if inode:
+            found.append(inode)
+    return found
+
+
+def _socket_owner(socket_path: Path) -> int | None:
+    """The pid holding this socket open, read from /proc.
+
+    Exact where /proc exists, and deliberately not followed by a command-line
+    guess: an owner that cannot be established must leave the pid unsignalled
+    rather than risk a process that only mentions the path.
+    """
+    inodes = _bound_socket_inodes(socket_path)
+    if not inodes:
+        return None
+    wanted = {f"socket:[{inode}]" for inode in inodes}
+    try:
+        entries = list(Path("/proc").iterdir())
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        try:
+            descriptors = list((entry / "fd").iterdir())
+        except OSError:
+            continue
+        for descriptor in descriptors:
+            try:
+                if os.readlink(descriptor) in wanted:
+                    return int(entry.name)
+            except OSError:
+                continue
+    return None
+
+
+def _proc_process_state(pid: int) -> str | None:
+    """The kernel's single-letter state for a pid, where /proc reports one."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_bytes()
+    except OSError:
+        return None
+    try:
+        return raw.rsplit(b") ", 1)[1].split()[0].decode()
+    except (IndexError, ValueError):
+        return None
+
+
+def _process_alive(pid: int) -> bool:
+    """Whether a running process answers to this pid.
+
+    A zombie answers no longer: it has finished and only its exit status is
+    pending, so counting it as alive would make stopping a session look like it
+    failed and would tell the caller to resume a process that is already dead.
+    """
+    try:
+        reaped, _ = os.waitpid(pid, os.WNOHANG)
+    except ChildProcessError:
+        pass  # Not our child: ask the kernel about the pid itself.
+    except OSError:
+        return True
+    else:
+        if reaped == pid:
+            return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
     except OSError:
-        # EPERM: the process exists, it is just not ours to signal.
+        # EPERM: it exists, it is just not ours to signal.
         return True
-    return True
+    return _proc_process_state(pid) not in {"Z", "X"}
 
 
 def _session_id_of(socket_path: Path) -> str:
@@ -389,8 +483,9 @@ def _stalled_error(socket_path: Path, session_id: str, pid: int | None = None) -
     who = f" (pid {pid})" if pid is not None else ""
     resume = f", or keep its bindings with kill -CONT {pid}" if pid is not None else ""
     return SessionError(
-        f"the session interpreter{who} did not answer; stop it with "
-        f"--kill-session {session_id}{resume}"
+        f"the session interpreter{who} did not answer: it is either busy inside a cell "
+        f"that holds it or wedged. Let any cell you started finish first; if nothing is "
+        f"running, stop it with --kill-session {session_id}{resume}"
     )
 
 
@@ -520,17 +615,22 @@ def _start_interpreter(socket_path: Path, idle_timeout_s: float) -> tuple[int, i
 def _stop_interpreter(socket_path: Path, pid: int) -> str:
     """Try to stop the worker that holds this socket path.
 
-    "stopped" means the confirmed worker was signalled, "gone" that no process
-    names the socket any more, and "unconfirmed" that a process lives under this
-    pid but this host cannot tie it to the socket. Only a confirmed worker may be
-    signalled: an unconfirmed pid may have been recycled, so the honest answer is
-    that nothing was stopped.
+    "stopped" means the confirmed worker was signalled and the signal landed,
+    "gone" that no process answers to this pid any more, and "unconfirmed" that a
+    process lives under this pid but this host cannot tie it to the socket, or that
+    the signal was refused. Only a confirmed worker is signalled: an unconfirmed
+    pid may have been recycled, so the honest answer is that nothing was stopped.
     """
     if _listener_pid(socket_path) == pid:
-        with contextlib.suppress(OSError):
+        try:
             os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            return "gone"
+        except OSError:
+            # EPERM and friends: the signal never landed, so nothing was stopped.
+            return "unconfirmed"
         return "stopped"
-    return "unconfirmed" if _process_exists(pid) else "gone"
+    return "unconfirmed" if _process_alive(pid) else "gone"
 
 
 def _wait_for_stop(socket_path: Path, pid: int, timeout_s: float) -> None:
@@ -542,7 +642,7 @@ def _wait_for_stop(socket_path: Path, pid: int, timeout_s: float) -> None:
     """
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        if not socket_path.exists() or not _process_exists(pid):
+        if not socket_path.exists() or not _process_alive(pid):
             break
         time.sleep(0.02)
     _reap_children(wait_s=min(timeout_s, 2.0))
@@ -1172,7 +1272,8 @@ def _print_sessions() -> int:
             where = f"pid {pid}" if pid is not None else "pid unknown"
             resume = f"kill -CONT {pid}" if pid is not None else "resume the process"
             print(
-                f"{entry.session_id}  {where}  unresponsive: it did not answer, so it was kept; "
+                f"{entry.session_id}  {where}  unresponsive: busy in a cell or wedged, so it "
+                f"was kept; "
                 f"resume it ({resume}) or stop it (--kill-session {entry.session_id})"
             )
             continue

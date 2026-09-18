@@ -66,6 +66,14 @@ def isolated_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     if directory.exists():
         for socket_path in directory.glob(f"*{session._SOCKET_SUFFIX}"):
             stop_worker(socket_path)
+    # A worker whose socket file was already removed is still this test's process,
+    # so it is named by its command line instead: a test that fails midway must not
+    # leave interpreters behind for the next run to trip over.
+    for pid, arguments in session._process_commands():
+        command = " ".join(arguments)
+        if str(directory) in command and "surf_agent.session" in command:
+            with contextlib.suppress(OSError):
+                os.kill(pid, signal.SIGKILL)
 
 
 def create(code: str, *, name: str | None = None, idle_timeout_s: float | None = None, **kwargs) -> session.CellResult:
@@ -295,11 +303,15 @@ def test_kill_session_stops_an_interpreter_that_cannot_answer(monkeypatch):
     monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
     created = create("pass")
     os.kill(created.interpreter_pid, signal.SIGSTOP)
+    started = time.monotonic()
     try:
         assert session.kill_session(created.session_id) is True
     finally:
         with contextlib.suppress(OSError):
             os.kill(created.interpreter_pid, signal.SIGCONT)
+    # A stopped worker becomes a zombie until its creator waits for it, and a zombie
+    # must not read as a running interpreter or every stop pays the full timeout.
+    assert time.monotonic() - started < 5.0
     assert wait_for_exit(created.interpreter_pid)
     assert not session.session_socket_path(created.session_id).exists()
 
@@ -333,6 +345,27 @@ def test_listener_is_found_when_proc_is_unavailable(monkeypatch):
     socket_path = session.session_socket_path(created.session_id)
     assert session._listener_pid(socket_path) == created.interpreter_pid
     assert session.kill_session(created.session_id) is True
+
+
+def test_listener_ignores_a_process_that_merely_names_the_socket():
+    """Only the process holding the socket is its listener, not one that mentions it."""
+    session_id = session.new_session_id("decoy")
+    socket_path = session.session_socket_path(session_id)
+    # A debugging invocation that names the module, the worker command and the path
+    # still does not own the socket, and must never be the pid that gets signalled.
+    decoy = subprocess.Popen([
+        sys.executable, "-c",
+        "import time; time.sleep(600)  # surf_agent.session worker -m",
+        str(socket_path),
+    ])
+    try:
+        created = session.run_cell(session_id, "pass", create=True)
+        assert session._listener_pid(socket_path) == created.interpreter_pid
+        assert session.kill_session(session_id) is True
+        assert decoy.poll() is None
+    finally:
+        decoy.kill()
+        decoy.wait(timeout=5)
 
 
 def test_list_sessions_reports_live_sessions():
@@ -464,6 +497,10 @@ def test_cell_that_kills_its_worker_prints_nothing(capfd):
     assert result.stdout == b""
     frames = capfd.readouterr().err
     assert f"--- interpreter {created.interpreter_pid} (cell #2, attached) ---" in frames
+    # A dead worker is not "not stopped": telling an agent to resume a corpse with
+    # kill -CONT is advice it cannot act on.
+    assert "not stopped" not in frames
+    assert "interpreter replaced (worker exited" in frames
 
 
 def test_caller_replaces_a_worker_that_cannot_answer(monkeypatch):
@@ -514,13 +551,50 @@ def test_timeout_that_cannot_confirm_the_pid_is_reported_not_claimed(monkeypatch
     assert wait_for_exit(created.interpreter_pid)
 
 
+def test_a_signal_that_cannot_land_is_not_reported_as_stopped(monkeypatch, capfd):
+    """A kill that failed must not be summarised as a replacement."""
+    monkeypatch.setattr(session, "REPLY_GRACE_S", 0.5)
+    created = create("pass")
+    real_kill = os.kill
+
+    def refuse(pid, number):
+        if pid == created.interpreter_pid and number == signal.SIGKILL:
+            raise PermissionError(1, "not permitted")
+        return real_kill(pid, number)
+
+    outcome: list[session.CellResult] = []
+    thread = threading.Thread(
+        target=lambda: outcome.append(
+            run_in(created.session_id, "import time\ntime.sleep(30)", timeout_s=1.0)
+        )
+    )
+    thread.start()
+    assert wait_for(lambda: process_state(created.interpreter_pid) is not None)
+    time.sleep(0.3)
+    real_kill(created.interpreter_pid, signal.SIGSTOP)
+    monkeypatch.setattr(session.os, "kill", refuse)
+    try:
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+        assert outcome and outcome[0].status == "replaced"
+        assert "not stopped" in capfd.readouterr().err
+    finally:
+        monkeypatch.undo()
+        real_kill(created.interpreter_pid, signal.SIGCONT)
+        real_kill(created.interpreter_pid, signal.SIGKILL)
+    assert wait_for_exit(created.interpreter_pid)
+
+
 def test_stopped_interpreter_is_reported_not_replaced(monkeypatch):
     monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
     created = create("pass")
     os.kill(created.interpreter_pid, signal.SIGSTOP)
     try:
-        with pytest.raises(session.SessionError, match="did not answer"):
+        with pytest.raises(session.SessionError, match="did not answer") as raised:
             run_in(created.session_id, "pass")
+        # Silence has two causes, and the message must not send an agent to kill an
+        # interpreter that is merely busy inside a cell.
+        assert "busy" in str(raised.value)
     finally:
         os.kill(created.interpreter_pid, signal.SIGKILL)
     assert wait_for_exit(created.interpreter_pid)
