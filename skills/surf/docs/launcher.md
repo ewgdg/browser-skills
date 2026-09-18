@@ -18,11 +18,15 @@ lock file and its updates, so `uv.lock` and a managed environment are normal con
 that cache directory, and a new revision updates the one environment instead of adding
 another. A call whose requirement is already installed starts no uv process at all.
 
-Each copy of the skill gets its own project there, named after the skill directory
-(`surf-1f3a9c02`), because a development checkout and an installed skill pin different
-requirements and would otherwise rewrite one environment as the calls alternate. A project
-whose skill directory no longer exists is deleted when the next environment is built, so a
-removed checkout does not leave 140 MB behind.
+The project is named for the skill directory it belongs to: `surf-<digest>`, the first eight
+hex characters of the sha256 of that directory's absolute path - for example `surf-bc19eee9`.
+An installed skill and a development checkout therefore keep separate environments instead
+of rewriting one as calls alternate, and a project whose skill directory no longer exists is
+deleted at the next call.
+
+One environment exists per skill location, and a new requirement updates it in place, so this
+directory does not grow: there is nothing to prune. The revisions themselves live in uv's
+shared cache, which uv manages - `uv cache prune` reclaims cache entries nothing is using.
 
 A session's interpreter is therefore an ordinary persistent one: `sys.executable` in a
 cell points at it, and a worker started from it can still import - or start the browser
