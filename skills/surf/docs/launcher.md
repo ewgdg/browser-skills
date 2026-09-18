@@ -10,18 +10,24 @@ The launcher executes Python directly: file-relative imports, working directory,
 
 ### Runtime environment
 
-The launcher installs that requirement once into an environment keyed by it, under
-`$XDG_CACHE_HOME/surf-agent/envs` (`~/Library/Caches` on macOS; `SURF_AGENT_ENV_DIR` puts
-it elsewhere), and then executes that environment's Python directly. Later calls reuse
-it, so a session's interpreter is an ordinary persistent one: `sys.executable` in a cell
-points at it, and a worker started from it can still import - or start the browser
-bridge - after the call that created the session has exited.
+The launcher keeps one uv project of its own under `$XDG_CACHE_HOME/surf-agent`
+(`~/Library/Caches` on macOS; `SURF_AGENT_ENV_DIR` puts it elsewhere): a small
+`pyproject.toml` pins the requirement, `uv sync` builds and updates the `.venv` inside it,
+and the launcher then executes that interpreter directly. uv owns the environment, its
+lock file and its updates, so `uv.lock` and a managed environment are normal contents of
+that cache directory, and a new revision updates the one environment instead of adding
+another. A call whose requirement is already installed starts no uv process at all.
 
-Each environment is about 140 MB, and every one of them is rebuildable from its
-requirement. A call that builds a new one therefore deletes environments nothing is
-using, and leaves alone any environment named by a running process, which is how a live
-session keeps its interpreter. A rebuilt development wheel keys its own environment,
-because the file's identity is part of the key.
+A session's interpreter is therefore an ordinary persistent one: `sys.executable` in a
+cell points at it, and a worker started from it can still import - or start the browser
+bridge - after the call that created the session has exited. The environment is about
+140 MB. A rebuilt development wheel is declared by digest, so it is installed again
+rather than silently reused.
+
+One consequence of uv owning a single environment: updating the skill updates it in
+place, so a session started under an older revision can see a package that changed
+underneath it. Start a new session after updating the skill, or wait until the sessions
+you care about have ended.
 
 ## Published runtime
 
