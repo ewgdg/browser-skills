@@ -33,7 +33,9 @@ Each session is one socket file in `$XDG_RUNTIME_DIR/surf-agent/` (the state dir
 
 If a call reports that the interpreter did not answer, it is suspended or wedged. Stop it with `--kill-session ID`, which kills an interpreter that cannot answer the shutdown request but keeps a responding one intact, or resume it (`kill -CONT <pid>`) to keep its bindings; browser threads survive either way.
 
-Confirmation is what makes that safe: only a process whose command line names that session's socket may be signalled, so a recycled pid is never killed. A host that cannot identify the process says so instead of signalling an unconfirmed pid, and names the `kill -9 <pid>` command to use instead.
+Confirmation is what makes that safe: the process that may be signalled is the one holding that session's socket open, so neither a recycled pid nor a process that merely mentions the path is killed. A host that cannot identify the process says so instead of signalling an unconfirmed pid, and names the `kill -9 <pid>` command to use instead.
+
+An interpreter that is busy inside a cell holds the lock that would answer the probe, so it reads as unresponsive exactly like a wedged one; the message says which two states it could be in, and `kill -CONT` keeps the bindings of either.
 
 ## Local development validation
 
