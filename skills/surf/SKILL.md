@@ -20,7 +20,7 @@ The reported id is the session's only handle: an id that does not exist is refus
 
 Set `SURF_SKILL` to the absolute directory containing this installed `SKILL.md`, not the working directory. Requires Python 3, `uv`, and Google Chrome; the launcher manages Python dependencies.
 
-The launcher installs the runtime pinned by this skill. If it reports a missing or invalid pin, the skill is incorrectly installed; report that instead of working around it. For dependency failures, read [launcher setup](docs/launcher.md).
+The launcher installs the runtime pinned by this skill once per revision, into a cache directory it reuses and prunes when nothing is using it. If it reports a missing or invalid pin, the skill is incorrectly installed; report that instead of working around it. For dependency failures, read [launcher setup](docs/launcher.md).
 
 Run setup once, or after installation changes:
 

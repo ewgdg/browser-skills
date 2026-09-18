@@ -8,9 +8,27 @@ Read this for dependency or release-installation failures, or deliberate local d
 
 The launcher executes Python directly: file-relative imports, working directory, script arguments, stdin, exceptions and exit codes follow ordinary Python behavior. It does not process inline dependency metadata. Google Chrome is a separate prerequisite; see [Patchright setup](patchright-backend.md#setup-and-selection) for detection and executable overrides.
 
+### Runtime environment
+
+The launcher installs that requirement once into an environment keyed by it, under
+`$XDG_CACHE_HOME/surf-agent/envs` (`~/Library/Caches` on macOS; `SURF_AGENT_ENV_DIR` puts
+it elsewhere), and then executes that environment's Python directly. Later calls reuse
+it, so a session's interpreter is an ordinary persistent one: `sys.executable` in a cell
+points at it, and a worker started from it can still import - or start the browser
+bridge - after the call that created the session has exited.
+
+Each environment is about 140 MB, and every one of them is rebuildable from its
+requirement. A call that builds a new one therefore deletes environments nothing is
+using, and leaves alone any environment named by a running process, which is how a live
+session keeps its interpreter. A rebuilt development wheel keys its own environment,
+because the file's identity is part of the key.
+
 ## Published runtime
 
 `runtime-revision`, beside `SKILL.md`, selects a full 40-character Git commit for the runtime dependency. Users update the skill; the launcher installs its matching runtime.
+
+The pinned requirement is what gets installed into the environment above; there is no
+separate runtime installation to manage, and a new revision builds a new environment.
 
 A missing or invalid pin is an installation defect. Stop and report it, then update or repair the installed skill. If the pinned commit cannot be fetched, report that failure.
 
@@ -54,3 +72,7 @@ PY
 ```
 
 This override bypasses the revision pin and installs the wheel with its Patchright extra. It accepts a wheel, not a source checkout or arbitrary dependency string. Successful local validation does not verify remote installation. Unset `SURF_AGENT_DEPENDENCY` when testing a published pin.
+
+Each rebuilt wheel gets its own environment (the file's modification time and size are
+part of the key), so validation after a rebuild never runs against the previous bytes,
+and the environments it replaces are pruned once nothing is using them.

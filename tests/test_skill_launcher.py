@@ -73,8 +73,14 @@ def test_wheel_is_importable_without_skill_or_cli(tmp_path, local_wheel):
     assert observed["commands"] == []
 
 
+@pytest.fixture(scope="module")
+def environment_dir(tmp_path_factory):
+    """One built runtime environment for the module: one per test would be wasteful."""
+    return tmp_path_factory.mktemp("environments")
+
+
 @pytest.fixture
-def installed_skill(tmp_path, local_wheel):
+def installed_skill(tmp_path, local_wheel, environment_dir):
     skill = tmp_path / "installed skill"
     shutil.copytree(ROOT / "skills/surf", skill, ignore=shutil.ignore_patterns(".*"))
     working = tmp_path / "unrelated project"
@@ -83,6 +89,7 @@ def installed_skill(tmp_path, local_wheel):
     (working / "pyproject.toml").write_text("invalid TOML [")
     env = os.environ.copy()
     env["SURF_AGENT_DEPENDENCY"] = str(local_wheel)
+    env["SURF_AGENT_ENV_DIR"] = str(environment_dir)
     return skill / "scripts/run.py", working, env
 
 
@@ -414,22 +421,135 @@ def test_launcher_rejects_invalid_session_arguments():
         assert launcher.parse_arguments(arguments) is None, arguments
 
 
-def test_release_pin_requests_exact_git_revision_and_extra(installed_skill):
+def test_release_pin_builds_the_environment_from_the_exact_revision(installed_skill, tmp_path):
     launcher, working, env = installed_skill
     revision = "0123456789abcdef0123456789abcdef01234567"
     (launcher.parents[1] / "runtime-revision").write_text(revision)
     env.pop("SURF_AGENT_DEPENDENCY")
-    # Stub only the external installer boundary; no remote commit is implied.
+    env["SURF_AGENT_ENV_DIR"] = str(tmp_path / "pin environments")
+    # Stub only the external installer boundary: it records what it was asked to
+    # install and produces the interpreter the launcher would otherwise have
+    # installed. No remote commit is implied.
+    log = working / "uv.log"
     uv = working / "uv"
-    uv.write_text(f"#!{sys.executable}\nimport sys\nprint(sys.argv[1:])\n")
+    uv.write_text(
+        f"#!{sys.executable}\n"
+        "import pathlib, sys\n"
+        f"pathlib.Path({str(log)!r}).open('a').write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "if sys.argv[1] == 'venv':\n"
+        "    bin_dir = pathlib.Path(sys.argv[-1]) / 'bin'\n"
+        "    bin_dir.mkdir(parents=True, exist_ok=True)\n"
+        "    (bin_dir / 'python').symlink_to(sys.executable)\n"
+    )
     uv.chmod(0o755)
     env["PATH"] = str(working)
     result = subprocess.run(
         [sys.executable, str(launcher), "-"], input="", text=True, capture_output=True,
-        cwd=working, env=env, timeout=10,
+        cwd=working, env=env, timeout=30,
     )
     assert result.returncode == 0, result.stderr
+    invocations = log.read_text()
     assert (
         "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git@"
         "0123456789abcdef0123456789abcdef01234567#subdirectory=packages/surf-agent"
-    ) in result.stdout
+    ) in invocations
+    assert "venv" in invocations and "pip install" in invocations
+
+
+def test_environment_is_built_once_and_reused(installed_skill, tmp_path):
+    launcher, working, env = installed_skill
+    env = {**env, "SURF_AGENT_ENV_DIR": str(tmp_path / "reuse")}
+
+    def invoke():
+        return subprocess.run(
+            [sys.executable, str(launcher), "-"], input="print('ok')", text=True,
+            capture_output=True, cwd=working, env=env, timeout=120,
+        )
+
+    first = invoke()
+    assert first.returncode == 0, first.stderr
+    assert first.stdout == "ok\n"
+    built = sorted((tmp_path / "reuse").iterdir())
+    assert len(built) == 1, built
+    marker = built[0] / ".surf-requirement"
+    installed = marker.stat().st_mtime_ns
+    second = invoke()
+    assert second.returncode == 0, second.stderr
+    # A second call must use the environment it already has, not build another.
+    assert marker.stat().st_mtime_ns == installed
+    assert sorted((tmp_path / "reuse").iterdir()) == built
+
+
+def test_a_rebuilt_wheel_does_not_reuse_the_previous_environment(
+    installed_skill, tmp_path, local_wheel
+):
+    """A development wheel changes in place, so the file's identity is part of the key."""
+    launcher, working, env = installed_skill
+    root = tmp_path / "rebuilt"
+    wheel = tmp_path / "surf_agent-0.1.0-py3-none-any.whl"
+    shutil.copy(local_wheel, wheel)
+
+    def invoke():
+        return subprocess.run(
+            [sys.executable, str(launcher), "-"], input="", text=True, capture_output=True,
+            cwd=working, env={**env, "SURF_AGENT_ENV_DIR": str(root),
+                              "SURF_AGENT_DEPENDENCY": str(wheel)}, timeout=120,
+        )
+
+    assert invoke().returncode == 0
+    first = sorted(root.iterdir())
+    assert len(first) == 1, first
+    os.utime(wheel, (time.time() + 5, time.time() + 5))  # rebuilt at the same path
+    assert invoke().returncode == 0
+    rebuilt = sorted(root.iterdir())
+    assert len(rebuilt) == 2 and rebuilt != first, rebuilt
+
+
+def test_a_changed_requirement_prunes_the_environment_it_replaced(installed_skill, tmp_path, local_wheel):
+    launcher, working, env = installed_skill
+    root = tmp_path / "pruning"
+    wheels = []
+    for name in ("first", "second"):
+        directory = tmp_path / name
+        directory.mkdir()
+        shutil.copy(local_wheel, directory / local_wheel.name)
+        wheels.append(directory / local_wheel.name)
+
+    def invoke(wheel):
+        return subprocess.run(
+            [sys.executable, str(launcher), "-"], input="", text=True, capture_output=True,
+            cwd=working, env={**env, "SURF_AGENT_ENV_DIR": str(root),
+                              "SURF_AGENT_DEPENDENCY": str(wheel)}, timeout=120,
+        )
+
+    assert invoke(wheels[0]).returncode == 0
+    replaced = sorted(root.iterdir())[0]
+    old = time.time() - 600
+    os.utime(replaced, (old, old))  # as if it had been built a while ago
+    assert invoke(wheels[1]).returncode == 0
+    remaining = sorted(root.iterdir())
+    # Disk is bounded by what is in use, not by how often the skill was updated.
+    assert len(remaining) == 1 and remaining[0] != replaced, remaining
+
+
+def test_an_environment_a_live_process_uses_is_not_pruned(installed_skill, tmp_path):
+    launcher, working, env = installed_skill
+    root = tmp_path / "in use"
+    root.mkdir()
+    in_use = root / "in-use"
+    in_use.mkdir()
+    old = time.time() - 600
+    os.utime(in_use, (old, old))
+    sleeper = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)", str(in_use)]
+    )
+    try:
+        result = subprocess.run(
+            [sys.executable, str(launcher), "-"], input="", text=True, capture_output=True,
+            cwd=working, env={**env, "SURF_AGENT_ENV_DIR": str(root)}, timeout=120,
+        )
+        assert result.returncode == 0, result.stderr
+        assert in_use.exists(), "a running session's environment was deleted"
+    finally:
+        sleeper.kill()
+        sleeper.wait(timeout=5)

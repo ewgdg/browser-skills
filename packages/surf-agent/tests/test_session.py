@@ -60,7 +60,6 @@ def stop_worker(socket_path: Path) -> None:
 def isolated_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Keep every test's sockets and worker processes out of the real runtime dir."""
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
-    monkeypatch.delenv(session.WORKER_COMMAND_ENV, raising=False)
     yield
     directory = session.session_socket_dir()
     if directory.exists():
@@ -681,31 +680,11 @@ def test_malformed_hello_reply_is_reported():
 # Worker configuration
 
 
-def test_configured_worker_command_starts_the_interpreter(monkeypatch):
-    bootstrap = (
-        "import sys; from surf_agent.session import main; "
-        "raise SystemExit(main(['worker', *sys.argv[1:]]))"
-    )
-    monkeypatch.setenv(
-        session.WORKER_COMMAND_ENV, json.dumps([sys.executable, "-c", bootstrap])
-    )
-    result = create("print('configured command')")
-    assert result.status == "ok"
-    assert result.stdout == b"configured command\n"
-
-
-def test_invalid_worker_command_is_rejected(monkeypatch):
-    for value in ("not json", json.dumps([]), json.dumps(["python", 3])):
-        monkeypatch.setenv(session.WORKER_COMMAND_ENV, value)
-        with pytest.raises(session.SessionError):
-            create("pass")
-
-
-def test_failing_worker_reports_its_own_output(monkeypatch):
-    monkeypatch.setenv(
-        session.WORKER_COMMAND_ENV,
-        json.dumps([sys.executable, "-c", "import sys; print('boom: cannot start'); sys.exit(3)"]),
-    )
+def test_failing_worker_reports_its_own_output(monkeypatch, tmp_path):
+    failing = tmp_path / "failing worker"
+    failing.write_text("#!/bin/sh\necho 'boom: cannot start'\nexit 3\n")
+    failing.chmod(0o755)
+    monkeypatch.setattr(session.sys, "executable", str(failing))
     with pytest.raises(session.SessionError, match="boom: cannot start"):
         create("pass")
 
