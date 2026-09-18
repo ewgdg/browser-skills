@@ -751,16 +751,24 @@ def test_a_cell_that_closes_its_stream_keeps_what_it_printed():
 
 def test_cell_output_is_capped_like_a_tool_result(capfd):
     """A cell that prints without bound must not buffer an unbounded reply."""
-    count = session.CELL_OUTPUT_MAX_LINES + 500
-    created = create(f"for number in range({count}): print('line', number)")
+    oversize = session.CELL_OUTPUT_MAX_BYTES + 4096
+    created = create(f"import sys\nsys.stdout.write('x' * {oversize})")
     assert created.status == "ok"
-    assert created.stdout.count(b'\n') <= session.CELL_OUTPUT_MAX_LINES + 3  # notice included
     assert len(created.stdout) <= session.CELL_OUTPUT_MAX_BYTES + 200
-    assert b"[Showing lines 1-" in created.stdout
+    assert b"[Showing the first " in created.stdout
     assert b"discarded]" in created.stdout
-    assert "capped at" in capfd.readouterr().err
+    assert f"capped at {session._output_limit_text()}" in capfd.readouterr().err
     # The interpreter is unharmed: only the report to the caller was bounded.
     assert run_in(created.session_id, "print('still here')").stdout == b"still here\n"
+
+
+def test_cell_output_cap_ignores_line_count():
+    """Only bytes are limited: many short lines are the cell's business, not the cap's."""
+    count = 20_000
+    created = create(f"for number in range({count}): print('row', number)")
+    assert created.status == "ok"
+    assert created.stdout.count(b'\n') == count
+    assert b"discarded]" not in created.stdout
 
 
 def test_cell_output_cap_reports_what_it_dropped(capfd):

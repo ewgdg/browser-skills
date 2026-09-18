@@ -87,7 +87,7 @@ A session cell always comes from stdin; run a file without session options for a
 
 Actions and observations are silent; print only useful results. `snapshot().text` is complete. `emit(snapshot)` outputs a numbered observation with explicit BEGIN/END boundaries: full text first, then useful diffs; `full=True` forces full output. Multiple emissions appear in order in the same script output, not separate agent turns. End the script when the next action requires a decision. Read [snapshot semantics](docs/python-api.md#snapshot-output) for the format, baselines or custom sinks.
 
-Cell output is capped like any other tool result: 2000 lines or 50 KB per stream, with a marker saying what was dropped and which stream was capped. A cell that needs more writes a file and reads back what it needs.
+Cell output is capped at 4 MB per stream, with a marker saying what was dropped and which stream was capped; the number of lines is not limited. A cell that needs more writes a file and reads back what it needs.
 
 Pass a Python file or `-` for stdin; subsequent arguments reach `sys.argv`. For large text or JavaScript, read files in Python rather than nesting shell quoting:
 

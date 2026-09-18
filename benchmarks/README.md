@@ -66,8 +66,8 @@ PY
 Cells run sequentially: a second call while one is running is refused immediately. `--ttl SECONDS`
 at creation sets the idle timeout for arms that wait on a human, `--session ID --reset` clears
 participant bindings without replacing the interpreter, and `--kill-session ID` ends the session.
-Cell output is capped like any other tool result (50 KB or 2000 lines per stream, with a marker that
-says what was dropped), and only `print()`/`emit()` reaches the caller: descriptor writes and
+Cell output is capped at 4 MB per stream (bytes only, with a marker that says what was dropped), and
+only `print()`/`emit()` reaches the caller: descriptor writes and
 subprocess output are dropped by design, so an arm that needs more writes a file under `/tmp`.
 
 For turn 4's interpreter-loss injection, run a cell that exceeds its own `--timeout`: the shipped
