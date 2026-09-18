@@ -18,6 +18,12 @@ lock file and its updates, so `uv.lock` and a managed environment are normal con
 that cache directory, and a new revision updates the one environment instead of adding
 another. A call whose requirement is already installed starts no uv process at all.
 
+Each copy of the skill gets its own project there, named after the skill directory
+(`surf-1f3a9c02`), because a development checkout and an installed skill pin different
+requirements and would otherwise rewrite one environment as the calls alternate. A project
+whose skill directory no longer exists is deleted when the next environment is built, so a
+removed checkout does not leave 140 MB behind.
+
 A session's interpreter is therefore an ordinary persistent one: `sys.executable` in a
 cell points at it, and a worker started from it can still import - or start the browser
 bridge - after the call that created the session has exited. The environment is about
@@ -28,6 +34,19 @@ One consequence of uv owning a single environment: updating the skill updates it
 place, so a session started under an older revision can see a package that changed
 underneath it. Start a new session after updating the skill, or wait until the sessions
 you care about have ended.
+
+To keep the environment inside the skill directory instead - a self-contained installation
+that travels with the copy, for example on a machine whose cache is cleaned aggressively -
+set `SURF_AGENT_ENV_DIR` to a path under it, which the shipped `.gitignore` already covers:
+
+```sh
+export SURF_AGENT_ENV_DIR="$SURF_SKILL/.surf-agent/env"
+```
+
+The default keeps it out of the skill directory on purpose: the installer replaces that
+directory when the skill updates, which would delete the environment underneath any session
+still running from it, and a skills directory is configuration that harnesses index and
+users sometimes keep read-only.
 
 ## Published runtime
 

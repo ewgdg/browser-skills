@@ -79,10 +79,16 @@ def environment_dir(tmp_path_factory):
     return tmp_path_factory.mktemp("environments")
 
 
-@pytest.fixture
-def installed_skill(tmp_path, local_wheel, environment_dir):
-    skill = tmp_path / "installed skill"
+@pytest.fixture(scope="module")
+def installed_skill_dir(tmp_path_factory):
+    """One copied installation for the module: the launcher keys its project by copy."""
+    skill = tmp_path_factory.mktemp("install") / "installed skill"
     shutil.copytree(ROOT / "skills/surf", skill, ignore=shutil.ignore_patterns(".*"))
+    return skill
+
+
+@pytest.fixture
+def installed_skill(tmp_path, local_wheel, environment_dir, installed_skill_dir):
     working = tmp_path / "unrelated project"
     working.mkdir()
     # An unrelated project's invalid config must not affect the skill runtime.
@@ -90,7 +96,7 @@ def installed_skill(tmp_path, local_wheel, environment_dir):
     env = os.environ.copy()
     env["SURF_AGENT_DEPENDENCY"] = str(local_wheel)
     env["SURF_AGENT_ENV_DIR"] = str(environment_dir)
-    return skill / "scripts/run.py", working, env
+    return installed_skill_dir / "scripts/run.py", working, env
 
 
 def test_installed_skill_executes_file_with_ordinary_python_semantics(installed_skill):
@@ -444,6 +450,13 @@ def uv_syncs(log: Path) -> int:
         return 0
 
 
+def project_of(root: Path) -> Path:
+    """The single uv project the launcher keeps under an environment root."""
+    projects = [path for path in root.iterdir() if path.is_dir()]
+    assert len(projects) == 1, projects
+    return projects[0]
+
+
 def test_release_pin_builds_the_project_from_the_exact_revision(installed_skill, tmp_path):
     launcher, working, env = installed_skill
     revision = "0123456789abcdef0123456789abcdef01234567"
@@ -458,13 +471,13 @@ def test_release_pin_builds_the_project_from_the_exact_revision(installed_skill,
         cwd=working, env=env, timeout=30,
     )
     assert result.returncode == 0, result.stderr
-    declared = (root / "pyproject.toml").read_text()
+    declared = (project_of(root) / "pyproject.toml").read_text()
     assert (
         "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git@"
         "0123456789abcdef0123456789abcdef01234567#subdirectory=packages/surf-agent"
     ) in declared
     assert uv_syncs(log) == 1
-    assert (root / ".venv" / "bin" / "python").exists()
+    assert (project_of(root) / ".venv" / "bin" / "python").exists()
 
 
 def test_environment_is_built_once_and_reused(installed_skill, tmp_path):
@@ -483,14 +496,15 @@ def test_environment_is_built_once_and_reused(installed_skill, tmp_path):
     first = invoke()
     assert first.returncode == 0, first.stderr
     assert first.stdout == "ok\n"
-    stamp = (root / "installed-requirement").read_text()
+    project = project_of(root)
+    stamp = (project / "installed-requirement").read_text()
     assert stamp.startswith("surf-agent[patchright] @ file://") and "#sha256=" in stamp
     assert uv_syncs(log) == 1
     second = invoke()
     assert second.returncode == 0, second.stderr
     assert second.stdout == "ok\n"
     # A steady-state call starts no uv process at all and changes nothing.
-    assert (root / "installed-requirement").read_text() == stamp
+    assert (project / "installed-requirement").read_text() == stamp
     assert uv_syncs(log) == 1
 
 
@@ -512,13 +526,77 @@ def test_a_rebuilt_wheel_is_installed_again(installed_skill, tmp_path, local_whe
         )
 
     assert invoke().returncode == 0
-    first = (root / "installed-requirement").read_text()
+    project = project_of(root)
+    first = (project / "installed-requirement").read_text()
     with wheel.open("ab") as handle:
         handle.write(b"rebuilt")  # the same path, different bytes
     assert invoke().returncode == 0
     assert uv_syncs(log) == 2
-    assert (root / "installed-requirement").read_text() != first
-    assert (root / ".venv" / "bin" / "python").exists()
+    assert (project / "installed-requirement").read_text() != first
+    assert (project / ".venv" / "bin" / "python").exists()
+
+
+def test_a_second_skill_copy_keeps_its_own_environment(installed_skill, tmp_path, local_wheel):
+    """A checkout and an installation must not rewrite each other's environment."""
+    launcher, working, env = installed_skill
+    root = tmp_path / "shared cache"
+    other_skill = tmp_path / "second copy" / "surf"
+    other_skill.parent.mkdir()
+    shutil.copytree(ROOT / "skills/surf", other_skill, ignore=shutil.ignore_patterns(".*"))
+    log = working / "uv.log"
+    stub_uv(working, log)
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    other_wheel = incoming / local_wheel.name
+    shutil.copy(local_wheel, other_wheel)
+
+    def invoke(skill, wheel):
+        return subprocess.run(
+            [sys.executable, str(skill / "scripts/run.py"), "-"], input="", text=True,
+            capture_output=True, cwd=working, env={**env, "SURF_AGENT_ENV_DIR": str(root),
+                                                    "PATH": str(working),
+                                                    "SURF_AGENT_DEPENDENCY": str(wheel)},
+            timeout=120,
+        )
+
+    assert invoke(launcher.parents[1], local_wheel).returncode == 0
+    assert invoke(other_skill, other_wheel).returncode == 0
+    projects = sorted(path.name for path in root.iterdir() if path.is_dir())
+    assert len(projects) == 2, projects
+    # Each copy keeps the requirement it was built with, instead of taking turns.
+    declared = {
+        (project / "installed-requirement").read_text() for project in root.iterdir()
+    }
+    assert any(local_wheel.as_uri() in text for text in declared), declared
+    assert any(other_wheel.as_uri() in text for text in declared), declared
+
+
+def test_a_project_for_a_deleted_skill_copy_is_discarded(installed_skill, tmp_path):
+    """Deleting a checkout must not leave its 140 MB environment behind."""
+    launcher, working, env = installed_skill
+    root = tmp_path / "discard"
+    root.mkdir()
+    orphan = root / "surf-gone"
+    orphan.mkdir()
+    (orphan / "skill-path").write_text(str(tmp_path / "deleted checkout"))
+    result = subprocess.run(
+        [sys.executable, str(launcher), "-"], input="", text=True, capture_output=True,
+        cwd=working, env={**env, "SURF_AGENT_ENV_DIR": str(root)}, timeout=120,
+    )
+    assert result.returncode == 0, result.stderr
+    assert not orphan.exists()
+    assert project_of(root).name.startswith("installed skill-")
+
+    # A steady-state call cleans up too, not only the call that syncs something.
+    later = root / "surf-removed"
+    later.mkdir()
+    (later / "skill-path").write_text(str(tmp_path / "another deleted checkout"))
+    again = subprocess.run(
+        [sys.executable, str(launcher), "-"], input="", text=True, capture_output=True,
+        cwd=working, env={**env, "SURF_AGENT_ENV_DIR": str(root)}, timeout=120,
+    )
+    assert again.returncode == 0, again.stderr
+    assert not later.exists()
 
 
 def test_a_changed_requirement_updates_the_same_project(installed_skill, tmp_path, local_wheel):
@@ -541,11 +619,12 @@ def test_a_changed_requirement_updates_the_same_project(installed_skill, tmp_pat
         )
 
     assert invoke(wheels[0]).returncode == 0
-    first = (root / "installed-requirement").read_text()
+    project = project_of(root)
+    first = (project / "installed-requirement").read_text()
     assert invoke(wheels[1]).returncode == 0
-    second = (root / "installed-requirement").read_text()
+    second = (project / "installed-requirement").read_text()
     # uv owns one environment: a different revision updates it instead of adding one.
     assert first != second and str(wheels[1]) in second
     assert uv_syncs(log) == 2
-    assert sorted(path.name for path in root.iterdir() if path.is_dir()) == [".venv"]
+    assert project_of(root) == project
 

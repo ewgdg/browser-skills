@@ -38,6 +38,7 @@ PYTHON_REQUEST = "3.11"
 PROJECT_FILE = "pyproject.toml"
 LOCK_FILE = "uv.lock"
 INSTALLED_STAMP = "installed-requirement"
+SKILL_PATH_STAMP = "skill-path"
 ENVIRONMENT_DIR_ENV = "SURF_AGENT_ENV_DIR"
 PROJECT_TEMPLATE = """\
 # Written by the Surf launcher: it owns the environment in .venv, do not edit.
@@ -77,7 +78,7 @@ def dependency_requirement() -> str | None:
 
 
 def environment_root() -> Path:
-    """The directory holding the runtime environment uv manages for this skill.
+    """The directory holding the environments uv manages for installed skills.
 
     A cache rather than a state directory: it is rebuildable from the requirement, so
     losing it costs one install and never data. `SURF_AGENT_ENV_DIR` moves it.
@@ -91,6 +92,40 @@ def environment_root() -> Path:
         cache_home = os.environ.get("XDG_CACHE_HOME")
         base = Path(cache_home).expanduser() if cache_home else Path.home() / ".cache"
     return base / "surf-agent"
+
+
+def project_root() -> Path:
+    """The uv project belonging to this copy of the skill.
+
+    One environment per skill copy, not per machine: a development checkout and an
+    installed skill pin different requirements, and a shared environment would have
+    them rewriting each other's 140 MB on every alternation. The name stays readable
+    and the digest keeps two copies with the same directory name apart.
+    """
+    skill = Path(__file__).resolve().parents[1]
+    digest = hashlib.sha256(str(skill).encode()).hexdigest()[:8]
+    return environment_root() / f"{skill.name}-{digest}"
+
+
+def _discard_projects_of_missing_skills(root: Path, keep: Path) -> None:
+    """Delete environments whose recorded skill copy no longer exists.
+
+    Only a project that named a path now gone is removed, so a deleted worktree does
+    not leave 140 MB behind and a live copy's environment is never touched.
+    """
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return
+    for entry in entries:
+        if entry == keep or not entry.is_dir():
+            continue
+        try:
+            recorded = (entry / SKILL_PATH_STAMP).read_text()
+        except OSError:
+            continue  # not one of ours, or a build another call is still finishing
+        if not Path(recorded).is_dir():
+            shutil.rmtree(entry, ignore_errors=True)
 
 
 def declared_requirement(requirement: str) -> str:
@@ -129,14 +164,16 @@ def ensure_environment(uv: str, requirement: str) -> Path | None:
 
     Built once and then reused by every later call, including the session workers
     that outlive the launcher: uv owns the project directory, its lock file and the
-    virtual environment inside it, so a new revision updates one environment instead
-    of accumulating them. Returns None after reporting why it could not be prepared.
+    virtual environment inside it, so a new revision updates this copy's environment
+    instead of accumulating them. Returns None after reporting why it could not be
+    prepared.
     """
-    project = environment_root()
+    project = project_root()
     python = project / ".venv" / "bin" / "python"
     declared = declared_requirement(requirement)
     if python.exists() and _installed_requirement(project) == declared:
         # Nothing to do: a steady-state call starts no uv process at all.
+        _discard_projects_of_missing_skills(project.parent, project)
         return python
     try:
         project.mkdir(parents=True, exist_ok=True)
@@ -158,9 +195,11 @@ def ensure_environment(uv: str, requirement: str) -> Path | None:
         return None
     try:
         (project / INSTALLED_STAMP).write_text(declared)
+        (project / SKILL_PATH_STAMP).write_text(str(Path(__file__).resolve().parents[1]))
     except OSError as exc:
         print(f"surf: could not record the installed runtime: {exc}", file=sys.stderr)
         return None
+    _discard_projects_of_missing_skills(project.parent, project)
     return python
 
 

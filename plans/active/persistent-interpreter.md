@@ -140,6 +140,7 @@ Treat that as a harness/wording defect to fix, not a verdict on persistence.
 - [x] Output and backstop corrections: a cell that closes its own stream keeps what it wrote, and an unconfirmed pid is reported rather than assumed dead (`packages/surf-agent/tests/test_session.py`).
 - [x] Persistent runtime environment: one requirement-keyed environment per revision, pruned when unused, and no uv process per session (`skills/surf/scripts/run.py`, `tests/test_skill_launcher.py`).
 - [x] Runtime environment left to uv: one project under the cache directory, synced by `uv sync` and updated in place when the pin changes, with no uv process in a session and none in a steady-state call (`skills/surf/scripts/run.py`, `tests/test_skill_launcher.py`).
+- [x] One project per skill copy, named after the skill directory, with projects whose skill directory is gone deleted at the next build: a development checkout and an installed skill no longer take turns rewriting one environment.
 
 ## References
 
