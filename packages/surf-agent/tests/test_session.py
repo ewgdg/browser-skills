@@ -394,9 +394,10 @@ def test_two_listeners_at_one_path_are_not_guessed_between(monkeypatch):
 
 
 def test_a_second_process_naming_the_socket_makes_it_ambiguous(monkeypatch):
-    """Without /proc the command line is the only claim, so two claimants prove nothing."""
+    """A command line can be claimed by more than one process, so it proves nothing."""
     monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
     monkeypatch.setattr(session, "_proc_available", lambda: False)
+    monkeypatch.setattr(session, "_lsof_socket_owners", lambda socket_path: [])
     session_id = session.new_session_id("claim")
     socket_path = session.session_socket_path(session_id)
     decoy = subprocess.Popen([
@@ -408,6 +409,7 @@ def test_a_second_process_naming_the_socket_makes_it_ambiguous(monkeypatch):
     os.kill(created.interpreter_pid, signal.SIGSTOP)
     try:
         assert session._listener_pid(socket_path) is None
+        assert session._candidate_pid(socket_path) is None
         with pytest.raises(session.SessionError, match="could not be identified"):
             session.kill_session(session_id)
         assert decoy.poll() is None
@@ -420,13 +422,78 @@ def test_a_second_process_naming_the_socket_makes_it_ambiguous(monkeypatch):
     assert wait_for_exit(created.interpreter_pid)
 
 
-def test_command_line_identity_is_used_when_proc_cannot_name_the_socket(monkeypatch):
-    """A /proc that cannot say who holds the socket falls back to the one match it finds."""
+def test_lsof_identity_is_used_when_proc_cannot_answer(monkeypatch):
+    """A host without /proc still has an exact source where lsof is installed."""
     created = create("pass")
-    monkeypatch.setattr(session, "_socket_owners", lambda socket_path: [])
+    monkeypatch.setattr(session, "_proc_socket_owners", lambda socket_path: [])
     socket_path = session.session_socket_path(created.session_id)
     assert session._listener_pid(socket_path) == created.interpreter_pid
     assert session.kill_session(created.session_id) is True
+
+
+def test_a_command_line_match_is_reported_but_never_signalled(monkeypatch):
+    """Only provable ownership may be signalled; a weaker claim is handed to the caller."""
+    monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
+    created = create("pass")
+    monkeypatch.setattr(session, "_proc_socket_owners", lambda socket_path: [])
+    monkeypatch.setattr(session, "_lsof_socket_owners", lambda socket_path: [])
+    socket_path = session.session_socket_path(created.session_id)
+    os.kill(created.interpreter_pid, signal.SIGSTOP)
+    try:
+        assert session._listener_pid(socket_path) is None
+        assert session._candidate_pid(socket_path) == created.interpreter_pid
+        with pytest.raises(session.SessionError, match="could not be identified"):
+            session.kill_session(created.session_id)
+        # The candidate was named, not killed: it is still the stopped interpreter.
+        assert process_state(created.interpreter_pid) == "T"
+    finally:
+        os.kill(created.interpreter_pid, signal.SIGCONT)
+        os.kill(created.interpreter_pid, signal.SIGKILL)
+    assert wait_for_exit(created.interpreter_pid)
+
+
+def test_lsof_field_output_is_parsed_for_the_exact_path(monkeypatch, tmp_path):
+    """One entry per pid, an exact path match, and the Linux type suffix ignored."""
+    stub = tmp_path / "lsof"
+    stub.write_text(
+        "#!/bin/sh\n"
+        'path="$6"\n'
+        "echo p4242\n"
+        "echo cpython\n"
+        "echo f3\n"
+        'echo "n$path type=STREAM"\n'
+        "echo f4\n"
+        'echo "n$path"\n'
+        "echo p4243\n"
+        "echo csleeper\n"
+        "echo f9\n"
+        "echo n/different.sock\n"
+        "echo p4244\n"
+        "echo cpython\n"
+        "echo f2\n"
+        'echo "n$path"\n'
+    )
+    stub.chmod(0o755)
+    # Prepend rather than replace: the stub shadows the real tool, and its own
+    # commands still resolve.
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    assert session._lsof_socket_owners(Path("/tmp/session.sock")) == [4242, 4244]
+
+
+def test_process_state_comes_from_ps_without_proc(monkeypatch, tmp_path):
+    """A zombie must read as finished even where /proc cannot say so."""
+    state = tmp_path / "state"
+    state.write_text("Z\n")
+    stub = tmp_path / "ps"
+    stub.write_text(f"#!/bin/sh\ncat {state}\n")
+    stub.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:{os.environ['PATH']}")
+    monkeypatch.setattr(session, "_proc_available", lambda: False)
+    assert session._process_alive(os.getpid()) is False
+    state.write_text("S\n")
+    assert session._process_alive(os.getpid()) is True
+    state.write_text("\n")  # ps prints no row: there is no such process
+    assert session._process_alive(os.getpid()) is False
 
 
 def test_list_sessions_reports_live_sessions():

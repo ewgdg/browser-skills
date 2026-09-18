@@ -328,26 +328,19 @@ def _names_session_socket(arguments: list[str], socket_path: Path) -> bool:
 
 
 def _listener_pid(socket_path: Path) -> int | None:
-    """The process that owns this session socket, when exactly one does.
+    """The process that owns this session socket, when exactly one provably does.
 
-    Two sources, strongest first: the process holding the listening socket open
-    where /proc can say so, and the worker's command line where it cannot. Both
-    must be unique. Two owners mean the path was rebound while an older listener is
-    still alive, and no table says which of them is current; the command-line claim
-    can also be satisfied by a process that merely mentions the path. A pid chosen
-    from either ambiguous case could be the wrong process, so ambiguity is reported
-    to the caller as an owner that could not be established rather than guessed at.
-    Reading the socket rather than the process table also keeps the answer
-    independent of the accept queue, which is full exactly when a suspended worker
-    is not accepting.
+    Ownership comes from the kernel's own record of the socket - /proc where that
+    exists, lsof where it does not - and it has to be unique. Two owners mean the
+    path was rebound while an older listener is still alive, and no source says
+    which of them is current. A pid chosen from an ambiguous answer could be the
+    wrong process, so the caller is told nothing rather than a guess; the
+    command-line claim in `_candidate_pid` is reported but never acted on. Reading
+    the socket rather than the process table also keeps the answer independent of
+    the accept queue, which is full exactly when a suspended worker is not
+    accepting.
     """
-    owners = _socket_owners(socket_path) if _proc_available() else []
-    if not owners:
-        owners = [
-            pid
-            for pid, arguments in _ps_commands()
-            if _names_session_socket(arguments, socket_path)
-        ]
+    owners = _exact_owners(socket_path)
     return owners[0] if len(owners) == 1 else None
 
 
@@ -379,7 +372,73 @@ def _bound_socket_inodes(socket_path: Path) -> list[int]:
     return found
 
 
-def _socket_owners(socket_path: Path) -> list[int]:
+def _exact_owners(socket_path: Path) -> list[int]:
+    """Pids provably holding this socket open, from the sources this host offers."""
+    if _proc_available():
+        owners = _proc_socket_owners(socket_path)
+        if owners:
+            return owners
+    return _lsof_socket_owners(socket_path)
+
+
+def _candidate_pid(socket_path: Path) -> int | None:
+    """The one process whose command line names this socket, for messages only.
+
+    A weaker claim than ownership: a python process that merely mentions the path
+    satisfies it. It is worth reporting because it is often the only pid a host can
+    offer, and it is never signalled, because a pid chosen from it could be an
+    innocent process.
+    """
+    matches = [
+        pid
+        for pid, arguments in _ps_commands()
+        if _names_session_socket(arguments, socket_path)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _lsof_socket_owners(socket_path: Path) -> list[int]:
+    """Every pid lsof reports for this socket path, where lsof is installed.
+
+    lsof names a socket from the kernel's own record of it, so this is still an
+    exact claim rather than a guess, and it is the source for a host without /proc
+    - macOS ships it - and for a /proc that cannot answer. Its diagnostics go to
+    stderr and are ignored: an unreadable mount somewhere else on the machine is
+    not this call's business.
+    """
+    try:
+        listing = subprocess.run(
+            # -a ANDs the socket selection with the name selection, and -F asks for
+            # pid, command, descriptor and name fields rather than the table, which
+            # differs between the Linux and BSD builds.
+            ["lsof", "-a", "-U", "-F", "pcfn", "--", str(socket_path)],
+            capture_output=True,
+            text=True,
+            timeout=PS_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if listing.returncode not in (0, 1):  # 1 is lsof's "nothing matched"
+        return []
+    owners: list[int] = []
+    pid: int | None = None
+    for line in listing.stdout.splitlines():
+        if not line:
+            continue
+        tag, value = line[0], line[1:]
+        if tag == "p":
+            try:
+                pid = int(value)
+            except ValueError:
+                pid = None
+        elif tag == "n" and pid is not None:
+            # The Linux build appends the socket type to the name: `… type=STREAM`.
+            if value.split(" type=", 1)[0] == str(socket_path) and pid not in owners:
+                owners.append(pid)
+    return owners
+
+
+def _proc_socket_owners(socket_path: Path) -> list[int]:
     """Every pid holding this socket open, read from /proc.
 
     Exact where /proc exists: the listening socket is one of the worker's own
@@ -426,6 +485,26 @@ def _proc_process_state(pid: int) -> str | None:
         return None
 
 
+def _ps_process_state(pid: int) -> str | None:
+    """The state column `ps` prints for a pid, where /proc cannot answer.
+
+    Only the first character is comparable across platforms - `U` on macOS and `D`
+    on FreeBSD and Linux both mean an uninterruptible wait - while `Z` is a zombie
+    everywhere. An empty string means `ps` has no such process.
+    """
+    try:
+        listing = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=PS_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    rows = [line.strip() for line in listing.stdout.splitlines() if line.strip()]
+    return rows[0] if rows else ""
+
+
 def _process_alive(pid: int) -> bool:
     """Whether a running process answers to this pid.
 
@@ -449,7 +528,14 @@ def _process_alive(pid: int) -> bool:
     except OSError:
         # EPERM: it exists, it is just not ours to signal.
         return True
-    return _proc_process_state(pid) not in {"Z", "X"}
+    state = _proc_process_state(pid) if _proc_available() else _ps_process_state(pid)
+    if state is None:
+        # This host cannot tell a zombie from a live process; saying "alive" keeps the
+        # caller from reporting a stop that may not have happened.
+        return True
+    if not state:
+        return False
+    return state[0] not in {"Z", "X"}
 
 
 def _session_id_of(socket_path: Path) -> str:
@@ -480,7 +566,8 @@ def _probe(socket_path: Path, timeout_s: float) -> _Probe:
         return _Probe("live", _exchange(socket_path, {"op": "hello"}, timeout_s), None, "ok", "")
     except _InterpreterGone as exc:
         if exc.stalled:
-            return _Probe("wedged", None, _listener_pid(socket_path), exc.kind, str(exc))
+            owner = _listener_pid(socket_path) or _candidate_pid(socket_path)
+            return _Probe("wedged", None, owner, exc.kind, str(exc))
         return _Probe("gone", None, None, exc.kind, str(exc))
 
 
@@ -492,7 +579,7 @@ def _live_reply_quietly(socket_path: Path, timeout_s: float) -> dict[str, Any] |
 
 def _stalled_error(socket_path: Path, session_id: str, pid: int | None = None) -> SessionError:
     if pid is None:
-        pid = _listener_pid(socket_path)
+        pid = _listener_pid(socket_path) or _candidate_pid(socket_path)
     who = f" (pid {pid})" if pid is not None else ""
     resume = f", or keep its bindings with kill -CONT {pid}" if pid is not None else ""
     return SessionError(
