@@ -27,11 +27,13 @@ idle_timeout_s: 1800
 
 `run.py --session ID -` runs the next cell in that interpreter, `--session ID --reset` discards its bindings without replacing it, and `--timeout SECONDS` bounds a cell (default 300). Ids are opaque: a call naming a session that does not exist is refused with the live list rather than starting a new interpreter.
 
-A session ends when it has been idle for `--ttl` seconds (default 1800), measured between cells, so a running cell is never cut by it, or when `run.py --kill-session ID` stops it. `run.py --list-sessions` prints each live session with its interpreter pid, cell count, idle time, timeout and working directory.
+A session ends when it has been idle for `--ttl` seconds (default 1800), measured between cells, so a running cell is never cut by it, or when `run.py --kill-session ID` stops it. `run.py --list-sessions` prints each live session with its interpreter pid, cell count, idle time, timeout and working directory; an interpreter that does not answer is listed as unresponsive rather than swept away, because it may still be resumed and must stay stoppable by the id that names it.
 
 Each session is one socket file in `$XDG_RUNTIME_DIR/surf-agent/` (the state directory when `XDG_RUNTIME_DIR` is unset); that file is the whole session record. The interpreter keeps the environment, working directory and Python bindings of the call that created it, runs cells sequentially, and points its own stdout and stderr at `/dev/null`: cell output travels over the socket, so only `print()` and `emit()` reach the caller. Raw file-descriptor writes, subprocess output, and anything written after the interpreter dies are dropped.
 
-If a call reports that the interpreter did not answer, it is suspended or wedged. Stop it with `--kill-session ID`, or resume it (`kill -CONT <pid>`) to keep its bindings; browser threads survive either way.
+If a call reports that the interpreter did not answer, it is suspended or wedged. Stop it with `--kill-session ID`, which kills an interpreter that cannot answer the shutdown request but keeps a responding one intact, or resume it (`kill -CONT <pid>`) to keep its bindings; browser threads survive either way.
+
+Confirmation is what makes that safe: only a process whose command line names that session's socket may be signalled, so a recycled pid is never killed. A host that cannot identify the process says so instead of signalling an unconfirmed pid, and names the `kill -9 <pid>` command to use instead.
 
 ## Local development validation
 

@@ -12,7 +12,9 @@ Run Python through `scripts/run.py`. Named browser threads persist between calls
 - **Fresh interpreter** — `run.py FILE|-` starts a new interpreter for that call. Import and initialize handles each time; write intermediate data to files when a later call needs it.
 - **Session** — `run.py --new-session -` creates an interpreter and reports its id; later cells pass `--session ID` and reuse variables, helpers and data. Sessions end when idle for their timeout (default 1800 s), or with `--kill-session ID`; `--list-sessions` shows what is live.
 
-Choose one mode per task. Multi-step work that repeatedly inspects the same page benefits from a session; a one-shot script does not need one. Keep the reported id with the task, because an id that does not exist is refused rather than started. Cells run sequentially: a second cell while one is running fails immediately instead of queueing.
+Choose one mode per task. Multi-step work that repeatedly inspects the same page benefits from a session; a one-shot script does not need one. Cells run sequentially: a second cell while one is running fails immediately instead of queueing.
+
+The reported id is the session's only handle: an id that does not exist is refused rather than started, so keep it with the task and reuse only ids this task created. Another task's interpreter holds its own bindings and emission baseline, so attaching to it yields diffs against observations this task never received. If the id is lost, `--list-sessions` lists the live sessions with their working directory, and a task that waits on a human should create its session with a longer `--ttl`.
 
 ## Prepare
 
@@ -81,7 +83,7 @@ thread.emit(thread.snapshot())
 PY
 ```
 
-A session cell always comes from stdin; run a file without session options for an ordinary script. `--ttl SECONDS` at creation sets how long the session may stay idle, and `--kill-session ID` stops it early.
+A session cell always comes from stdin; run a file without session options for an ordinary script. `--ttl SECONDS` at creation sets how long the session may stay idle, and `--kill-session ID` stops it early, including an interpreter that stopped answering.
 
 Actions and observations are silent; print only useful results. `snapshot().text` is complete. `emit(snapshot)` outputs a numbered observation with explicit BEGIN/END boundaries: full text first, then useful diffs; `full=True` forces full output. Multiple emissions appear in order in the same script output, not separate agent turns. End the script when the next action requires a decision. Read [snapshot semantics](docs/python-api.md#snapshot-output) for the format, baselines or custom sinks.
 
@@ -105,7 +107,9 @@ For manual login, close Surf automation windows and call `Browser().open_profile
 
 After timeout or connection loss, inspect the same named thread before deciding whether to repeat an action: submissions, purchases, or messages may already have taken effect.
 
-A cell that exceeds `--timeout SECONDS` (default 300) destroys the session interpreter: the call reports the replacement, the id stops existing, and the failed cell's side effects are unknown. The browser thread survives. Create a session again with `--new-session`, reattach with `Thread(name)`, emit a full observation, and inspect before repeating anything; a new handle has no baseline, so its first emission is full. `--session ID --reset` discards bindings without replacing the interpreter or the id. If a call reports an interpreter that did not answer, stop it with `--kill-session ID` and continue; the browser thread survives.
+A cell that exceeds `--timeout SECONDS` (default 300) destroys the session interpreter: the call reports the replacement, the id stops existing, and the failed cell's side effects are unknown. The browser thread survives. Create a session again with `--new-session`, reattach with `Thread(name)`, emit a full observation, and inspect before repeating anything; a new handle has no baseline, so its first emission is full. `--session ID --reset` discards bindings without replacing the interpreter or the id.
+
+An interpreter that did not answer is suspended or wedged rather than absent: it still holds the session's bindings, so it is never replaced silently. `--list-sessions` keeps it and marks it unresponsive, and `--kill-session ID` stops it. If a call reports that the interpreter could not be identified, stop that pid yourself; a host that cannot prove which process owns the socket does not signal one. The browser thread survives either way.
 
 `is_open()` checks without creating a page, but false can also mean the bridge is unavailable. Reopen only when absence is established and navigation is safe. For a persistently unavailable bridge, use `Browser().stop_bridge()`; the next browser action restarts it. Restarting does not make replay safe.
 

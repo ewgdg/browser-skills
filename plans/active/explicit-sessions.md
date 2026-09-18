@@ -23,7 +23,7 @@ The interpreter already existed; the complexity came from how sessions were addr
 - `--new-session [--name SLUG] [--ttl SECONDS] -` creates an interpreter and appends a `--- BEGIN session metadata ---` … `--- END session metadata ---` block to stdout as the final output of that call. Later calls print no metadata at all.
 - `--session ID -` reuses exactly that interpreter. An unknown id is an error listing live sessions: no implicit creation, no bare-name reuse, so a typo cannot silently start a fresh interpreter.
 - **TTL**: idle timeout measured between cells. A running cell is never interrupted by it — that is `--timeout`'s job. Default `DEFAULT_SESSION_IDLE_TIMEOUT_S` = 1800, overridable per session at creation.
-- `--kill-session ID` kills immediately. A cell in flight dies with it and its side effects are unknown, exactly as with a timeout.
+- `--kill-session ID` kills immediately. A cell in flight dies with it and its side effects are unknown, exactly as with a timeout. An interpreter that cannot answer the shutdown request is killed instead of refusing to stop, and an interpreter that cannot be identified on this host is reported rather than signalled.
 - `--list-sessions` prints live sessions with id, pid, started, idle for, and working directory. The directory is how an agent recognises its own session after losing the id from context, and it needs no ancestry.
 - The socket files in `$XDG_RUNTIME_DIR/surf-agent` are the registry; listing is a directory scan that skips stale entries by liveness. No separate state file.
 - **One grammar.** `run.py` owns the command-line grammar and hands the runtime a validated JSON request (`python -m surf_agent.session run JSON`, cell source on stdin). The runtime parses no user-facing options of its own, only its internal `worker` spawn target, so the flags cannot drift into two copies that disagree.
@@ -36,7 +36,7 @@ The interpreter already existed; the complexity came from how sessions were addr
 1. **Id format**: `<slug>-<8 hex>` when `--name` is passed, else `<8 hex>`. Ids are opaque; only ids that exist are accepted.
 2. **TTL default 1800 s**, per-session override. Rationale: 35.5 MB measured per live interpreter, so an idle session should not outlive a task by much, while a human handoff inside one task should survive. Shorter favours memory, longer favours handoffs.
 3. **Discovery is required** (`--list-sessions`), because an opaque id cannot be re-derived from memory the way a name could. Working directory plus idle time is the identification hint.
-4. **Kill is immediate and documented as such**; clean shutdown removes the socket, and the listing skips sockets with no listener.
+4. **Kill is immediate and documented as such**; clean shutdown removes the socket, and the listing skips sockets with no listener. A socket that is bound but silent belongs to a live interpreter, so it keeps its name and is listed as unresponsive: only a refused connection proves nothing is listening.
 5. **One metadata block, create call only**: the id is reported once, as a delimited key-value block appended to stdout at the end of the create call. No later call and no stderr frame repeats it.
 6. **No session log file, and no other artifact.** The worker's stdout and stderr start on a pipe the launcher owns and drains during the readiness window, then point at `/dev/null` once the interpreter is listening.
 
@@ -101,7 +101,7 @@ Neither is worth a file:
 
 ## Risks
 
-- **Lost id** (context compaction, a long interruption): loud — `unknown session` plus a live list — and the cost is rebuilding state, never contamination. The id is reported once, in the create call's metadata block; `--list-sessions` is the recovery path, and a long task should write the id next to its notes.
+- **Lost id** (context compaction, a long interruption): loud — `unknown session` plus a live list — and the cost is rebuilding state. The id is reported once, in the create call's metadata block; `--list-sessions` is the recovery path, matching on the task's name and working directory, and a long task should write the id next to its notes. Adopting an id this task did not create is the one surviving contamination path, because the interpreter behind it holds another task's bindings and emission baseline, so the skill states the rule rather than leaving it to the listing.
 - **TTL expiry during a human handoff**: the recovery cell covers it, at the cost of one cell. `--ttl` exists for tasks that involve a human.
 - **Leak bounded by TTL rather than by owner death**: a crashed agent leaves one interpreter until it idles out. Accepted, bounded and measured.
 - **fd-level output is discarded**: subprocess output and raw fd writes no longer reach the agent or a file. Documented, and the deliberate cost of dropping the log; the deferred alternative is capturing fd writes into the cell's output, which risks flooding a tool result when a cell shells out.
@@ -119,12 +119,16 @@ If TTL expiry or a lost id is observed to cost real re-derivation in practice, t
 - [x] Tests: `packages/surf-agent/tests/test_session.py` (36 tests) and `tests/test_skill_launcher.py`; full suite 293 passed, 4 skipped.
 - [x] Docs updated: `skills/surf/SKILL.md`, `skills/surf/docs/launcher.md`, `README.md`, and the session-addressing bullets in `plans/active/persistent-interpreter.md`.
 - [x] Runtime pin updated to `a81b446` and pushed (`a8d47f0`); a copied install resolved the pinned revision and ran `--new-session` with no dependency override.
+- [x] Wedged-interpreter recovery: attach refuses a silent interpreter, `--kill-session` kills it, `--list-sessions` lists it as unresponsive and keeps its socket, and the process table is read through `ps` where `/proc` is absent.
 
 ## Surprises and discoveries
 
 - A stop request is handled on its own thread, so the accept loop must check the stopping flag on its timeout path as well: the first implementation cleared it only where a connection had just been accepted, and a stopped worker then lived until its idle timeout. The kill test caught it.
 - A worker from an earlier runtime answers hello without the new fields. `--list-sessions` ignores such interpreters with a frame on stderr and `--kill-session` refuses them with an explanation rather than pretending they are absent, which matters only during the transition but would otherwise hide a live process.
 - A worker that exits stays a zombie until its creator reaps it. The launcher is a one-shot process, so init reaps it, but a long-lived process that creates sessions accumulates one zombie per session. Measured directly: three created sessions, killed, all three left as zombies of the creating process. Every entry point now reaps finished workers, and `--kill-session` waits for the exit so "stopped" means the process is gone.
+- "Cannot answer" and "nothing is listening" are different facts, and the first implementation treated both as stale: a listing unlinked the socket of a suspended worker, which then had no name left to resume or stop while its process kept running. The listing now distinguishes a refused connection from silence, and only the refused case is swept.
+- The recovery message was circular: `--kill-session` probed with the same hello call that raised the stalled error, so the command the error recommended failed with the error that recommended it, and only a manual `kill` by pid worked. Verified by suspending a worker and running both. Kill now escalates, and the message names `kill -CONT` for the caller who wants the bindings kept.
+- A pid-based kill is only safe while the pid can be tied to the socket, and gating that on `/proc` alone made the timeout backstop a silent no-op off Linux while still reporting "interpreter replaced". The identity check now falls back to `ps`, and an unconfirmable pid is left alone with the call saying so instead of claiming the interpreter died.
 
 - Streams: pi's bash tool documents that it returns stdout and stderr, and this session's exec tool merges them into one field, but their relative order is not stable — the same shape of command produced stderr-first once and chronological interleaving another time. Labelled values survive that; positional ones do not.
 

@@ -89,7 +89,7 @@ Rules:
 The seam lives in `packages/surf-agent/src/surf_agent/session.py` (worker plus client protocol); the agent-facing path is `skills/surf/scripts/run.py`.
 
 - **Session addressing belongs to `plans/active/explicit-sessions.md`.** The launcher owns the command-line grammar and hands the runtime one JSON request; session cells always come from stdin, exactly like `run.py -`, and a file argument is rejected because it would silently change `__file__`, `sys.path[0]` and relative imports.
-- **Deadline enforcement is in the interpreter, not only the caller.** The worker starts a timer for the cell it is running and exits when it fires, so an interrupted or killed caller cannot leave a session stuck busy. The caller waits for the reply with a grace period and kills the recorded pid as a backstop when native code blocks the worker's own timer. Both paths report the same replacement contract.
+- **Deadline enforcement is in the interpreter, not only the caller.** The worker starts a timer for the cell it is running and exits when it fires, so an interrupted or killed caller cannot leave a session stuck busy. The caller waits for the reply with a grace period and kills the recorded pid as a backstop when native code blocks the worker's own timer; when this host cannot confirm that the pid still owns the socket, nothing is signalled and the call reports an interpreter that was not stopped rather than claiming a replacement. Both paths report the same replacement contract.
 - **Framing goes to stderr; cell bytes go to stdout/stderr.** A cell's `print()`/`emit()` output is relayed verbatim on stdout, its traceback on stderr, and launcher frames (identity, cell counter, created-vs-attached, replacement) on stderr, so stdout stays ordinary script output.
 - **Cell output is captured per cell and relayed as bytes.** Python-level `sys.stdout`/`sys.stderr` are proxied through a byte buffer so binary writes survive; output is delivered only with the completed reply, so a cell that dies mid-execution prints nothing, as the replay contract requires.
 - **The worker is started by the launcher's own dependency command.** Under `uv run --with`, `sys.executable` points into a temporary environment that uv deletes when its caller exits, so a detached worker could not start the Patchright bridge from a later cell. `run.py` passes its resolved command through `SURF_SESSION_WORKER_COMMAND`; the worker re-enters uv's resolution, which keeps that environment alive for the worker's lifetime. Warm `uv run` adds roughly 30 ms to spawn-to-ready. Direct `python -m surf_agent.session` use keeps spawning with `sys.executable`.
@@ -136,6 +136,7 @@ Treat that as a harness/wording defect to fix, not a verdict on persistence.
 - [x] Launcher path: `run.py --new-session`, `--session ID`, `--reset`, `--ttl`, `--timeout`, `--kill-session` and `--list-sessions`, covered by `tests/test_skill_launcher.py`.
 - [x] Agent-facing documentation: SKILL.md persistence guidance and API/launcher notes.
 - [x] Opt-in live browser acceptance in `tests/test_installed_workflow.py` (passed against Chrome on this machine).
+- [x] Output and backstop corrections: a cell that closes its own stream keeps what it wrote, and an unconfirmed pid is reported rather than assumed dead (`packages/surf-agent/tests/test_session.py`).
 
 ## References
 
