@@ -31,6 +31,8 @@ A session ends when it has been idle for `--ttl` seconds (default 1800), measure
 
 Each session is one socket file in `$XDG_RUNTIME_DIR/surf-agent/` (the state directory when `XDG_RUNTIME_DIR` is unset); that file is the whole session record. The interpreter keeps the environment, working directory and Python bindings of the call that created it, runs cells sequentially, and points its own stdout and stderr at `/dev/null`: cell output travels over the socket, so only `print()` and `emit()` reach the caller. Raw file-descriptor writes, subprocess output, and anything written after the interpreter dies are dropped.
 
+Each stream is capped like any other tool result: 2000 lines or 50 KB, whichever comes first. A capped stream ends with a marker saying which lines or bytes were shown and that the rest was discarded, and the cell's frame says which stream was capped. A cell that needs more writes a file and reads back what it needs.
+
 If a call reports that the interpreter did not answer, it is suspended or wedged. Stop it with `--kill-session ID`, which kills an interpreter that cannot answer the shutdown request but keeps a responding one intact, or resume it (`kill -CONT <pid>`) to keep its bindings; browser threads survive either way.
 
 Confirmation is what makes that safe: the process that may be signalled is the one holding that session's socket open, so neither a recycled pid nor a process that merely mentions the path is killed. A host that cannot identify the process says so instead of signalling an unconfirmed pid, and names the `kill -9 <pid>` command to use instead.

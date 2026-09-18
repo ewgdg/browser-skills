@@ -46,6 +46,11 @@ HELLO_TIMEOUT_S = 5.0
 WORKER_START_TIMEOUT_S = 10.0
 # How often an idle worker checks whether its timeout has passed.
 IDLE_POLL_S = 0.5
+# Cell output is bounded like any other tool result: the same limits pi applies to
+# tool output (2000 lines or 50 KiB, whichever comes first) apply per stream. A
+# cell that needs more writes a file instead of printing.
+CELL_OUTPUT_MAX_BYTES = 50 * 1024
+CELL_OUTPUT_MAX_LINES = 2000
 # A process-table listing is a diagnostic, so it is bounded rather than trusted.
 PS_TIMEOUT_S = 5.0
 # The launcher resolves its dependency manager into this handoff. Direct imports
@@ -668,7 +673,9 @@ def _write_bytes(stream: Any, data: bytes) -> None:
 
 def _encode(stream: Any) -> str:
     try:
-        return base64.b64encode(stream.buffer.getvalue()).decode("ascii")
+        buffer = stream.buffer
+        payload = buffer.getvalue() + buffer.limit_notice()
+        return base64.b64encode(payload).decode("ascii")
     except (ValueError, OSError):
         # A cell can still detach or replace the stream around its buffer; bytes
         # that are gone cannot be reported.
@@ -677,6 +684,10 @@ def _encode(stream: Any) -> str:
 
 def _decode(value: Any) -> bytes:
     return base64.b64decode(value) if value else b""
+
+
+def _output_limit_text() -> str:
+    return f"{CELL_OUTPUT_MAX_BYTES // 1024}KB/{CELL_OUTPUT_MAX_LINES} lines"
 
 
 def _metadata_block(session_id: str, idle_timeout_s: float) -> bytes:
@@ -921,7 +932,9 @@ def run_cell(
     _write_bytes(sys.stderr, stderr)
     detail = reply.get("exception")
     suffix = f": {detail}" if detail else ""
-    _frame(f"--- cell #{number} {status}{suffix} ({elapsed * 1000:.0f} ms) ---")
+    capped = [name for name in reply.get("capped") or [] if name in {"stdout", "stderr"}]
+    bounded = f"; {'/'.join(capped)} capped at {_output_limit_text()}" if capped else ""
+    _frame(f"--- cell #{number} {status}{suffix}{bounded} ({elapsed * 1000:.0f} ms) ---")
     if create:
         # Last on stdout, after the cell's own output: the caller reads the session
         # id from the end of its own stream. A replaced interpreter reports no id,
@@ -1008,16 +1021,27 @@ def _shutdown(state: _WorkerState, status: int) -> None:
     os._exit(status)
 
 
-class _NullBackedBuffer(io.BytesIO):
-    """Captured cell bytes that still report this worker's own descriptor.
+class _CellOutputBuffer(io.BytesIO):
+    """Cell bytes, bounded like any other tool result.
 
-    A cell that hands sys.stdout to a subprocess, or asks for its fileno, writes
-    to the descriptor the worker holds - which is /dev/null once it is listening.
+    Keeps the descriptor the worker holds - a cell that hands sys.stdout to a
+    subprocess, or asks for its fileno, writes to /dev/null once the worker is
+    listening - and stops storing output at the tool-output limits, counting what
+    it dropped so the result can say so. Without the bound, a cell that prints in a
+    loop is buffered whole, base64 encoded and sent as one reply, which is how a
+    chatty cell turns into an out-of-memory kill.
     """
 
-    def __init__(self, file_descriptor: int) -> None:
+    def __init__(self, file_descriptor: int, max_bytes: int, max_lines: int) -> None:
         super().__init__()
         self._file_descriptor = file_descriptor
+        self._max_bytes = max_bytes
+        self._max_lines = max_lines
+        self.total_bytes = 0
+        self.total_lines = 0
+        self.kept_bytes = 0
+        self.kept_lines = 0
+        self.limit_reached = False
 
     def fileno(self) -> int:
         return self._file_descriptor
@@ -1028,13 +1052,59 @@ class _NullBackedBuffer(io.BytesIO):
         # The capture is released with the stream object instead of on request.
         pass
 
+    def write(self, data: bytes) -> int:
+        self.total_bytes += len(data)
+        self.total_lines += data.count(b'\n')
+        if not self.limit_reached:
+            self._keep(data, data.count(b'\n'))
+        # Report the write as accepted: the cell's own view of its stream must not
+        # change because the caller stopped listening.
+        return len(data)
+
+    def _keep(self, data: bytes, newlines: int) -> None:
+        """Store whole lines while both limits allow, then stop for good."""
+        if not data:
+            return
+        room = self._max_bytes - self.kept_bytes
+        if not data.endswith(b'\n'):
+            # A line still being written fits or ends the capture.
+            if self.kept_lines < self._max_lines and len(data) <= room:
+                self.kept_bytes += len(data)
+                super().write(data)
+            else:
+                if self.kept_lines < self._max_lines and room > 0:
+                    # One line larger than what is left: keep its beginning rather
+                    # than nothing, so the result still shows where output started.
+                    super().write(data[:room])
+                    self.kept_bytes += room
+                self.limit_reached = True
+            return
+        if self.kept_lines + newlines > self._max_lines or len(data) > room:
+            self.limit_reached = True
+            return
+        self.kept_bytes += len(data)
+        self.kept_lines += newlines
+        super().write(data)
+
+    def limit_notice(self) -> bytes:
+        """Where capture stopped, said in the stream itself rather than in a frame."""
+        if not self.limit_reached:
+            return b""
+        limit = f"{self._max_bytes // 1024}KB/{self._max_lines} lines"
+        if self.getvalue().endswith(b'\n'):
+            shown = f"Showing lines 1-{self.kept_lines} of {self.total_lines}"
+        else:
+            shown = f"Showing the first {self.kept_bytes} bytes of {self.total_bytes}"
+        return f"\n\n[{shown} ({limit} limit); the rest was discarded]\n".encode()
+
 
 def _capture_stream(errors: str, file_descriptor: int) -> io.TextIOWrapper:
     # write_through keeps text and buffer writes ordered in one buffer. The error
     # handler mirrors CPython's own stdout (strict) and stderr (backslashreplace),
     # so cells encode text exactly as a script would.
     return io.TextIOWrapper(
-        _NullBackedBuffer(file_descriptor), encoding="utf-8", errors=errors, newline="",
+        _CellOutputBuffer(file_descriptor, CELL_OUTPUT_MAX_BYTES, CELL_OUTPUT_MAX_LINES),
+        encoding="utf-8", errors=errors, newline="",
         write_through=True,
     )
 
@@ -1098,6 +1168,11 @@ def _run_cell_request(
         "exception": detail,
         "stdout": _encode(stdout),
         "stderr": _encode(stderr),
+        # Which streams hit the output limit, so the caller can say so in its frame.
+        "capped": [
+            name for name, stream in (("stdout", stdout), ("stderr", stderr))
+            if stream.buffer.limit_reached
+        ],
     }
 
 
