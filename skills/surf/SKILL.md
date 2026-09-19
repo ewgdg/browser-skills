@@ -32,12 +32,12 @@ For backend selection, profile configuration, or startup problems, read [backend
 
 ## Sessions
 
-A session is a session interpreter — one Python process kept alive between calls, as in the notebook model, where each call is a cell run in it. Choose one mode per task:
+Choose one mode per task:
 
 - **Fresh interpreter** — `run.py FILE|-` starts a new interpreter for that call. Import and initialize handles each time; write intermediate data to files when a later call needs it.
 - **Session** — `run.py --new-session -` creates a session interpreter and reports its id, and later cells pass `--session ID`. Multi-step work that repeatedly inspects the same page benefits from one; a one-shot script does not need it.
 
-Because that session interpreter persists, the initialized handle, its emission baseline and any helper or data from earlier cells stay in scope: later cells use them directly instead of importing again or rebuilding the handle. Create the session once and keep its id: `--new-session` prints it as the last stdout output of that call.
+A session is a session interpreter — one Python process kept alive between calls, as in the notebook model, where each call is a cell run in it. That persistence is why the initialized handle, its emission baseline and any helper or data from earlier cells stay in scope, and why later cells use them directly instead of importing again or rebuilding the handle. Create the session once and keep its id: `--new-session` prints it as the last stdout output of that call.
 
 ```bash
 python3 "$SURF_SKILL/scripts/run.py" --new-session --name research - <<'PY'
