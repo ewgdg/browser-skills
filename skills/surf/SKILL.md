@@ -7,7 +7,7 @@ description: Real browser control for web research, documentation lookup, testin
 
 Follow the workflow below; open linked `docs/` only when the stated task or problem applies.
 
-Run Python through `scripts/run.py`. Named browser threads persist between calls; Python variables and emission baselines live with the interpreter that ran the code.
+Run Python through `scripts/run.py`. Named browser threads persist between calls; Python variables, handles and their emission baselines live with the interpreter that ran the code.
 
 - **Fresh interpreter** — `run.py FILE|-` starts a new interpreter for that call. Import and initialize handles each time; write intermediate data to files when a later call needs it.
 - **Session** — `run.py --new-session -` creates an interpreter and reports its id; later cells pass `--session ID` and reuse variables, helpers and data. Sessions end when idle for their timeout (default 1800 s), or with `--kill-session ID`; `--list-sessions` shows what is live.
@@ -62,7 +62,7 @@ thread.press("Enter")
 thread.emit(thread.snapshot())
 ```
 
-A session keeps the initialized handle, its emission baseline and any helper or data from earlier cells. Create it once and keep the reported id; `--new-session` prints that id as the last stdout output of the call:
+A session keeps the initialized handle, its emission baseline and any helper or data from earlier cells, so later cells use them directly instead of importing again or rebuilding the handle. Create it once and keep the reported id; `--new-session` prints that id as the last stdout output of the call:
 
 ```bash
 python3 "$SURF_SKILL/scripts/run.py" --new-session --name research - <<'PY'
