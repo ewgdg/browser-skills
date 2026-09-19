@@ -267,7 +267,25 @@ def test_session_mode_rejects_a_file_source(session_launcher):
     result = run_session(launcher, working, env, interpreters, "--new-session", str(script))
     assert result.returncode == 2
     assert "stdin" in result.stderr
+    # The refusal names the caller's own flags and path, so the next attempt is
+    # the redirect rather than re-authoring the file as a heredoc.
+    assert f"`--new-session - < {script}`" in result.stderr
+    assert "ordinary script" in result.stderr
     assert result.stdout == ""
+
+    created, session_id = create_session(launcher, working, env, interpreters, "-", source="pass")
+    assert created.returncode == 0, created.stderr
+    reuse = run_session(launcher, working, env, interpreters, "--session", session_id, str(script))
+    assert reuse.returncode == 2
+    assert f"`--session {session_id} - < {script}`" in reuse.stderr
+
+    nothing = run_session(launcher, working, env, interpreters, "--session", session_id)
+    assert nothing.returncode == 2
+    assert "pass '-' as the source" in nothing.stderr
+
+    assert run_session(
+        launcher, working, env, interpreters, "--kill-session", session_id
+    ).returncode == 0
 
 
 def test_unknown_session_ids_are_refused(session_launcher):

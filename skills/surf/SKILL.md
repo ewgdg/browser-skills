@@ -60,7 +60,7 @@ PY
 
 The id is the session's only handle: an unknown id is refused rather than started, so reuse only ids this task created. Another task's interpreter holds its own bindings and emission baseline, so attaching to it yields diffs against observations this task never received. If the id is lost, `--list-sessions` lists each live session with its working directory; a task that waits on a human should create its session with a longer `--ttl`.
 
-A session cell always comes from stdin; run a file without session options for an ordinary script. Cells run sequentially: a second cell while one is running fails immediately instead of queueing. A session ends when idle for its timeout, set at creation with `--ttl SECONDS` (default 1800 s), or with `--kill-session ID`, which stops it early, including an interpreter that stopped answering.
+A session cell comes from stdin: send a file as `- < cell.py`, or run it without session options as an ordinary script. Cells run sequentially: a second cell while one is running fails immediately instead of queueing. A session ends when idle for its timeout, set at creation with `--ttl SECONDS` (default 1800 s), or with `--kill-session ID`, which stops it early, including an interpreter that stopped answering.
 
 Cell output is capped at 4 MB per stream, with a marker saying what was dropped and which stream was capped; the number of lines is not limited. A cell that needs more writes a file and reads back what it needs.
 

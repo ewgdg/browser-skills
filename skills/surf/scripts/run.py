@@ -172,11 +172,19 @@ def parse_arguments(arguments: list[str]) -> Invocation | None:
             return None
         return Invocation(True, run_request({"op": "reset", "session": session}))
     if not rest or rest[0] != "-":
-        print(
-            "A session cell is read from stdin: pass '-' as the source. "
-            "Use a file without a session option for an ordinary script.",
-            file=sys.stderr,
-        )
+        flags = "--new-session" if mode == "--new-session" else f"--session {session}"
+        source = rest[0] if rest else None
+        if source is not None and not source.startswith("-"):
+            # Spell the redirect with the caller's own flags: re-authoring the file
+            # as a heredoc is what a caller does instead when the refusal only says
+            # that cells come from stdin.
+            hint = (
+                f"send it as `{flags} - < {source}`, or drop the session option to run "
+                f"it as an ordinary script"
+            )
+        else:
+            hint = f"pass '-' as the source, e.g. `{flags} -`"
+        print(f"A session cell comes from stdin: {hint}.", file=sys.stderr)
         return None
     request = {
         "op": "cell",
