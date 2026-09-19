@@ -1,6 +1,6 @@
 # Launcher setup and validation
 
-Read this for dependency or release-installation failures, or deliberate local development validation. Normal invocation and browser workflow belong in [SKILL.md](../SKILL.md#prepare).
+Read this for dependency or release-installation failures, or deliberate local development validation. Normal invocation belongs to [Sessions](../SKILL.md#sessions), and the browser workflow to [browse, observe, decide](../SKILL.md#browse-observe-decide).
 
 ## Dependencies and execution
 
