@@ -11,7 +11,7 @@ Reference for method signatures, return values and state contracts. For executio
 | `Thread(name="default")` | Named ownership handle, not a raw tab selector. |
 | `open(url)` | Navigation output as `str`; creates a window if missing; resets emission baseline. |
 | `is_open()` | `bool`; checks without opening a window or starting a bridge. Unavailable bridge returns false without proving the page is gone. Malformed responses raise. |
-| `click(target)`, `fill(target, text)`, `type_text(text)`, `press(key)` | Action output as `str`. Use targets from observed page state. |
+| `click(target)`, `fill(target, text)`, `type_text(text)`, `press(key)` | Action output as `str`. Use targets from observed page state. With Patchright, `target` is `@<ref>` for a ref the latest snapshot printed (`[ref=e12]` → `@e12`) or a CSS selector; any other `@` name is refused as stale. |
 | `scroll(direction)` | `str`; direction is `up`, `down`, `top`, or `bottom`. |
 | `wait(target)` | `str`; nonnegative integer milliseconds or nonempty visible-text string. Numeric strings are text, not durations. |
 | `back()` | Navigation output as `str`; resets emission baseline. |
@@ -35,7 +35,7 @@ from surf_agent import Thread
 
 thread = Thread("research")
 thread.emit(thread.snapshot())
-thread.click("@details")  # observed target; deterministic action
+thread.click("@e12")      # ref from the emitted snapshot
 current = thread.snapshot()
 thread.emit(current)              # useful diff, or full fallback
 thread.emit(current, full=True)   # explicitly complete output
@@ -69,7 +69,7 @@ thread.emit(thread.snapshot(), sink=buffer)
 frame = buffer.getvalue()  # the same text, boundaries and any fallback header included
 ```
 
-Baselines belong to Python handles, not persistent thread storage or the browser. A fresh script's first emission is full. A persistent session keeps each handle's baseline across cells; a replaced interpreter loses it, so the first emission of a handle recreated in that interpreter is full by construction. Use separate handles for independent output consumers rather than sending dependent diffs to unrelated sinks.
+Baselines belong to Python handles, not persistent thread storage or the browser. A fresh script's first emission is full. A persistent session keeps each handle's baseline across cells; a timed-out cell ends the interpreter and its baselines, so the first emission of a handle rebuilt in a new session is full by construction. Use separate handles for independent output consumers rather than sending dependent diffs to unrelated sinks.
 
 ## Browser administration
 

@@ -37,7 +37,7 @@ Choose one mode per task:
 - **Fresh interpreter** — `run.py FILE|-` starts a new interpreter for that call. Import and initialize handles each time; write intermediate data to files when a later call needs it.
 - **Session** — `run.py --new-session -` creates a session interpreter and reports its id, and later cells pass `--session ID`. Multi-step work that repeatedly inspects the same page benefits from one; a one-shot script does not need it.
 
-A session is a session interpreter — one Python process kept alive between calls, as in the notebook model, where each call is a cell run in it. That persistence is why the initialized handle, its emission baseline and any helper or data from earlier cells stay in scope, and why later cells use them directly instead of importing again or rebuilding the handle. Create the session once and keep its id: `--new-session` prints it as the last stdout output of that call.
+A session is one Python process kept alive between calls, as in a notebook: each call is a cell, so the handle, its emission baseline and earlier helpers stay in scope, and later cells use them directly instead of importing again. Create the session once and keep its id: `--new-session` prints it as the last stdout output of that call.
 
 ```bash
 python3 "$SURF_SKILL/scripts/run.py" --new-session --name research - <<'PY'
@@ -47,26 +47,30 @@ thread = Thread("research")
 thread.open("https://example.com")
 thread.emit(thread.snapshot())
 PY
+# … - link "Learn more" [ref=e6] …
 # … --- BEGIN session metadata --- / session_id: research-1f3a9c02 / --- END session metadata ---
 ```
 
 ```bash
 python3 "$SURF_SKILL/scripts/run.py" --session research-1f3a9c02 - <<'PY'
-thread.fill("@query", "browser skills")  # the handle and its baseline survived
-thread.press("Enter")
+thread.click("@e6")  # ref from the snapshot above; the handle and its baseline survived
 thread.emit(thread.snapshot())
 PY
 ```
 
-The id is the session's only handle: an unknown id is refused rather than started, so reuse only ids this task created. Another task's interpreter holds its own bindings and emission baseline, so attaching to it yields diffs against observations this task never received. If the id is lost, `--list-sessions` lists each live session with its working directory; a task that waits on a human should create its session with a longer `--ttl`.
+The id is the session's only handle: an unknown id is refused rather than started, so reuse only ids this task created. Another task's interpreter holds its own bindings and emission baseline, so attaching to it yields diffs against observations this task never received. If the id is lost, `--list-sessions` lists each live session with its working directory; a task that waits on a human should create its session with a longer `--ttl`. `--session ID --reset` discards bindings but keeps the interpreter and id.
 
-A session cell comes from stdin: send a file as `- < cell.py`, or run it without session options as an ordinary script. Cells run sequentially: a second cell while one is running fails immediately instead of queueing. A session ends when idle for its timeout, set at creation with `--ttl SECONDS` (default 1800 s), or with `--kill-session ID`, which stops it early, including an interpreter that stopped answering.
+Send a cell on stdin, or a file as `- < cell.py`. Cells run one at a time. For defaults, output limits, and an interpreter that stops answering, read [launcher sessions](docs/launcher.md#sessions).
 
-Cell output is capped at 4 MB per stream, with a marker saying what was dropped and which stream was capped; the number of lines is not limited. A cell that needs more writes a file and reads back what it needs.
+### Cell timeout
 
-A cell that exceeds `--timeout SECONDS` (default 300) destroys the session interpreter: the call reports the replacement, the id stops existing, and the failed cell's side effects are unknown. The browser thread outlives the interpreter, so `--new-session` and `Thread(name)` reach it again; a new handle has no baseline, so emit a full observation first. `--session ID --reset` discards bindings without replacing the interpreter or the id.
+A cell that exceeds `--timeout SECONDS` (default 300) ends the session. The call prints `interpreter replaced`, but nothing takes its place: the id stops existing, its bindings are gone, and the cell's side effects are unknown. The browser thread survives. Recover in order:
 
-An interpreter that did not answer is busy, suspended or wedged rather than absent: it still holds the session's bindings, so it is never replaced silently, and a cell that holds the interpreter lock reads the same way as a wedged one. Let any cell you started finish first. `--list-sessions` keeps it and marks it unresponsive, and `--kill-session ID` stops it. If a call reports that the interpreter could not be identified, stop that pid yourself; a host that cannot prove which process owns the socket does not signal one.
+1. Create a new session with `--new-session`.
+2. Rebuild the handle with the task's thread name, `Thread("research")`, without calling `open()`.
+3. Emit a full observation (the new handle has no baseline), then follow [Recovery](#recovery) before repeating any action.
+
+If the call instead reports the interpreter was not stopped, it may still hold the bindings; read [launcher sessions](docs/launcher.md#sessions).
 
 ## Browse, observe, decide
 
@@ -82,13 +86,13 @@ thread.emit(thread.snapshot())
 PY
 ```
 
-Inspect the snapshot before choosing targets. Batch deterministic actions until a new observation or human decision is needed:
+Inspect the snapshot before choosing targets: use a ref the snapshot printed, so a line `- searchbox "Search" [ref=e12]` is targeted as `@e12` ([target forms](docs/python-api.md#thread)). Batch deterministic actions until a new observation or human decision is needed:
 
 ```python
 from surf_agent import Thread
 
 thread = Thread("research-42")
-thread.fill("@query", "browser skills")  # use a target from the observed snapshot
+thread.fill("@e12", "browser skills")  # ref from the observed snapshot
 thread.press("Enter")
 thread.emit(thread.snapshot())
 ```
@@ -115,7 +119,7 @@ For manual login, close Surf automation windows and call `Browser().open_profile
 
 After timeout or connection loss, inspect the same named thread before deciding whether to repeat an action: submissions, purchases, or messages may already have taken effect.
 
-A cell timeout leaves a fresh interpreter behind, so reattach as [Sessions](#sessions) describes before repeating its work.
+For a session cell timeout, recover the session first as [Cell timeout](#cell-timeout) describes.
 
 `is_open()` checks without creating a page, but false can also mean the bridge is unavailable. Reopen only when absence is established and navigation is safe. For a persistently unavailable bridge, use `Browser().stop_bridge()`; the next browser action restarts it. Restarting does not make replay safe.
 
