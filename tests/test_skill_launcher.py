@@ -243,7 +243,7 @@ def test_session_reset_clears_bindings(session_launcher):
     assert "NameError" in after.stderr
 
 
-def test_session_timeout_reports_replacement(session_launcher):
+def test_session_timeout_reports_the_ended_session(session_launcher):
     launcher, working, env, interpreters = session_launcher
     created, session_id = create_session(launcher, working, env, interpreters, "-", source="kept = 1")
     assert created.returncode == 0, created.stderr
@@ -252,7 +252,8 @@ def test_session_timeout_reports_replacement(session_launcher):
         source="import time\ntime.sleep(30)",
     )
     assert result.returncode == 1
-    assert "interpreter replaced" in result.stderr
+    assert f"session {session_id} ended" in result.stderr
+    assert "--new-session" in result.stderr
     assert "exceeded 0.5" in result.stderr
     # The session is gone rather than quietly remade.
     gone = run_session(launcher, working, env, interpreters, "--session", session_id, "-", source="pass")

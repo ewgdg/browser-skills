@@ -599,17 +599,22 @@ def test_malformed_request_does_not_wedge_the_session():
     assert run_in(created.session_id, "print('after')").stdout == b"after\n"
 
 
-# Faults and replacement
+# Faults and ended sessions
 
 
-def test_timeout_replaces_interpreter_and_reports_the_loss():
+def test_timeout_ends_the_session_and_reports_the_loss(capfd):
     created = create("kept = 1")
+    capfd.readouterr()
     slow = run_in(created.session_id, "import time\ntime.sleep(30)", timeout_s=0.5)
-    assert slow.status == "replaced"
+    assert slow.status == "lost"
+    # The frame is the agent's only recovery cue: it must say a new session is needed.
+    frames = capfd.readouterr().err
+    assert f"session {created.session_id} ended (cell #2 exceeded 0.5 s)" in frames
+    assert "--new-session" in frames
     assert "exceeded 0.5" in (slow.detail or "")
     assert slow.duration_s < 5.0
     assert wait_for_exit(created.interpreter_pid)
-    # A replaced interpreter is gone: its id is unknown rather than silently remade.
+    # An ended session is gone: its id is unknown rather than silently remade.
     with pytest.raises(session.SessionError, match="unknown session"):
         run_in(created.session_id, "print(kept)")
 
@@ -621,7 +626,7 @@ def test_cell_that_kills_its_worker_prints_nothing(capfd):
         created.session_id,
         "import os, signal\nprint('before death')\nos.kill(os.getpid(), signal.SIGKILL)",
     )
-    assert result.status == "replaced"
+    assert result.status == "lost"
     assert "exited during" in (result.detail or "")
     assert result.stdout == b""
     frames = capfd.readouterr().err
@@ -629,10 +634,10 @@ def test_cell_that_kills_its_worker_prints_nothing(capfd):
     # A dead worker is not "not stopped": telling an agent to resume a corpse with
     # kill -CONT is advice it cannot act on.
     assert "not stopped" not in frames
-    assert "interpreter replaced (worker exited" in frames
+    assert f"session {created.session_id} ended (worker exited" in frames
 
 
-def test_caller_replaces_a_worker_that_cannot_answer(monkeypatch):
+def test_caller_ends_a_session_whose_worker_cannot_answer(monkeypatch):
     monkeypatch.setattr(session, "REPLY_GRACE_S", 0.5)
     created = create("pass")
     outcome: list[session.CellResult] = []
@@ -647,7 +652,7 @@ def test_caller_replaces_a_worker_that_cannot_answer(monkeypatch):
     os.kill(created.interpreter_pid, signal.SIGSTOP)
     thread.join(timeout=30)
     assert not thread.is_alive()
-    assert outcome and outcome[0].status == "replaced"
+    assert outcome and outcome[0].status == "lost"
     assert "exceeded 1" in (outcome[0].detail or "")
     assert wait_for_exit(created.interpreter_pid)
 
@@ -669,7 +674,7 @@ def test_timeout_that_cannot_confirm_the_pid_is_reported_not_claimed(monkeypatch
     os.kill(created.interpreter_pid, signal.SIGSTOP)
     thread.join(timeout=30)
     assert not thread.is_alive()
-    assert outcome and outcome[0].status == "replaced"
+    assert outcome and outcome[0].status == "lost"
     frames = capfd.readouterr().err
     assert "not stopped" in frames
     assert f"kill -9 {created.interpreter_pid}" in frames
@@ -681,7 +686,7 @@ def test_timeout_that_cannot_confirm_the_pid_is_reported_not_claimed(monkeypatch
 
 
 def test_a_signal_that_cannot_land_is_not_reported_as_stopped(monkeypatch, capfd):
-    """A kill that failed must not be summarised as a replacement."""
+    """A kill that failed must not be summarised as an ended session."""
     monkeypatch.setattr(session, "REPLY_GRACE_S", 0.5)
     created = create("pass")
     real_kill = os.kill
@@ -705,7 +710,7 @@ def test_a_signal_that_cannot_land_is_not_reported_as_stopped(monkeypatch, capfd
     try:
         thread.join(timeout=30)
         assert not thread.is_alive()
-        assert outcome and outcome[0].status == "replaced"
+        assert outcome and outcome[0].status == "lost"
         assert "not stopped" in capfd.readouterr().err
     finally:
         monkeypatch.undo()
@@ -714,7 +719,7 @@ def test_a_signal_that_cannot_land_is_not_reported_as_stopped(monkeypatch, capfd
     assert wait_for_exit(created.interpreter_pid)
 
 
-def test_stopped_interpreter_is_reported_not_replaced(monkeypatch):
+def test_silent_interpreter_is_reported_not_stopped(monkeypatch):
     monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
     created = create("pass")
     os.kill(created.interpreter_pid, signal.SIGSTOP)

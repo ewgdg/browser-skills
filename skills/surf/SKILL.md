@@ -64,7 +64,7 @@ Send a cell on stdin, or a file as `- < cell.py`. Cells run one at a time. For d
 
 ### Cell timeout
 
-A cell that exceeds `--timeout SECONDS` (default 300) ends the session. The call prints `interpreter replaced`, but nothing takes its place: the id stops existing, its bindings are gone, and the cell's side effects are unknown. The browser thread survives. Recover in order:
+A cell that exceeds `--timeout SECONDS` (default 300) ends the session: the call reports `session ID ended`, the id stops existing, its bindings are gone, and the cell's side effects are unknown. The browser thread survives. Recover in order:
 
 1. Create a new session with `--new-session`.
 2. Rebuild the handle with the task's thread name, `Thread("research")`, without calling `open()`.

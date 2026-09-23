@@ -83,7 +83,7 @@ class _InterpreterGone(Exception):
 
     *kind* is what recovery depends on. A "stalled" channel was reachable but did
     not answer, which means the interpreter may still be alive with its bindings
-    and must never be replaced silently. "refused" means nothing is listening on
+    and must never be stopped silently. "refused" means nothing is listening on
     the socket path. "closed" means a listener accepted the connection and went
     away before answering, so the interpreter exists but is on its way out.
     """
@@ -99,7 +99,7 @@ class _InterpreterGone(Exception):
 
 @dataclass(frozen=True)
 class CellResult:
-    status: str  # "ok", "error", "busy" or "replaced"
+    status: str  # "ok", "error", "busy" or "lost" (cell outcome unknown)
     session_id: str
     interpreter_pid: int
     cell_number: int | None  # None when no cell started
@@ -1014,7 +1014,11 @@ def run_cell(
         else:
             reason = f"worker exited during cell #{number}"
         if stopped:
-            _frame(f"--- interpreter replaced ({reason}); bindings lost; side effects unknown ---")
+            # Nothing starts in its place: the id is gone, so recovery needs a new session.
+            _frame(
+                f"--- session {session_id} ended ({reason}); interpreter stopped, bindings lost, "
+                f"side effects unknown; start a new session with --new-session ---"
+            )
         else:
             # Nothing was signalled, so nothing here may claim the interpreter died.
             _frame(
@@ -1022,7 +1026,7 @@ def run_cell(
                 f"session's bindings; resume it with kill -CONT {result_pid} or stop it with "
                 f"kill -9 {result_pid}; side effects unknown ---"
             )
-        return CellResult("replaced", session_id, result_pid, number, create, reason, b"", b"", elapsed)
+        return CellResult("lost", session_id, result_pid, number, create, reason, b"", b"", elapsed)
 
     elapsed = time.monotonic() - started
     status = reply.get("status")
@@ -1043,7 +1047,7 @@ def run_cell(
     _frame(f"--- cell #{number} {status}{suffix}{bounded} ({elapsed * 1000:.0f} ms) ---")
     if create:
         # Last on stdout, after the cell's own output: the caller reads the session
-        # id from the end of its own stream. A replaced interpreter reports no id,
+        # id from the end of its own stream. An ended session reports no id,
         # because the session it names no longer exists.
         _write_bytes(sys.stdout, _metadata_block(session_id, idle_timeout_s))
     return CellResult(status, session_id, result_pid, number, create, detail, stdout, stderr, elapsed)
