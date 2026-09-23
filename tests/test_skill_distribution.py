@@ -24,7 +24,10 @@ def test_skill_distribution_contains_executable_payload():
         ["npm", "pack", "--dry-run", "--json", "--ignore-scripts"],
         cwd=root, capture_output=True, text=True, check=True, timeout=20,
     )
-    paths = {item["path"] for item in json.loads(result.stdout)[0]["files"]}
+    packed = json.loads(result.stdout)
+    # npm 12 keys the report by package name; earlier versions return a list.
+    (package,) = packed.values() if isinstance(packed, dict) else packed
+    paths = {item["path"] for item in package["files"]}
     documents = {
         path.relative_to(root).as_posix()
         for pattern in ("skills/*/SKILL.md", "skills/*/docs/**/*.md")
