@@ -17,7 +17,7 @@ print(browser.backend())  # backend, selection source, config_file
 print(browser.profile())  # actual dedicated profile and runtime settings
 ```
 
-To persist a selection, call `browser.set_backend("axi")` or `browser.set_backend("patchright")`. Changing selection stops the previous persisted backend first; cleanup failure leaves configuration unchanged. Temporary environment overrides are ignored for that cleanup, but still take priority for browser use.
+To persist a selection, call `browser.set_backend("axi")` or `browser.set_backend("patchright")`. Changing selection stops the previous persisted backend first; cleanup failure leaves configuration unchanged. Temporary environment overrides are ignored for that cleanup, but still take priority for browser use: with `SURF_AGENT_BACKEND` set, `browser.backend()` keeps reporting it, so unset it before confirming the persisted selection.
 
 To clear selection, stop the current runtime with `browser.stop_bridge()`, then call `browser.reset_backend()`. Reset itself does not stop runtime. Stop any differently selected environment-override runtime too before moving between backends that share a profile.
 

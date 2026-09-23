@@ -1,16 +1,6 @@
 # AXI backend
 
-Read this when enabling AXI or diagnosing its bridge, debug port, or profile settings. AXI is an explicitly selected alternative to Patchright. Through the [skill launcher](../SKILL.md):
-
-```python
-from surf_agent import Browser
-
-browser = Browser()
-browser.stop_bridge()
-browser.set_backend("axi")
-browser.setup()
-print(browser.profile())
-```
+Read this when enabling AXI or diagnosing its bridge, debug port, or profile settings. AXI is an explicitly selected alternative to Patchright. Select it as [backend selection](backends.md) describes, then run `Browser().setup()`; selection is complete when `Browser().backend()` reports `axi`.
 
 Surf launches dedicated Chrome with a platform user-data profile, remote debugging, and normal windows with toolbar and extension controls. `SURF_AGENT_HOME` collects config, thread records, and profiles under one directory.
 

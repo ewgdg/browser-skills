@@ -4,7 +4,7 @@ Read this for Patchright startup failures, profile/port overrides, or shutdown b
 
 ## Setup and selection
 
-Install Google Chrome separately and make it available as `google-chrome`, or set `SURF_AGENT_CHROME_BIN`. For Python dependency failures, read [launcher setup](launcher.md); for restoring the default backend or checking environment overrides, read [backend selection](backends.md).
+Install Google Chrome where Patchright's `chrome` channel finds it (its standard install location). Automation always launches that channel; `SURF_AGENT_CHROME_BIN` only changes the executable `Browser().open_profile()` starts, and it must be the same Chrome so both use one profile format. For Python dependency failures, read [launcher setup](launcher.md); for restoring the default backend or checking environment overrides, read [backend selection](backends.md).
 
 ## Runtime data
 
