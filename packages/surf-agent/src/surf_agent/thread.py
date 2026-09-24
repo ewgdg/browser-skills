@@ -6,10 +6,11 @@ import sys
 from itertools import count
 from typing import Any, TextIO
 
+from .backends.base import ScreenshotOptions, WaitConditions
 from .runtime import SurfAgent, safe_thread_name
 from .snapshots import SnapshotCapture, choose_snapshot_diff
 from .constants import DEFAULT_THREAD
-from .errors import SurfAgentError
+from .errors import ErrorCode, SurfAgentError
 
 
 Snapshot = SnapshotCapture
@@ -62,27 +63,54 @@ class Thread:
     def scroll(self, direction: str) -> str:
         return self._agent.browser_backend.scroll(direction)
 
-    def wait(self, target: int | str) -> str:
+    def wait(
+        self,
+        target: int | str | None = None,
+        *,
+        gone: str | None = None,
+        url: str | None = None,
+        timeout_ms: int | None = None,
+    ) -> str:
+        """Sleep for integer milliseconds, or wait until every given page condition holds.
+
+        ``target`` text must become visible, ``gone`` text must stop being visible,
+        and ``url`` is a glob over the full page URL. Unmet conditions raise
+        ``SurfAgentError`` with code ``wait_timeout`` naming the page state.
+        """
         if isinstance(target, bool):
             raise TypeError("wait target must be milliseconds as int or visible text as str")
         if isinstance(target, int):
+            if gone is not None or url is not None or timeout_ms is not None:
+                raise TypeError("wait(milliseconds) sleeps; pass conditions as text, gone= or url=")
             if target < 0:
                 raise ValueError("wait milliseconds must not be negative")
             return self._agent.browser_backend.wait_ms(target)
-        if not isinstance(target, str) or not target:
-            raise ValueError("wait text target must not be empty")
-        return self._agent.browser_backend.wait_for_text(target)
+        conditions = {"text": target, "gone": gone, "url": url}
+        for label, value in conditions.items():
+            if value is not None and (not isinstance(value, str) or not value):
+                raise ValueError(f"wait {label} condition must be a nonempty string")
+        if all(value is None for value in conditions.values()):
+            raise ValueError("wait needs milliseconds or at least one of text, gone= or url=")
+        if timeout_ms is not None:
+            if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int):
+                raise TypeError("wait timeout_ms must be an int")
+            if timeout_ms <= 0:
+                raise ValueError("wait timeout_ms must be positive")
+        return self._agent.browser_backend.wait_for(
+            WaitConditions(text=target, gone=gone, url=url, timeout_ms=timeout_ms)
+        )
 
     def back(self) -> str:
         self._baseline = None
         return self._agent.browser_backend.back()
 
-    def text(self) -> str:
-        return self._agent.browser_backend.text()
+    def text(self, target: str | None = None) -> str:
+        """Visible text of the page, or of one region chosen by snapshot ref or CSS selector."""
+        if target is not None and (not isinstance(target, str) or not target):
+            raise ValueError("text target must be a nonempty ref or selector")
+        return self._agent.browser_backend.text(target)
 
     def screenshot(self, path: str, *, full_page: bool = False) -> str:
-        from .backends.base import ScreenshotOptions
-
         return self._agent.browser_backend.screenshot(ScreenshotOptions(path=path, full_page=full_page))
 
     def evaluate(self, code: str) -> Any:
@@ -142,7 +170,9 @@ class Thread:
         """Forget AXI ownership without closing its window; unsupported on Patchright."""
         if self._agent.backend != "axi":
             # Patchright owns its mapping in the bridge, not the local state file.
-            raise SurfAgentError("reset is not supported by Patchright; use close() to release the thread")
+            raise SurfAgentError(
+                "reset is not supported by Patchright; use close() to release the thread", code=ErrorCode.UNSUPPORTED
+            )
         self._agent.reset_state()
         self._baseline = None
 

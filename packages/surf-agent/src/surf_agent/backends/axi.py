@@ -20,9 +20,13 @@ from ..constants import (
     DEFAULT_AXI_PORT,
     SURF_AGENT_WINDOW_TITLE,
 )
-from ..errors import BridgeUnavailable, SurfAgentError
+from ..errors import BridgeUnavailable, ErrorCode, SurfAgentError
 from ..snapshots import snapshot_capture_from_page
-from .base import AgentPage, ScreenshotOptions
+from .base import AgentPage, ScreenshotOptions, WaitConditions
+
+
+def _unsupported(capability: str) -> SurfAgentError:
+    return SurfAgentError(f"{capability} is supported only by the Patchright backend", code=ErrorCode.UNSUPPORTED)
 
 
 class AxiBridgeUnavailable(BridgeUnavailable):
@@ -255,7 +259,9 @@ class AxiBackend:
     def snapshot(self) -> str:
         return self._run_current(["snapshot"])
 
-    def text(self) -> str:
+    def text(self, target: str | None = None) -> str:
+        if target is not None:
+            raise _unsupported("text(target)")
         return self._run_current(["text"])
 
     def click(self, target: str) -> str:
@@ -273,13 +279,13 @@ class AxiBackend:
     def scroll(self, direction: str) -> str:
         return self._run_current(["scroll", direction])
 
-    def wait(self, target: str) -> str:
-        return self._run_current(["wait", target])
-
     def wait_ms(self, milliseconds: int) -> str:
         return self._run_current(["wait", str(milliseconds)])
 
-    def wait_for_text(self, text: str) -> str:
+    def wait_for(self, conditions: WaitConditions) -> str:
+        if conditions.text is None or conditions.gone is not None or conditions.url is not None or conditions.timeout_ms is not None:
+            raise _unsupported("wait() with gone=, url= or timeout_ms=")
+        text = conditions.text
         if text.isdigit():
             # Direct bridge calls must select this thread, not another caller's page.
             self._require_current_axi_page()

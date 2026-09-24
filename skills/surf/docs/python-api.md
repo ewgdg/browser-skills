@@ -2,7 +2,7 @@
 
 Reference for method signatures, return values and state contracts. For execution, human handoff, recovery and cleanup policy, follow [SKILL.md](../SKILL.md). For dependency or release problems, read [launcher setup](launcher.md).
 
-`surf_agent.Thread` owns a named browser page/window; `surf_agent.Browser` administers runtime and profile configuration. Import them with `Snapshot` and `SurfAgentError` from `surf_agent`.
+`surf_agent.Thread` owns a named browser page/window; `surf_agent.Browser` administers runtime and profile configuration. Import them with `Snapshot`, `SurfAgentError` and `ErrorCode` from `surf_agent`.
 
 ## Thread
 
@@ -13,9 +13,10 @@ Reference for method signatures, return values and state contracts. For executio
 | `is_open()` | `bool`; checks without opening a window or starting a bridge. Unavailable bridge returns false without proving the page is gone. Malformed responses raise. |
 | `click(target)`, `fill(target, text)`, `type_text(text)`, `press(key)` | Action output as `str`. Use targets from observed page state. With Patchright, `target` is `@<ref>` for a ref the latest snapshot printed (`[ref=e12]` → `@e12`) or a CSS selector; any other `@` name is refused as stale. |
 | `scroll(direction)` | `str`; direction is `up`, `down`, `top`, or `bottom`. |
-| `wait(target)` | `str`; nonnegative integer milliseconds or nonempty visible-text string. Numeric strings are text, not durations. |
+| `wait(ms)` | `str`; sleeps for nonnegative integer milliseconds. |
+| `wait(text=None, *, gone=None, url=None, timeout_ms=None)` | `str`; waits until every given condition holds: `text` becomes visible, `gone` text stops being visible, `url` glob (`fnmatch`, full URL) matches. Default timeout 10000 ms. Failure raises code `wait_timeout` naming unmet conditions, current URL and title. Numeric strings are text, not durations. `gone`, `url` and `timeout_ms` are Patchright-only. |
 | `back()` | Navigation output as `str`; resets emission baseline. |
-| `text()` | Visible body text as `str`. |
+| `text(target=None)` | Visible text as `str`: the whole body, or one region by snapshot ref or CSS selector (`"@e5"`, `"main, article"`). Targets are Patchright-only. |
 | `screenshot(path, *, full_page=False)` | Saves viewport/full-page image; returns backend output as `str`. |
 | `evaluate(code)` | Decoded JavaScript value: nested objects/arrays, strings, numbers, booleans, or `None`. |
 | `snapshot()` | Complete `Snapshot` with identity metadata and full `.text`; silent, without baseline changes. |
@@ -97,4 +98,19 @@ Backend/profile guidance: [selection](backends.md), [manual 1Password setup](1pa
 
 ## Errors
 
-`SurfAgentError` signals Surf operational failures; invalid Python argument types/values can raise normal Python exceptions. For uncertain outcomes after transport failures, follow the [recovery workflow](../SKILL.md#recovery).
+`SurfAgentError` signals Surf operational failures; invalid Python argument types/values can raise normal Python exceptions. Branch on `error.code` (an `ErrorCode`, or `None` when uncategorized), never on message text:
+
+| Code | Meaning and next step |
+| --- | --- |
+| `stale_ref` | Ref is not in the current page. Take a new snapshot and use its refs. |
+| `not_found` | Selector matches nothing. Snapshot and pick a real target. |
+| `not_visible`, `not_enabled`, `not_editable` | Element exists but cannot take the action. Reveal it, wait for it, or target the real control. |
+| `intercepted` | Another element covers the target; the message names it (often a cookie banner or modal). Dismiss it first. |
+| `action_timeout` | Element looked actionable but the action did not finish. Snapshot before retrying. |
+| `wait_timeout` | A `wait()` condition never held; the message shows what the page showed. |
+| `page_closed` | The page closed during the call. Inspect with `is_open()` before reopening. |
+| `bridge_unavailable` | The browser bridge is not reachable. The call did not reach the browser. |
+| `outcome_unknown` | The call reached the browser but its result was lost. It may have taken effect; follow the [recovery workflow](../SKILL.md#recovery). |
+| `unsupported` | The selected backend lacks this capability. |
+
+Actionability codes come from Patchright; AXI failures carry `None` except `unsupported`.

@@ -13,7 +13,8 @@ from pathlib import Path
 
 from platformdirs import PlatformDirs
 from typing import Any
-from ...constants import DEFAULT_PATCHRIGHT_APP_ID, PATCHRIGHT_BACKEND
+from ...constants import DEFAULT_PATCHRIGHT_APP_ID, DEFAULT_WAIT_TIMEOUT_MS, PATCHRIGHT_BACKEND
+from ...errors import ErrorCode
 from .constants import CONTEXT_RESTART_REQUIRED
 from ..bridge_common import (
     CLOSED_TARGET_MESSAGE,
@@ -22,6 +23,7 @@ from ..bridge_common import (
     SNAPSHOT_DEPTH,
     STALE_REF_MESSAGE,
     STARTUP_PAGE_URLS,
+    BridgeCodedError,
     BridgeRequestHandler,
     PageSlot,
     bridge_health_payload,
@@ -29,18 +31,40 @@ from ..bridge_common import (
 
 SNAPSHOT_ARIA_TIMEOUT_MS = 3_000
 SNAPSHOT_BODY_TIMEOUT_MS = 3_000
+# Must stay below the client's transport timeout (15s default) so a blocked
+# action returns a classified error instead of an unknown-outcome timeout.
+ACTION_TIMEOUT_MS = 5_000
+# Short: probes run after the action already waited ACTION_TIMEOUT_MS.
+ACTIONABILITY_PROBE_TIMEOUT_MS = 250
+WAIT_POLL_INTERVAL_S = 0.1
+# Returns a description of the element receiving pointer events at the target's
+# center, or null when the target (or its shadow content) receives them itself.
+HIT_TEST_BLOCKER_JS = """element => {
+  const box = element.getBoundingClientRect();
+  const x = box.left + box.width / 2;
+  const y = box.top + box.height / 2;
+  if (x < 0 || y < 0 || x > innerWidth || y > innerHeight) return null;
+  const hit = document.elementFromPoint(x, y);
+  if (!hit || element.contains(hit) || hit.shadowRoot?.contains(element)) return null;
+  const id = hit.id ? `#${hit.id}` : '';
+  const classes = [...hit.classList].map(name => `.${name}`).join('');
+  const text = (hit.textContent || '').trim().replace(/\\s+/g, ' ').slice(0, 60);
+  return `<${hit.tagName.toLowerCase()}${id}${classes}>` + (text ? ` "${text}"` : '');
+}"""
 CDP_NEW_WINDOW_TIMEOUT_S = 3.0
 CDP_NEW_WINDOW_POLL_INTERVAL_S = 0.05
 # Linux v11 cookies require Chrome’s real OS password store/keychain, not Patchright automation defaults.
 PATCHRIGHT_INCOMPATIBLE_DEFAULT_ARGS = ("--password-store=basic", "--use-mock-keychain")
 
 async_playwright: Any = None
+PlaywrightTimeoutError: type[Exception] | None = None
 try:
     from patchright import async_api as patchright_async_api
 except ImportError:
     pass
 else:
     async_playwright = patchright_async_api.async_playwright
+    PlaywrightTimeoutError = patchright_async_api.TimeoutError
 
 
 class PatchrightRuntime:
@@ -70,7 +94,14 @@ class PatchrightRuntime:
         return result
 
     def call(self, name: str, args: dict[str, Any]) -> str:
-        result = self._run(self._call_async(name, args))
+        try:
+            result = self._run(self._call_async(name, args))
+        except BridgeCodedError:
+            raise
+        except Exception as exc:
+            if self._is_closed_target_error(exc):
+                raise BridgeCodedError(ErrorCode.PAGE_CLOSED, str(exc)) from exc
+            raise
         if name == "stop":
             self._close_runner()
         return result
@@ -227,16 +258,24 @@ class PatchrightRuntime:
             ))
             return self._format_opened(slot.page)
         if name == "text":
-            return await self._body_text(slot.page)
+            target = args.get("target")
+            if target is None:
+                return await self._body_text(slot.page)
+            locator = await self._target_locator(slot, str(target))
+            text = await self._maybe_await(locator.inner_text(timeout=ACTION_TIMEOUT_MS))
+            return text + ("" if text.endswith("\n") else "\n")
         if name == "snapshot":
             return await self._snapshot(slot)
         if name == "click":
-            locator = await self._target_locator(slot, str(args["uid"]))
-            await self._maybe_await(locator.click())
+            target = str(args["uid"])
+            locator = await self._target_locator(slot, target)
+            await self._act(target, locator, lambda: locator.click(timeout=ACTION_TIMEOUT_MS), editable=False)
             return "clicked\n"
         if name == "fill":
-            locator = await self._target_locator(slot, str(args["uid"]))
-            await self._maybe_await(locator.fill(str(args.get("text") or "")))
+            target = str(args["uid"])
+            locator = await self._target_locator(slot, target)
+            text = str(args.get("text") or "")
+            await self._act(target, locator, lambda: locator.fill(text, timeout=ACTION_TIMEOUT_MS), editable=True)
             return "filled\n"
         if name == "type":
             await self._maybe_await(slot.page.keyboard.type(str(args.get("text") or "")))
@@ -257,11 +296,16 @@ class PatchrightRuntime:
                 await self._maybe_await(slot.page.mouse.wheel(0, delta))
             return "scrolled\n"
         if name == "wait":
-            target = args.get("target")
-            if isinstance(target, (int, float)):
-                await self._maybe_await(slot.page.wait_for_timeout(float(target)))
-            else:
-                await self._maybe_await(slot.page.get_by_text(str(target)).first.wait_for(timeout=10_000))
+            await self._maybe_await(slot.page.wait_for_timeout(float(args["target"])))
+            return "waited\n"
+        if name == "wait-for":
+            await self._wait_for(
+                slot.page,
+                text=args.get("text"),
+                gone=args.get("gone"),
+                url=args.get("url"),
+                timeout_ms=int(args.get("timeoutMs") or DEFAULT_WAIT_TIMEOUT_MS),
+            )
             return "waited\n"
         if name == "screenshot":
             path = str(args["path"])
@@ -548,11 +592,73 @@ class PatchrightRuntime:
             except TypeError:
                 return str(await self._maybe_await(target.aria_snapshot(timeout=SNAPSHOT_ARIA_TIMEOUT_MS)))
 
+    async def _act(self, target: str, locator: Any, action: Any, *, editable: bool) -> None:
+        try:
+            await self._maybe_await(action())
+        except Exception as exc:
+            if PlaywrightTimeoutError is None or not isinstance(exc, PlaywrightTimeoutError):
+                raise
+            raise await self._actionability_error(target, locator, editable=editable) from exc
+
+    async def _actionability_error(self, target: str, locator: Any, *, editable: bool) -> BridgeCodedError:
+        """Classify a timed-out action by probing the element's current state."""
+        probe_ms = ACTIONABILITY_PROBE_TIMEOUT_MS
+        if await self._maybe_await(locator.count()) == 0:
+            if self._is_ref_target(target):
+                return BridgeCodedError(ErrorCode.STALE_REF, STALE_REF_MESSAGE.format(ref=target.removeprefix("@")))
+            return BridgeCodedError(ErrorCode.NOT_FOUND, f"target {target!r} no longer matches any element")
+        if not await self._maybe_await(locator.is_visible()):
+            return BridgeCodedError(ErrorCode.NOT_VISIBLE, f"target {target!r} is not visible")
+        if not await self._maybe_await(locator.is_enabled(timeout=probe_ms)):
+            return BridgeCodedError(ErrorCode.NOT_ENABLED, f"target {target!r} is disabled")
+        if editable and not await self._maybe_await(locator.is_editable(timeout=probe_ms)):
+            return BridgeCodedError(ErrorCode.NOT_EDITABLE, f"target {target!r} is not editable")
+        blocker = await self._maybe_await(locator.evaluate(HIT_TEST_BLOCKER_JS, timeout=probe_ms))
+        if blocker:
+            return BridgeCodedError(
+                ErrorCode.INTERCEPTED, f"target {target!r} is covered by {blocker}; dismiss or target that element"
+            )
+        return BridgeCodedError(
+            ErrorCode.ACTION_TIMEOUT, f"target {target!r} looked actionable but the action did not complete in {ACTION_TIMEOUT_MS}ms"
+        )
+
+    async def _wait_for(
+        self, page: Any, *, text: str | None, gone: str | None, url: str | None, timeout_ms: int
+    ) -> None:
+        deadline = time.monotonic() + timeout_ms / 1000
+        while True:
+            unmet = await self._unmet_conditions(page, text=text, gone=gone, url=url)
+            if not unmet:
+                return
+            if time.monotonic() >= deadline:
+                raise BridgeCodedError(
+                    ErrorCode.WAIT_TIMEOUT,
+                    f"wait timed out after {timeout_ms}ms: {'; '.join(unmet)}; "
+                    f"page url {self._page_url(page)!r}, title {await self._title(page)!r}",
+                )
+            await asyncio.sleep(WAIT_POLL_INTERVAL_S)
+
+    async def _unmet_conditions(self, page: Any, *, text: str | None, gone: str | None, url: str | None) -> list[str]:
+        unmet: list[str] = []
+        if text is not None and await self._visible_text_count(page, text) == 0:
+            unmet.append(f"text {text!r} not visible")
+        if gone is not None and await self._visible_text_count(page, gone) > 0:
+            unmet.append(f"text {gone!r} still visible")
+        if url is not None and not fnmatch.fnmatchcase(self._page_url(page), url):
+            unmet.append(f"url does not match {url!r}")
+        return unmet
+
+    async def _visible_text_count(self, page: Any, text: str) -> int:
+        return await self._maybe_await(page.get_by_text(text).filter(visible=True).count())
+
+    def _is_ref_target(self, target: str) -> bool:
+        return target.startswith("@") or NATIVE_ARIA_REF_PATTERN.fullmatch(target) is not None
+
     async def _target_locator(self, slot: PageSlot, target: str) -> Any:
         normalized = target[1:] if target.startswith("@") else target
         is_native_ref = NATIVE_ARIA_REF_PATTERN.fullmatch(normalized) is not None
         if target.startswith("@") and not is_native_ref:
-            raise RuntimeError(STALE_REF_MESSAGE.format(ref=normalized))
+            raise BridgeCodedError(ErrorCode.STALE_REF, STALE_REF_MESSAGE.format(ref=normalized))
         if is_native_ref:
             return await self._ref_locator(slot, normalized)
         return await self._selector_locator(slot, target)
@@ -564,7 +670,7 @@ class PatchrightRuntime:
                 raise RuntimeError
             return locator
         except Exception as exc:
-            raise RuntimeError(STALE_REF_MESSAGE.format(ref=ref)) from exc
+            raise BridgeCodedError(ErrorCode.STALE_REF, STALE_REF_MESSAGE.format(ref=ref)) from exc
 
     async def _locator_candidates(self, locator: Any, *, limit: int) -> list[Any]:
         candidates: list[Any] = []
@@ -591,7 +697,9 @@ class PatchrightRuntime:
                         return item
             return candidate
         except Exception as exc:
-            raise RuntimeError(f"target {selector!r} is neither a current snapshot ref nor a matching selector") from exc
+            raise BridgeCodedError(
+                ErrorCode.NOT_FOUND, f"target {selector!r} is neither a current snapshot ref nor a matching selector"
+            ) from exc
 
     async def _metadata(self, slot: PageSlot) -> dict[str, str | int]:
         page = slot.page

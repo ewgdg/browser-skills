@@ -228,7 +228,7 @@ def test_actions_use_real_local_backend_without_stdout(monkeypatch: pytest.Monke
         def __init__(self) -> None:
             self.calls: list[tuple[str, dict[str, object]]] = []
 
-        def call_tool(self, name: str, args: dict[str, object]) -> str:
+        def call_tool(self, name: str, args: dict[str, object], **_transport: object) -> str:
             self.calls.append((name, args))
             if name == "eval":
                 return json.dumps({"ready": True}) + "\n"
@@ -260,17 +260,17 @@ def test_actions_use_real_local_backend_without_stdout(monkeypatch: pytest.Monke
     assert thread.press("Enter") == "press ok\n"
     assert thread.scroll("down") == "scroll ok\n"
     assert thread.wait(250) == "wait ok\n"
-    assert thread.wait("Loaded") == "wait ok\n"
+    assert thread.wait("Loaded") == "wait-for ok\n"
     assert thread.back() == "back ok\n"
     assert thread.text() == "text ok\n"
     assert thread.screenshot(str(tmp_path / "shot.png"), full_page=True) == "screenshot ok\n"
     assert thread.evaluate("({ready: true})") == {"ready": True}
 
     assert [name for name, _args in client.calls] == [
-        "state", "click", "fill", "type", "press", "scroll", "wait", "wait", "back", "text", "screenshot", "eval"
+        "state", "click", "fill", "type", "press", "scroll", "wait", "wait-for", "back", "text", "screenshot", "eval"
     ]
     assert client.calls[6][1]["target"] == 250
-    assert client.calls[7][1]["target"] == "Loaded"
+    assert client.calls[7][1]["text"] == "Loaded"
     assert capsys.readouterr().out == ""
 
 
@@ -281,7 +281,7 @@ def test_wait_string_that_looks_numeric_is_text_not_duration(
         def __init__(self) -> None:
             self.calls: list[tuple[str, dict[str, object]]] = []
 
-        def call_tool(self, name: str, args: dict[str, object]) -> str:
+        def call_tool(self, name: str, args: dict[str, object], **_transport: object) -> str:
             self.calls.append((name, args))
             return "waited\n"
 
@@ -299,7 +299,9 @@ def test_wait_string_that_looks_numeric_is_text_not_duration(
 
     Thread("research").wait("123")
 
-    assert client.calls == [("wait", {"thread": "research", "target": "123"})]
+    assert client.calls == [
+        ("wait-for", {"thread": "research", "text": "123", "gone": None, "url": None, "timeoutMs": None})
+    ]
 
 
 def test_evaluate_preserves_scalar_string_types_and_rejects_malformed_local_value(

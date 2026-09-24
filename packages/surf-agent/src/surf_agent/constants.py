@@ -23,3 +23,5 @@ CHROME_NEW_WINDOW_TIMEOUT_S = 10.0
 SNAPSHOT_DIFF_MAX_RATIO = 0.50
 SNAPSHOT_DIFF_MIN_SAVED_CHARS = 250
 SNAPSHOT_DIFF_MAX_HUNKS = 8
+# Matches the former fixed text-wait timeout so `wait("text")` keeps its behavior.
+DEFAULT_WAIT_TIMEOUT_MS = 10_000

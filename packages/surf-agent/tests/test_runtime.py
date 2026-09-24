@@ -841,10 +841,10 @@ class AxiBackendTests(unittest.TestCase):
             def is_visible(self, timeout=None):
                 return True
 
-            def click(self):
+            def click(self, timeout=None):
                 self.clicked = True
 
-            def fill(self, text):
+            def fill(self, text, timeout=None):
                 self.filled = text
 
         class FakeLocatorGroup:
@@ -861,10 +861,10 @@ class AxiBackendTests(unittest.TestCase):
             def first(self):
                 return self.items[0]
 
-            def click(self):
+            def click(self, timeout=None):
                 return self.first.click()
 
-            def fill(self, text):
+            def fill(self, text, timeout=None):
                 return self.first.fill(text)
 
         class FakeBodyLocator:
@@ -1071,7 +1071,7 @@ class AxiBackendTests(unittest.TestCase):
             def count(self):
                 return self.match_count
 
-            def click(self):
+            def click(self, timeout=None):
                 self.clicked = True
 
         class FakePage:

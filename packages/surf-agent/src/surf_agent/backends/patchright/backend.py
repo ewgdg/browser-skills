@@ -42,9 +42,9 @@ class PatchrightBridgeClient(LocalBridgeClient):
             )
         return True
 
-    def call_tool(self, name: str, args: dict[str, Any] | None = None) -> str:
+    def call_tool(self, name: str, args: dict[str, Any] | None = None, *, extra_timeout_s: float = 0.0) -> str:
         try:
-            return super().call_tool(name, args)
+            return super().call_tool(name, args, extra_timeout_s=extra_timeout_s)
         except BridgeToolError as exc:
             if exc.detail != CONTEXT_RESTART_REQUIRED:
                 raise
@@ -52,7 +52,7 @@ class PatchrightBridgeClient(LocalBridgeClient):
         # starts a fresh bridge instead of replaying against the dead context.
         self._wait_until_stopped()
         # This sentinel is raised before the interrupted operation can complete.
-        return super().call_tool(name, args)
+        return super().call_tool(name, args, extra_timeout_s=extra_timeout_s)
 
 
 class PatchrightBackend(LocalBridgeBackend):

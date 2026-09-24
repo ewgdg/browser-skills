@@ -11,6 +11,16 @@ class ScreenshotOptions:
 
 
 @dataclass(frozen=True)
+class WaitConditions:
+    """Page conditions that must all hold; ``timeout_ms=None`` selects the backend default."""
+
+    text: str | None = None
+    gone: str | None = None
+    url: str | None = None
+    timeout_ms: int | None = None
+
+
+@dataclass(frozen=True)
 class AgentPage:
     page_id: int
     url: str | None = None
@@ -31,7 +41,7 @@ class BrowserBackend(Protocol):
 
     def snapshot(self) -> str: ...
 
-    def text(self) -> str: ...
+    def text(self, target: str | None = None) -> str: ...
 
     def click(self, target: str) -> str: ...
 
@@ -43,11 +53,9 @@ class BrowserBackend(Protocol):
 
     def scroll(self, direction: str) -> str: ...
 
-    def wait(self, target: str) -> str: ...
-
     def wait_ms(self, milliseconds: int) -> str: ...
 
-    def wait_for_text(self, text: str) -> str: ...
+    def wait_for(self, conditions: WaitConditions) -> str: ...
 
     def back(self) -> str: ...
 

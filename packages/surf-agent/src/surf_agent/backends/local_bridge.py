@@ -10,10 +10,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, ContextManager
 
-from ..constants import CHROME_NEW_WINDOW_TIMEOUT_S
-from ..errors import BridgeToolError, BridgeUnavailable, SurfAgentError
+from ..constants import CHROME_NEW_WINDOW_TIMEOUT_S, DEFAULT_WAIT_TIMEOUT_MS
+from ..errors import BridgeToolError, BridgeUnavailable, ErrorCode, SurfAgentError
 from ..snapshots import snapshot_capture_from_page
-from .base import AgentPage, ScreenshotOptions
+from .base import AgentPage, ScreenshotOptions, WaitConditions
 
 BRIDGE_HEALTH_POLL_INTERVAL_S = 0.05
 
@@ -40,9 +40,11 @@ class LocalBridgeClient:
         self.timeout_hint = timeout_hint
         self.before_start = before_start
 
-    def call_tool(self, name: str, args: dict[str, Any] | None = None) -> str:
+    def call_tool(self, name: str, args: dict[str, Any] | None = None, *, extra_timeout_s: float = 0.0) -> str:
         self._ensure_running()
-        output = self._call_tool(name, args, return_none_on_connection_failure=False)
+        output = self._call_tool(
+            name, args, return_none_on_connection_failure=False, extra_timeout_s=extra_timeout_s
+        )
         assert isinstance(output, str)
         return output
 
@@ -62,25 +64,27 @@ class LocalBridgeClient:
         return self._call_tool(name, args, return_none_on_connection_failure=True)
 
     def _call_tool(
-        self, name: str, args: dict[str, Any] | None, *, return_none_on_connection_failure: bool
+        self,
+        name: str,
+        args: dict[str, Any] | None,
+        *,
+        return_none_on_connection_failure: bool,
+        extra_timeout_s: float = 0.0,
     ) -> str | None:
         payload = json.dumps({"name": name, "args": args or {}}).encode()
         request = self._call_request(payload)
+        timeout_s = self.timeout_s + extra_timeout_s
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as response:
+            with urllib.request.urlopen(request, timeout=timeout_s) as response:
                 data = json.loads(response.read().decode())
         except urllib.error.HTTPError as exc:
-            detail = exc.read().decode(errors="replace") or str(exc)
-            try:
-                parsed = json.loads(detail)
-                detail = parsed.get("error") or detail
-            except json.JSONDecodeError:
-                pass
-            raise BridgeToolError(backend_label=self.backend_label, tool_name=name, detail=str(detail)) from exc
+            raise self._tool_error(name, exc) from exc
         except TimeoutError as exc:
-            raise self._tool_timeout(name, exc) from exc
+            raise self._tool_timeout(name, timeout_s) from exc
         except urllib.error.URLError as exc:
-            if return_none_on_connection_failure and not _is_timeout_url_error(exc):
+            if _is_timeout_url_error(exc):
+                raise self._tool_timeout(name, timeout_s) from exc
+            if return_none_on_connection_failure:
                 return None
             raise self._bridge_unavailable(exc) from exc
         except OSError as exc:
@@ -90,9 +94,24 @@ class LocalBridgeClient:
         result = data.get("result")
         return result if isinstance(result, str) else ""
 
-    def _tool_timeout(self, name: str, exc: BaseException) -> BridgeUnavailable:
+    def _tool_error(self, name: str, exc: urllib.error.HTTPError) -> BridgeToolError:
+        detail = exc.read().decode(errors="replace") or str(exc)
+        code = None
+        try:
+            parsed = json.loads(detail)
+        except json.JSONDecodeError:
+            pass
+        else:
+            detail = parsed.get("error") or detail
+            code = ErrorCode(parsed["code"]) if parsed.get("code") else None
+        return BridgeToolError(backend_label=self.backend_label, tool_name=name, detail=str(detail), code=code)
+
+    def _tool_timeout(self, name: str, timeout_s: float) -> BridgeUnavailable:
+        # The request reached a healthy bridge, so the browser may still apply it.
         return BridgeUnavailable(
-            f"{self.backend_label} bridge tool {name} timed out after {self.timeout_s:g}s{self.timeout_hint}"
+            f"{self.backend_label} bridge tool {name} timed out after {timeout_s:g}s; "
+            f"its effect is unknown{self.timeout_hint}",
+            code=ErrorCode.OUTCOME_UNKNOWN,
         )
 
     def _bridge_unavailable(self, exc: BaseException) -> BridgeUnavailable:
@@ -258,8 +277,8 @@ class LocalBridgeBackend:
     def snapshot(self) -> str:
         return self._call("snapshot")
 
-    def text(self) -> str:
-        return self._call("text")
+    def text(self, target: str | None = None) -> str:
+        return self._call("text", None if target is None else {"target": target})
 
     def click(self, target: str) -> str:
         return self._call("click", {"uid": target})
@@ -276,15 +295,19 @@ class LocalBridgeBackend:
     def scroll(self, direction: str) -> str:
         return self._call("scroll", {"direction": direction})
 
-    def wait(self, target: str) -> str:
-        value: str | int = int(target) if target.isdigit() else target
-        return self._call("wait", {"target": value})
-
     def wait_ms(self, milliseconds: int) -> str:
         return self._call("wait", {"target": milliseconds})
 
-    def wait_for_text(self, text: str) -> str:
-        return self._call("wait", {"target": text})
+    def wait_for(self, conditions: WaitConditions) -> str:
+        payload = {
+            "text": conditions.text,
+            "gone": conditions.gone,
+            "url": conditions.url,
+            "timeoutMs": conditions.timeout_ms,
+        }
+        wait_s = (conditions.timeout_ms or DEFAULT_WAIT_TIMEOUT_MS) / 1000
+        # The bridge holds the response for the whole wait; transport must outlast it.
+        return self.client.call_tool("wait-for", self._thread_args(payload), extra_timeout_s=wait_s)
 
     def back(self) -> str:
         return self._call("back")
@@ -303,7 +326,10 @@ class LocalBridgeBackend:
             raise SurfAgentError(f"{self.display_name} bridge returned invalid evaluation JSON") from exc
 
     def _call(self, name: str, payload: dict[str, Any] | None = None) -> str:
-        return self.client.call_tool(name, {"thread": self.agent.state_file.stem, **(payload or {})})
+        return self.client.call_tool(name, self._thread_args(payload))
+
+    def _thread_args(self, payload: dict[str, Any] | None) -> dict[str, Any]:
+        return {"thread": self.agent.state_file.stem, **(payload or {})}
 
 
 
