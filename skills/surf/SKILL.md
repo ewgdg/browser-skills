@@ -11,7 +11,7 @@ Run Python through `scripts/run.py`. Named browser threads persist between calls
 
 ## Prepare
 
-Set `SURF_SKILL` to the absolute directory containing this installed `SKILL.md`, not the working directory. Requires Python 3, `uv`, and Google Chrome; the launcher manages Python dependencies.
+Set `SURF_SKILL` to the absolute directory containing this installed `SKILL.md`, not the working directory. Runs on Linux and macOS; Windows is unsupported. Requires Python 3, `uv`, and Google Chrome; the launcher manages Python dependencies.
 
 The launcher installs the runtime pinned by this skill. If it reports a missing or invalid pin, the skill is incorrectly installed; report that instead of working around it. For dependency failures, read [launcher setup](docs/launcher.md).
 

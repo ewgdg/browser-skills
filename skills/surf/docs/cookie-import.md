@@ -4,7 +4,7 @@ Read this for initial setup, missing login state, or cookie-import startup failu
 
 ## Consent and behavior
 
-Live cookie import is Linux-only, opt-in, and limited to explicitly allowed domains unless the user deliberately consents to all-domain exposure. Do not set, broaden, or reset access without user intent.
+Live cookie import runs on Linux and macOS, is opt-in, and limited to explicitly allowed domains unless the user deliberately consents to all-domain exposure. Do not set, broaden, or reset access without user intent.
 
 Before starting an inactive dedicated profile, AXI and Patchright import configured cookies only when the source fingerprint changed. There is no timed refresh. Imports upsert matching identities; destination-only cookies survive. Logging out in source Chrome therefore does not delete the corresponding Surf cookie.
 
@@ -35,7 +35,7 @@ Use `all_domains=True` instead of `domains` only for explicit broader consent. T
 
 Use when a login wall blocks the task and the user's normal Chrome is already signed in. Ask first, naming the domain: "Import your Chrome cookies for github.com into Surf?" Proceed only on a yes.
 
-If `Browser().cookie_source()` is `None`, ask which Chrome profile to use (Linux default: `~/.config/google-chrome`, profile `Default`) and configure it with `set_cookie_source(..., domains=[domain])`.
+If `Browser().cookie_source()` is `None`, ask which Chrome profile to use (default: `~/.config/google-chrome` on Linux, `~/Library/Application Support/Google/Chrome` on macOS; profile `Default`) and configure it with `set_cookie_source(..., domains=[domain])`.
 
 Close the task's thread, then import:
 
@@ -65,7 +65,7 @@ An explicit import bypasses source-fingerprint suppression. It still refuses an 
 
 ## Compatibility failures
 
-Source and destination must use the same Chrome family, belong to the same OS user, and have matching `Local State.os_crypt` metadata. Source Chrome can stay open: Surf reads its cookie database with SQLite online backup. Imported Linux v11 cookies require Chrome's real password store/keychain; Patchright disables its incompatible automation defaults.
+Source and destination must use the same Chrome family, belong to the same OS user, and have matching `Local State.os_crypt` metadata. Source Chrome can stay open: Surf reads its cookie database with SQLite online backup. Imported cookies stay encrypted, so Surf's Chrome must read the same key as the source: the OS password store on Linux, the `Chrome Safe Storage` Keychain item on macOS; Patchright disables its incompatible automation defaults.
 
 Validation and identity failures stop startup instead of silently accepting stale cookies. Correct the reported mismatch and retry explicit import with the destination inactive. For AXI identity overrides, see [AXI backend](axi-backend.md).
 

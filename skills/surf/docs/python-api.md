@@ -85,7 +85,7 @@ Construct `Browser()` without opening a window. Methods are silent; print their 
 | `profile()` | `ProfileInfo`: backend, profile directory, browser URL, Chrome class, Patchright bridge port and app ID. |
 | `open_profile(url="about:blank")` | Opens dedicated profile for manual setup without automation/debugging; returns `None`. |
 | `cookie_source()` | `CookieSourceConfig` or `None`. |
-| `set_cookie_source(source, profile, *, domains=(), all_domains=False)` | Validates/persists explicit access scope; returns `CookieSourceConfig`. Provide domains or all-domain consent, exclusively. Linux-only. |
+| `set_cookie_source(source, profile, *, domains=(), all_domains=False)` | Validates/persists explicit access scope; returns `CookieSourceConfig`. Provide domains or all-domain consent, exclusively. Linux and macOS only. |
 | `reset_cookie_source()` | Disables future imports, not already imported cookies; returns `None`. |
 | `import_cookies()` | Explicit refresh; returns `CookieImportResult` with `imported_rows`, `skipped`, `destination`. |
 | `import_cookies_for(domain)` | Adds one consented domain to the configured scope, stops the browser, and imports; returns `CookieImportResult`. Refuses, naming them, while any thread is open. |

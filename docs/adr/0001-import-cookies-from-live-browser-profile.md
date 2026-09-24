@@ -13,3 +13,7 @@ Full profile copying was rejected because browser storage mixes authentication w
 ## Consequences
 
 The configured source is fingerprinted using its Cookies database and WAL/journal metadata; automatic import runs only after observable change, while an explicit import always runs. Cookie import is opt-in, preserves destination-only sessions for convenience, and aborts backend startup on validation or compatibility failure. When no user-visible pages remain, AXI stops its bridge after a two-second recheck; Patchright stops immediately after returning the close response because Chrome may already have closed its persistent context. Closed Patchright contexts restart through lifecycle preflight and retry the interrupted command once. Automated coverage uses deterministic SQLite and lifecycle tests; real-browser smoke testing remains optional.
+
+## Amendment: macOS, not Windows
+
+macOS is supported with the same verbatim row copy: Chrome keeps one cookie key per app in the Keychain item `Chrome Safe Storage`, and Surf's destination is the same signed Chrome app, so it reads that key. Windows is unsupported: a running Chrome holds its Cookies database under a mandatory Windows file lock, so the online backup this design relies on cannot read it without closing the source browser.

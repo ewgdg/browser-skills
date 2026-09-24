@@ -15,6 +15,8 @@ pi install git:github.com/ewgdg/browser-skills
 
 The Surf skill launches ordinary Python files or stdin through `skills/surf/scripts/run.py`. Each ordinary call starts a fresh interpreter; `--new-session` creates a session interpreter whose id later calls pass back with `--session ID`, with an idle timeout and `--kill-session`/`--list-sessions` for control. The dedicated browser and named threads survive either way. The Surf action CLI is removed. See [Surf skill](skills/surf/SKILL.md) for the execution workflow and [Python API](docs/surf-python-api.md) for the interface.
 
+Supported platforms: Linux and macOS. Windows is unsupported.
+
 The launcher requires Python 3 and `uv`, selects Python 3.11, and supplies `surf-agent[patchright]`. Google Chrome must be installed separately. Patchright is the default; AXI remains an explicitly selected alternative. Camoufox is not supported.
 
 The installed skill's `runtime-revision` selects its matching published runtime. Update the skill to receive runtime updates; no separate Surf runtime installation or dependency override is needed. Set `SURF_SKILL` to the absolute directory containing the installed Surf `SKILL.md`, then validate setup:
