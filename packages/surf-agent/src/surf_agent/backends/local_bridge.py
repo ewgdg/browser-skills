@@ -296,7 +296,7 @@ class LocalBridgeBackend:
         return self._call("scroll", {"direction": direction})
 
     def wait_ms(self, milliseconds: int) -> str:
-        return self._call("wait", {"target": milliseconds})
+        return self._call_holding("wait", {"target": milliseconds}, milliseconds)
 
     def wait_for(self, conditions: WaitConditions) -> str:
         payload = {
@@ -305,9 +305,11 @@ class LocalBridgeBackend:
             "url": conditions.url,
             "timeoutMs": conditions.timeout_ms,
         }
-        wait_s = (conditions.timeout_ms or DEFAULT_WAIT_TIMEOUT_MS) / 1000
+        return self._call_holding("wait-for", payload, conditions.timeout_ms or DEFAULT_WAIT_TIMEOUT_MS)
+
+    def _call_holding(self, name: str, payload: dict[str, Any], hold_ms: int) -> str:
         # The bridge holds the response for the whole wait; transport must outlast it.
-        return self.client.call_tool("wait-for", self._thread_args(payload), extra_timeout_s=wait_s)
+        return self.client.call_tool(name, self._thread_args(payload), extra_timeout_s=hold_ms / 1000)
 
     def back(self) -> str:
         return self._call("back")

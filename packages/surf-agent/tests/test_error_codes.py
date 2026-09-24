@@ -104,6 +104,18 @@ def test_wait_transport_timeout_covers_the_wait_duration(bridge_client) -> None:
     assert backend.wait_for(WaitConditions(text="Saved", timeout_ms=1_000)) == "waited\n"
 
 
+def test_sleep_transport_timeout_covers_the_sleep_duration(bridge_client) -> None:
+    def slow_sleep(_name, _args):
+        time.sleep(0.3)
+        return "waited\n"
+
+    agent = SimpleNamespace(state_file=Path("research.json"))
+    backend = LocalBridgeBackend(agent, client=bridge_client(slow_sleep, timeout_s=0.2), welcome_url=lambda: "about:blank")
+    backend.client_attr = "unused"
+
+    assert backend.wait_ms(300) == "waited\n"
+
+
 class RecordingClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
