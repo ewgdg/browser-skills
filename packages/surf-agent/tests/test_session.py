@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from surf_agent import session
+from surf_agent.processes import iter_process_args
 
 
 def process_state(pid: int) -> str | None:
@@ -69,7 +70,7 @@ def isolated_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     # A worker whose socket file was already removed is still this test's process,
     # so it is named by its command line instead: a test that fails midway must not
     # leave interpreters behind for the next run to trip over.
-    for pid, arguments in session._process_commands():
+    for pid, arguments in iter_process_args():
         command = " ".join(arguments)
         if str(directory) in command and "surf_agent.session" in command:
             with contextlib.suppress(OSError):

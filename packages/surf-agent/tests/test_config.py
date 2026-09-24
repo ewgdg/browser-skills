@@ -10,6 +10,7 @@ from surf_agent.config import (
     CookieScope,
     load_config,
     normalize_domains,
+    resolve_cookie_source,
     reset_backend,
     resolve_backend_preference,
     set_backend,
@@ -79,6 +80,19 @@ def test_cookie_source_must_match_a_provable_destination_family(tmp_path: Path) 
 
     assert destination_browser_family(backend="axi", executable="google-chrome") == "chrome"
     assert destination_browser_family(backend="axi", executable="brave-browser") == "brave"
+
+
+def test_cookie_source_family_is_proven_from_macos_user_data_roots(tmp_path: Path) -> None:
+    support = tmp_path / "Library" / "Application Support"
+    roots = {
+        support / "Google" / "Chrome": "chrome",
+        support / "Chromium": "chromium",
+        support / "BraveSoftware" / "Brave-Browser": "brave",
+        support / "Microsoft Edge": "edge",
+    }
+    for root, family in roots.items():
+        (root / "Default").mkdir(parents=True)
+        assert resolve_cookie_source(source=root, profile="Default", scope=CookieScope.from_domains(["example.com"])).family == family
 
 
 def test_cookie_source_rejects_symlink_root(tmp_path: Path) -> None:

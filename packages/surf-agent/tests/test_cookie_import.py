@@ -244,13 +244,22 @@ def test_existing_malformed_local_state_fails_without_overwrite(tmp_path: Path) 
     assert not (destination / "Default" / "Cookies").exists()
 
 
-def test_non_linux_overlap_and_owner_validation_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_macos_imports_like_linux(tmp_path: Path) -> None:
     source_root = tmp_path / "google-chrome"
     source = make_profile(source_root)
     put(source, ".example.com", "session", "source")
     service = importer(tmp_path, source_root, tmp_path / "destination")
     service.platform_name = "darwin"
-    with pytest.raises(SurfAgentError, match="Linux"):
+    assert service.run(force=True).imported_rows == 1
+
+
+def test_unsupported_platform_overlap_and_owner_validation_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_root = tmp_path / "google-chrome"
+    source = make_profile(source_root)
+    put(source, ".example.com", "session", "source")
+    service = importer(tmp_path, source_root, tmp_path / "destination")
+    service.platform_name = "win32"
+    with pytest.raises(SurfAgentError, match="Linux and macOS"):
         service.run(force=True)
 
     with pytest.raises(SurfAgentError, match="overlap"):

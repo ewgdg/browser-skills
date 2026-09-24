@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
@@ -14,7 +13,7 @@ from .chrome_lifecycle import (
     destination_browser_family,
 )
 from .config import CookieSourceConfig
-from .cookie_import import CookieImportResult
+from .cookie_import import UNSUPPORTED_PLATFORM_MESSAGE, CookieImportResult, supports_live_cookie_import
 from .errors import SurfAgentError
 from .runtime import SurfAgent
 
@@ -117,8 +116,8 @@ class Browser:
     ) -> CookieSourceConfig:
         if all_domains == bool(domains):
             raise SurfAgentError("provide domains or all_domains, exclusively")
-        if not sys.platform.startswith("linux"):
-            raise SurfAgentError("live cookie import is supported only on Linux")
+        if not supports_live_cookie_import():
+            raise SurfAgentError(UNSUPPORTED_PLATFORM_MESSAGE)
         scope = (
             config.CookieScope.all()
             if all_domains

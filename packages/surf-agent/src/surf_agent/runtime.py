@@ -31,6 +31,7 @@ from .chrome_lifecycle import (
 )
 from .constants import (
     AXI_BACKEND,
+    CHROME_EXECUTABLE_CANDIDATES,
     CHROME_NEW_WINDOW_TIMEOUT_S,
     DEFAULT_AXI_BIN,
     DEFAULT_AXI_PORT,
@@ -44,6 +45,7 @@ from .constants import (
     SURF_AGENT_WINDOW_TITLE,
 )
 from .cookie_import import CookieImporter
+from .processes import iter_process_args
 from .errors import SurfAgentError
 
 APP_DIRS = PlatformDirs("surf-agent", appauthor=False)
@@ -475,25 +477,6 @@ def has_arg_value(args: Sequence[str], option: str, value: str) -> bool:
     return False
 
 
-def iter_process_args(proc_dir: Path = Path("/proc")) -> list[tuple[int, list[str]]]:
-    processes: list[tuple[int, list[str]]] = []
-    try:
-        entries = list(proc_dir.iterdir())
-    except OSError:
-        return processes
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        try:
-            raw = (entry / "cmdline").read_bytes()
-        except OSError:
-            continue
-        args = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
-        if args:
-            processes.append((int(entry.name), args))
-    return processes
-
-
 def terminate_processes(pids: Sequence[int], *, timeout_s: float = 2.0) -> list[int]:
     stopped: list[int] = []
     for pid in pids:
@@ -528,17 +511,13 @@ def process_exists(pid: int) -> bool:
 
 
 def find_chrome_bin() -> str | None:
-    for candidate in (
-        "google-chrome",
-        "google-chrome-stable",
-        "chromium",
-        "chromium-browser",
-        "brave-browser",
-        "microsoft-edge",
-    ):
+    """The first installed Chrome-family browser, as a shlex-quoted command word."""
+    for candidate in CHROME_EXECUTABLE_CANDIDATES:
         found = shutil.which(candidate)
         if found:
-            return found
+            # Callers shlex-split this value like SURF_AGENT_CHROME_BIN, and macOS
+            # bundle paths contain spaces.
+            return shlex.quote(found)
     return None
 
 

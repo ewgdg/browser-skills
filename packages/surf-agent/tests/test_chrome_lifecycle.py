@@ -4,6 +4,8 @@ from pathlib import Path
 import fcntl
 import multiprocessing
 import os
+import subprocess
+import sys
 import threading
 
 import pytest
@@ -92,6 +94,29 @@ def test_destination_family_is_derived_or_unprovable() -> None:
     assert destination_browser_family(backend="axi", executable="/usr/bin/google-chrome") == "chrome"
     assert destination_browser_family(backend="axi", executable="/usr/bin/chromium") == "chromium"
     assert destination_browser_family(backend="axi", executable="/opt/custom-browser") is None
+
+
+def test_destination_family_recognizes_macos_app_bundles() -> None:
+    bundles = {
+        "'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'": "chrome",
+        "'/Applications/Chromium.app/Contents/MacOS/Chromium'": "chromium",
+        "'/Applications/Brave Browser.app/Contents/MacOS/Brave Browser'": "brave",
+        "'/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'": "edge",
+    }
+    for executable, family in bundles.items():
+        assert destination_browser_family(backend="axi", executable=executable) == family
+
+
+def test_live_process_discovery_keeps_user_data_dir_with_spaces(tmp_path: Path) -> None:
+    # macOS profiles live under "Application Support"; a listing that re-splits a
+    # joined command line on spaces would never match them.
+    profile = tmp_path / "Application Support" / "surf-agent" / "profiles" / "chrome"
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", f"--user-data-dir={profile}"])
+    try:
+        assert child.pid in find_active_chrome_roots(profile)
+    finally:
+        child.kill()
+        child.wait()
 
 
 def test_unknown_idle_inventory_never_stops_or_sleeps(tmp_path: Path) -> None:

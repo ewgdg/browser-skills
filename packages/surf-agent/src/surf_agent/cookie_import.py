@@ -19,6 +19,14 @@ from .errors import SurfAgentError
 DESTINATION_PROFILE = "Default"
 _COOKIE_CANDIDATES = (Path("Cookies"), Path("Network") / "Cookies")
 _SIDECARS = ("-wal", "-journal", "-shm")
+UNSUPPORTED_PLATFORM_MESSAGE = "live cookie import is supported only on Linux and macOS"
+
+
+def supports_live_cookie_import(platform_name: str = sys.platform) -> bool:
+    # Rows are copied still encrypted, so the destination Chrome must derive the
+    # same key. Linux uses the OS user's keyring and macOS one Keychain item per
+    # app, both shared with the source. Other platforms are unverified.
+    return platform_name.startswith("linux") or platform_name == "darwin"
 
 
 @dataclass(frozen=True)
@@ -113,8 +121,8 @@ class CookieImporter:
             raise SurfAgentError("destination Surf browser profile is active; stop it before importing cookies")
 
     def _validate_platform_and_identity(self) -> None:
-        if not self.platform_name.startswith("linux"):
-            raise SurfAgentError("live cookie import is supported only on Linux")
+        if not supports_live_cookie_import(self.platform_name):
+            raise SurfAgentError(UNSUPPORTED_PLATFORM_MESSAGE)
         if self.destination_family is None:
             raise SurfAgentError("could not prove the browser family of the Surf destination")
         if self.config.family != self.destination_family:

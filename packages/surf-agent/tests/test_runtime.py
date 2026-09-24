@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -27,6 +28,7 @@ from surf_agent.backends import (
     surf_agent_app_url,
 )
 from surf_agent.runtime import (
+    find_chrome_bin,
     APP_DIRS,
     AxiBridgeClient,
     SurfAgent,
@@ -1767,3 +1769,11 @@ class PatchrightExecutableTests(unittest.TestCase):
             ):
                 agent.profile_open()
         self.assertEqual(agent.calls, [])
+
+
+def test_find_chrome_bin_finds_the_macos_app_bundle_as_one_command_word() -> None:
+    bundle = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+    with patch("surf_agent.runtime.shutil.which", side_effect=lambda name: name if name == bundle else None):
+        found = find_chrome_bin()
+    # Callers shlex-split the configured executable, so the space must survive.
+    assert found is not None and shlex.split(found) == [bundle]

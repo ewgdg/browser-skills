@@ -23,7 +23,6 @@ import os
 import re
 import secrets
 import select
-import shlex
 import signal
 import socket
 import subprocess
@@ -33,9 +32,10 @@ import time
 import traceback
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from .errors import SurfAgentError
+from .processes import iter_process_args
 from .runtime import surf_agent_state_dir
 
 DEFAULT_CELL_TIMEOUT_S = 300.0
@@ -265,52 +265,6 @@ def _proc_available() -> bool:
     return Path("/proc").is_dir()
 
 
-def _proc_commands() -> Iterator[tuple[int, list[str]]]:
-    try:
-        entries = list(Path("/proc").iterdir())
-    except OSError:
-        return
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        try:
-            raw = (entry / "cmdline").read_bytes()
-        except OSError:
-            continue
-        yield int(entry.name), [part.decode(errors="replace") for part in raw.split(b"\0") if part]
-
-
-def _ps_commands() -> Iterator[tuple[int, list[str]]]:
-    """The same view on a host without /proc, such as macOS."""
-    try:
-        listing = subprocess.run(
-            # -ww disables the width truncation BSD ps applies by default, which
-            # would cut the command line before the socket path it must match.
-            ["ps", "-ww", "-Ao", "pid=,command="],
-            capture_output=True,
-            text=True,
-            timeout=PS_TIMEOUT_S,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return
-    for line in listing.stdout.splitlines():
-        pid, _, command = line.strip().partition(" ")
-        if not pid.isdigit() or not command.strip():
-            continue
-        try:
-            arguments = shlex.split(command)
-        except ValueError:
-            arguments = command.split()
-        yield int(pid), arguments
-
-
-def _process_commands() -> Iterator[tuple[int, list[str]]]:
-    if _proc_available():
-        yield from _proc_commands()
-    else:
-        yield from _ps_commands()
-
-
 def _names_session_socket(arguments: list[str], socket_path: Path) -> bool:
     """Whether this command line is a worker for exactly this socket path.
 
@@ -394,7 +348,7 @@ def _candidate_pid(socket_path: Path) -> int | None:
     """
     matches = [
         pid
-        for pid, arguments in _ps_commands()
+        for pid, arguments in iter_process_args()
         if _names_session_socket(arguments, socket_path)
     ]
     return matches[0] if len(matches) == 1 else None

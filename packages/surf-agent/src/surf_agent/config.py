@@ -128,7 +128,8 @@ def validate_profile_name(value: str) -> str:
 def detect_browser_family(root: Path) -> str:
     parts = {part.lower() for part in root.parts}
     name = root.name.lower()
-    if "google-chrome" in parts or name in {"google-chrome", "google-chrome-beta", "google-chrome-unstable"}:
+    # macOS keeps Chrome's user data in ~/Library/Application Support/Google/Chrome.
+    if "google-chrome" in parts or name in {"google-chrome", "google-chrome-beta", "google-chrome-unstable"} or (name == "chrome" and root.parent.name.lower() == "google"):
         return "chrome"
     if "bravesoftware" in parts or "brave-browser" in parts or "brave" in name:
         return "brave"

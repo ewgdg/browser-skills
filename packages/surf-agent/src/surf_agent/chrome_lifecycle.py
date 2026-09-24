@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable, Iterator, Protocol, Sequence
 
 from .errors import SurfAgentError
+from .processes import iter_process_args
 
 
 class CookieImportRunner(Protocol):
@@ -136,13 +137,14 @@ def browser_executable_family(executable: str | None) -> str | None:
         name = Path(shlex.split(executable)[0]).name.lower()
     except (IndexError, ValueError):
         return None
-    if name in {"google-chrome", "google-chrome-stable", "google-chrome-beta", "google-chrome-unstable", "chrome"}:
+    # Linux names come from PATH; the spaced names are macOS app-bundle executables.
+    if name in {"google-chrome", "google-chrome-stable", "google-chrome-beta", "google-chrome-unstable", "chrome", "google chrome"}:
         return "chrome"
     if name in {"chromium", "chromium-browser"}:
         return "chromium"
     if "brave" in name:
         return "brave"
-    if name in {"microsoft-edge", "microsoft-edge-stable", "microsoft-edge-beta", "microsoft-edge-dev"}:
+    if name in {"microsoft-edge", "microsoft-edge-stable", "microsoft-edge-beta", "microsoft-edge-dev", "microsoft edge"}:
         return "edge"
     return None
 
@@ -156,7 +158,7 @@ def destination_browser_family(*, backend: str, executable: str | None) -> str |
 def find_active_chrome_roots(profile_dir: Path, *, process_args: Callable[[], Sequence[tuple[int, Sequence[str]]]] | None = None) -> list[int]:
     """Find any browser root using exactly this resolved user-data root."""
     wanted = profile_dir.expanduser().resolve(strict=False)
-    inspector = process_args or _iter_process_args
+    inspector = process_args or iter_process_args
     found: list[int] = []
     for pid, args in inspector():
         if pid == os.getpid() or not args or any(argument.startswith("--type=") for argument in args):
@@ -184,22 +186,3 @@ def _option_value(args: Sequence[str], option: str) -> str | None:
         if argument.startswith(f"{option}="):
             return argument.split("=", 1)[1]
     return None
-
-
-def _iter_process_args() -> list[tuple[int, list[str]]]:
-    result: list[tuple[int, list[str]]] = []
-    try:
-        entries = list(Path("/proc").iterdir())
-    except OSError:
-        return result
-    for entry in entries:
-        if not entry.name.isdigit():
-            continue
-        try:
-            raw = (entry / "cmdline").read_bytes()
-        except OSError:
-            continue
-        args = [part.decode(errors="replace") for part in raw.split(b"\0") if part]
-        if args:
-            result.append((int(entry.name), args))
-    return result
