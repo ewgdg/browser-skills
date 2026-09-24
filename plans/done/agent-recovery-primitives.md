@@ -53,7 +53,8 @@ Agents recover better when they can branch on a stable code and when a failure n
 - [x] Scoped text
 - [x] Docs
 - [x] Commits and pin (local; not pushed)
-- [ ] Installed acceptance against a built wheel and packed skill before publishing
+- [x] Installed acceptance against a built wheel and packed skill, then against the published pin
+- [x] Follow-ups: long `wait(ms)` outlasts transport timeout; `Browser().import_cookies_for(domain)` with login-wall consent flow
 
 ## Surprises & Discoveries
 
@@ -67,3 +68,7 @@ Agents recover better when they can branch on a stable code and when a failure n
 - Extend `wait` rather than add `expect`: waiting and expecting are the same poll-or-raise operation.
 
 ## Outcomes & Retrospective
+
+- Shipped error codes, conditional `wait`, scoped `text(target)`, the long-sleep transport fix, and consent-driven single-site cookie import (restart-based option A; live injection rejected because it needs Chrome cookie decryption).
+- Installed acceptance exposed a stale exact-stdout assertion from the session-metadata change; fixed in the test.
+- macOS remains unverified; tracked in a GitHub issue.
