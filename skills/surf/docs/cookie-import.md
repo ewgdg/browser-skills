@@ -31,6 +31,23 @@ browser.set_cookie_source(
 
 Use `all_domains=True` instead of `domains` only for explicit broader consent. The source path names Chrome's user-data directory; the second argument names its profile.
 
+## Import for one site
+
+Use when a login wall blocks the task and the user's normal Chrome is already signed in. Ask first, naming the domain: "Import your Chrome cookies for github.com into Surf?" Proceed only on a yes.
+
+If `Browser().cookie_source()` is `None`, ask which Chrome profile to use (Linux default: `~/.config/google-chrome`, profile `Default`) and configure it with `set_cookie_source(..., domains=[domain])`.
+
+Close the task's thread, then import:
+
+```python
+from surf_agent import Browser, Thread
+
+Thread("research-42").close()
+print(Browser().import_cookies_for("github.com"))
+```
+
+`import_cookies_for` adds the domain to the allowlist (an all-domain scope stays as is), stops the Surf browser, and imports. It refuses and names the open threads when any remain, because stopping the browser would close them; do not close other tasks' threads to get past it—report it to the user. Afterwards reopen the page with the same thread name.
+
 ## Force refresh
 
 Close Surf pages first. Global cleanup below is appropriate only when the user owns all remembered threads; otherwise coordinate with their owners:

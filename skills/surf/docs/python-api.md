@@ -88,6 +88,7 @@ Construct `Browser()` without opening a window. Methods are silent; print their 
 | `set_cookie_source(source, profile, *, domains=(), all_domains=False)` | Validates/persists explicit access scope; returns `CookieSourceConfig`. Provide domains or all-domain consent, exclusively. Linux-only. |
 | `reset_cookie_source()` | Disables future imports, not already imported cookies; returns `None`. |
 | `import_cookies()` | Explicit refresh; returns `CookieImportResult` with `imported_rows`, `skipped`, `destination`. |
+| `import_cookies_for(domain)` | Adds one consented domain to the configured scope, stops the browser, and imports; returns `CookieImportResult`. Refuses, naming them, while any thread is open. |
 | `stop_bridge()` | Stops selected automation runtime; returns `None`. |
 | `threads()` | List of `ThreadInfo(name, page_id, url, title)` from Patchright's running bridge or AXI's local records; does not start a bridge or scan every browser page. |
 | `close_matching(pattern)` | Closes remembered pages whose thread names match the glob; returns `None`. |

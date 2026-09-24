@@ -114,3 +114,101 @@ def test_explicit_import_delegates_to_agent_lifecycle(
     monkeypatch.setattr("surf_agent.browser.SurfAgent", lambda: agent)
     assert Browser().import_cookies().imported_rows == 3
     assert agent.force_calls == 1
+
+
+def configure_domain_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, all_domains: bool = False) -> Path:
+    config = tmp_path / "config.json"
+    source = tmp_path / "google-chrome"
+    make_source(source)
+    scope = {"all_domains": True, "domains": []} if all_domains else {"all_domains": False, "domains": ["example.com"]}
+    config.write_text(
+        json.dumps(
+            {
+                "cookie_source": {
+                    "root": str(source),
+                    "profile": "Default",
+                    "family": "chrome",
+                    "scope": scope,
+                }
+            }
+        )
+    )
+    monkeypatch.setattr("surf_agent.runtime.backend_config_file", lambda: config)
+    monkeypatch.setenv("SURF_AGENT_CHROME_BIN", "google-chrome")
+    return config
+
+
+class DomainImportAgent:
+    backend = "patchright"
+
+    def __init__(self, threads: list[dict[str, object]]) -> None:
+        self.events: list[str] = []
+        self._threads = threads
+        agent = self
+
+        class Backend:
+            def list_threads(self) -> list[dict[str, object]]:
+                return agent._threads
+
+            def bridge_stop(self) -> int:
+                agent.events.append("stop")
+                return 0
+
+        self.browser_backend = Backend()
+
+    def force_cookie_import(self):
+        from surf_agent.cookie_import import CookieImportResult
+
+        self.events.append("import")
+        return CookieImportResult(imported_rows=2, destination=Path("/dest/Cookies"))
+
+
+def test_import_cookies_for_adds_domain_then_restarts_and_imports(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = configure_domain_scope(tmp_path, monkeypatch)
+    agent = DomainImportAgent(threads=[])
+    monkeypatch.setattr("surf_agent.browser.SurfAgent", lambda **_kwargs: agent)
+
+    result = Browser().import_cookies_for("GitHub.com")
+
+    assert result.imported_rows == 2
+    assert agent.events == ["stop", "import"]
+    assert json.loads(config.read_text())["cookie_source"]["scope"]["domains"] == ["example.com", "github.com"]
+
+
+def test_import_cookies_for_refuses_while_threads_are_open(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = configure_domain_scope(tmp_path, monkeypatch)
+    before = config.read_text()
+    agent = DomainImportAgent(threads=[{"thread": "other-task", "page_id": 1, "url": "https://a.test", "title": "A"}])
+    monkeypatch.setattr("surf_agent.browser.SurfAgent", lambda **_kwargs: agent)
+
+    with pytest.raises(SurfAgentError, match="other-task"):
+        Browser().import_cookies_for("github.com")
+
+    assert agent.events == []
+    assert config.read_text() == before
+
+
+def test_import_cookies_for_keeps_all_domain_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = configure_domain_scope(tmp_path, monkeypatch, all_domains=True)
+    agent = DomainImportAgent(threads=[])
+    monkeypatch.setattr("surf_agent.browser.SurfAgent", lambda **_kwargs: agent)
+
+    Browser().import_cookies_for("github.com")
+
+    assert json.loads(config.read_text())["cookie_source"]["scope"] == {"all_domains": True, "domains": []}
+    assert agent.events == ["stop", "import"]
+
+
+def test_import_cookies_for_requires_configured_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("surf_agent.runtime.backend_config_file", lambda: tmp_path / "config.json")
+
+    with pytest.raises(SurfAgentError, match="set_cookie_source"):
+        Browser().import_cookies_for("github.com")

@@ -154,6 +154,30 @@ class Browser:
             )
         return SurfAgent().force_cookie_import()
 
+    def import_cookies_for(self, domain: str) -> CookieImportResult:
+        """Add one consented domain to the cookie scope, then restart the profile and import.
+
+        Import needs an inactive profile, and stopping the bridge would close
+        every open thread, so this refuses while any thread remains open.
+        """
+        source = self.cookie_source()
+        if source is None:
+            raise SurfAgentError(
+                "no cookie source is configured; ask the user for their Chrome profile, then call Browser.set_cookie_source"
+            )
+        open_threads = sorted(thread.name for thread in self.threads())
+        if open_threads:
+            raise SurfAgentError(
+                "close open threads before importing cookies; stopping the browser would close: "
+                + ", ".join(open_threads)
+            )
+        if not source.scope.all_domains:
+            self.set_cookie_source(
+                str(source.root), source.profile, domains=[*source.scope.domains, domain]
+            )
+        self.stop_bridge()
+        return self.import_cookies()
+
     def stop_bridge(self) -> None:
         _check_status(SurfAgent().browser_backend.bridge_stop(), "bridge stop")
 

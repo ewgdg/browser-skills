@@ -112,7 +112,7 @@ For action signatures and administrative operations, read [Python API](docs/pyth
 
 ## Login and human unblock
 
-For existing Chrome login state, read [cookie import](docs/cookie-import.md) before configuring access. For extension-based login, read [1Password setup](docs/1password-setup.md) once and [autofill](docs/1password-autofill.md) when logging in.
+When a site asks for login that the user's normal Chrome already has, offer to import that site's cookies; on consent, follow [import for one site](docs/cookie-import.md#import-for-one-site). Never import without asking. For other cookie configuration, read [cookie import](docs/cookie-import.md) first. For extension-based login, read [1Password setup](docs/1password-setup.md) once and [autofill](docs/1password-autofill.md) when logging in.
 
 When blocked, ask the user to complete the blocker in the Surf Agent window and confirm when done. Preserve the page and wait for that confirmation, then inspect it using the same thread. Reopening the URL may destroy completed human work.
 
