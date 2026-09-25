@@ -170,8 +170,37 @@ def _parse_observation(value: Any) -> SearchPageObservation:
     return SearchPageObservation(kind=kind, results=tuple(results), next_url=next_url)
 
 
+# Organic results are recognized by likelihood rather than one exact selector:
+# each fingerprint below adds weight, so a Google markup change that removes a
+# few of them still leaves a result above the threshold, while media, news and
+# answer cards (which carry none of the strong ones) stay below it.
 GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
 (() => {
+  const RESULT_WEIGHTS = {
+    h3Title: 3,           // organic titles are <h3>; other cards use role=heading
+    ariaHeadingTitle: 1,
+    citeInCard: 3,        // the displayed-URL breadcrumb
+    hostShownInCard: 2,   // card text shows the destination's host name
+    metadataBlock: 2,     // [data-snf] wraps an organic title
+    snippetBlock: 2,      // [data-sncf] holds an organic snippet
+    resultSlot: 1,        // [data-rpos] numbers every card, organic or not
+    mainResults: 1,       // inside #rso / #search
+    snippetProse: 1,      // descriptive text beside the title
+    moduleCard: -3,       // a card with several titles is a news box or carousel
+    excludedRegion: -100, // ads and answer citations are never organic results
+  };
+  const RESULT_THRESHOLD = 6;
+  const MIN_SNIPPET_LENGTH = 40;
+  const CARD_CLIMB_LIMIT = 8;
+  const MODULE_TITLE_COUNT = 3;
+  const EXCLUDED_REGIONS = [
+    '#tads', '#tadsb', '#bottomads', '[data-text-ad]',  // ads
+    '[data-subtree="aimc"]',                            // AI Overview
+    '[data-q]', '.related-question-pair',               // People also ask
+    '[data-sncf]',                                      // links cited inside a snippet
+  ].join(', ');
+  const AD_LABEL = /^(Sponsored|Ads?)$/i;
+
   const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
   const hostname = location.hostname.toLowerCase();
   const challenge = hostname === 'consent.google.com'
@@ -179,76 +208,141 @@ GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
     || Boolean(document.querySelector('#captcha-form, input[name="captcha"], iframe[src*="recaptcha"], form[action*="/sorry/"]'));
   if (challenge) return {kind: 'human_intervention', results: [], next_url: null};
 
+  const isGoogleHost = host => /(^|\.)google\.[a-z.]+$/.test(host);
   const isGoogleSearch = (hostname === 'google.com' || hostname === 'www.google.com')
     && location.pathname === '/search';
   const searchShell = document.querySelector('textarea[name="q"], input[name="q"]');
   if (!isGoogleSearch || !searchShell) return {kind: 'unknown', results: [], next_url: null};
 
-  const candidateGroups = new Map();
-  for (const heading of document.querySelectorAll('a h3')) {
-    const link = heading.closest('a');
-    const container = link?.closest('[data-rpos]');
-    if (!link?.href || !container) continue;
-    if (link.closest('[data-text-ad], [data-sncf], [data-q], .related-question-pair')) continue;
-    const visible = link.checkVisibility
-      ? link.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})
-      : link.getClientRects().length > 0;
-    if (!visible) continue;
+  const isVisible = element => element.checkVisibility
+    ? element.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})
+    : element.getClientRects().length > 0;
+  const destinationHost = link => {
+    try {
+      const url = new URL(link.href);
+      return /^https?:$/.test(url.protocol) && !isGoogleHost(url.hostname) ? url.hostname : null;
+    } catch {
+      return null;
+    }
+  };
 
-    const candidates = candidateGroups.get(container) || [];
-    candidates.push({
-      heading,
-      link,
-      metadata: link.closest('[data-snf]'),
-    });
-    candidateGroups.set(container, candidates);
+  const candidates = [];
+  for (const link of document.querySelectorAll('a[href]')) {
+    const host = destinationHost(link);
+    const heading = link.querySelector('h3, [role="heading"]');
+    if (!host || !heading || !normalize(heading.innerText) || !isVisible(link)) continue;
+    candidates.push({link, heading, host});
   }
 
-  const results = [];
-  for (const [container, candidates] of candidateGroups) {
-    const standardCandidates = candidates.filter(candidate => candidate.metadata);
-    if (standardCandidates.length > 1) {
-      return {kind: 'unknown', results: [], next_url: null};
+  // A card is Google's result slot when marked, otherwise the widest ancestor
+  // that holds no other candidate title.
+  const cardOf = candidate => {
+    const slot = candidate.link.closest('[data-rpos]');
+    if (slot) return slot;
+    let card = candidate.link;
+    for (let depth = 0; depth < CARD_CLIMB_LIMIT; depth++) {
+      const parent = card.parentElement;
+      if (!parent || parent === document.body
+          || candidates.some(other => other !== candidate && parent.contains(other.link))) break;
+      card = parent;
     }
-    // A multi-link rich module is not one independently positioned result card.
-    const candidate = standardCandidates[0] || (candidates.length === 1 ? candidates[0] : null);
-    if (!candidate) continue;
+    return card;
+  };
+  const proseBeside = (card, links) => {
+    let text = normalize(card.innerText);
+    for (const link of links) text = text.replace(normalize(link.innerText), ' ');
+    return normalize(text);
+  };
+  const hasAdLabel = card => [...card.querySelectorAll('span, div')]
+    .some(node => node.childElementCount === 0 && AD_LABEL.test(normalize(node.textContent)));
 
-    let snippet = null;
-    let displayedDate = null;
-    if (candidate.metadata) {
-      const snippetNode = container.querySelector('[data-sncf="1"]');
-      snippet = normalize(snippetNode?.innerText) || null;
-      if (snippetNode) {
-        const dateMarker = [...snippetNode.querySelectorAll('span')].find(node => {
-          const ownText = [...node.childNodes]
-            .filter(child => child.nodeType === Node.TEXT_NODE)
-            .map(child => child.textContent)
-            .join('');
-          return node.querySelector(':scope > span') && normalize(ownText) === '—';
-        });
-        displayedDate = normalize(dateMarker?.querySelector(':scope > span')?.innerText) || null;
-        if (displayedDate && snippet.startsWith(`${displayedDate} —`)) {
-          snippet = normalize(snippet.slice(`${displayedDate} —`.length)) || null;
-        }
-        if (snippet) snippet = normalize(snippet.replace(/\s*Read more\s*$/i, '')) || null;
-      }
+  const score = (candidate, card) => {
+    const {link, heading, host} = candidate;
+    if (link.closest(EXCLUDED_REGIONS) || hasAdLabel(card)) return RESULT_WEIGHTS.excludedRegion;
+    const cardText = normalize(card.innerText).toLowerCase();
+    const signals = {
+      h3Title: heading.tagName === 'H3',
+      ariaHeadingTitle: heading.tagName !== 'H3',
+      citeInCard: Boolean(card.querySelector('cite')),
+      hostShownInCard: cardText.includes(host.replace(/^www\./, '')),
+      metadataBlock: Boolean(link.closest('[data-snf]')),
+      snippetBlock: Boolean(card.querySelector('[data-sncf]')),
+      resultSlot: card.matches('[data-rpos]'),
+      mainResults: Boolean(link.closest('#rso, #search')),
+      snippetProse: proseBeside(card, card.querySelectorAll('a')).length >= MIN_SNIPPET_LENGTH,
+      moduleCard: candidates.filter(other => card.contains(other.link)).length >= MODULE_TITLE_COUNT,
+    };
+    return Object.entries(signals)
+      .reduce((total, [signal, present]) => total + (present ? RESULT_WEIGHTS[signal] : 0), 0);
+  };
+
+  // Keep the single most likely title per card; ties keep document order.
+  const bestByCard = new Map();
+  for (const candidate of candidates) {
+    const card = cardOf(candidate);
+    const likelihood = score(candidate, card);
+    if (likelihood < RESULT_THRESHOLD) continue;
+    const best = bestByCard.get(card);
+    if (!best || likelihood > best.likelihood) bestByCard.set(card, {...candidate, likelihood});
+  }
+
+  const snippetOf = (card, link) => {
+    const snippetNode = card.querySelector('[data-sncf="1"]');
+    if (!snippetNode) {
+      const prose = proseBeside(card, [link]);
+      return {snippet: prose.length >= MIN_SNIPPET_LENGTH ? prose : null, displayedDate: null};
     }
+    let snippet = normalize(snippetNode.innerText) || null;
+    const dateMarker = [...snippetNode.querySelectorAll('span')].find(node => {
+      const ownText = [...node.childNodes]
+        .filter(child => child.nodeType === Node.TEXT_NODE)
+        .map(child => child.textContent)
+        .join('');
+      return node.querySelector(':scope > span') && normalize(ownText) === '—';
+    });
+    const displayedDate = normalize(dateMarker?.querySelector(':scope > span')?.innerText) || null;
+    if (displayedDate && snippet?.startsWith(`${displayedDate} —`)) {
+      snippet = normalize(snippet.slice(`${displayedDate} —`.length)) || null;
+    }
+    if (snippet) snippet = normalize(snippet.replace(/\s*Read more\s*$/i, '')) || null;
+    return {snippet, displayedDate};
+  };
 
-    results.push({
-      title: normalize(candidate.heading.innerText),
-      url: candidate.link.href,
+  const results = [...bestByCard.entries()].map(([card, best]) => {
+    const {snippet, displayedDate} = snippetOf(card, best.link);
+    return {
+      title: normalize(best.heading.innerText),
+      url: best.link.href,
       snippet,
       displayed_date: displayedDate,
-    });
-  }
+    };
+  });
 
-  const next = document.querySelector('a#pnnext, a[aria-label="Next page"]');
+  // The next page is recognized by its address, independent of pager markup
+  // and interface language: same query, start advanced by one page.
+  const currentParameters = new URLSearchParams(location.search);
+  const currentStart = Number(currentParameters.get('start') || 0);
+  const pageSize = Number(currentParameters.get('num') || 10);
+  const isNextPage = link => {
+    try {
+      const url = new URL(link.href);
+      return isGoogleHost(url.hostname) && url.pathname === '/search'
+        && url.searchParams.get('q') === currentParameters.get('q')
+        && Number(url.searchParams.get('start')) === currentStart + pageSize;
+    } catch {
+      return false;
+    }
+  };
+  const next = document.querySelector('a#pnnext, a[aria-label="Next page"]')
+    || [...document.querySelectorAll('a[href]')].find(isNextPage);
   const nextUrl = next?.href || null;
   // The top Search tabs also use role=navigation; only the bottom pager owns this table.
   const pagination = [...document.querySelectorAll('div[role="navigation"]')]
     .find(node => node.querySelector('table[role="presentation"]'));
-  if (results.length && (nextUrl || pagination)) {
+  // Google streams result cards after DOMContentLoaded; the pager arrives with
+  // the last of them, and a last page without one is final once loading ends.
+  const rendered = nextUrl || pagination || document.readyState === 'complete';
+  if (results.length && rendered) {
     return {kind: 'results', results, next_url: nextUrl};
   }
   if (results.length) {
