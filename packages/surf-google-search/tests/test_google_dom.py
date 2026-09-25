@@ -124,20 +124,13 @@ def test_explicit_no_results_structure_is_exhausted(browser: Browser) -> None:
     assert observation == {"kind": "exhausted", "results": [], "next_url": None}
 
 
-def test_primary_organic_extraction_excludes_ads_and_answer_sources(browser: Browser) -> None:
+def test_primary_organic_extraction_excludes_answer_sources(browser: Browser) -> None:
     observation = observe_fixture(
         browser,
         """
         <div data-rpos="1">
           <div data-snf><a href="https://example.com/organic"><h3> Organic   title </h3><cite>https://example.com</cite></a></div>
           <div data-sncf="1"><span><span>Jun 23, 2026</span> —</span> Useful description. Read more</div>
-        </div>
-        <div data-rpos="5">
-          <div><span>Sponsored</span></div>
-          <div data-snf><a href="https://labelled-ad.example/"><h3>Labelled ad</h3><cite>https://labelled-ad.example</cite></a></div>
-        </div>
-        <div data-rpos="2" data-text-ad>
-          <div data-snf><a href="https://ads.example/ad"><h3>Sponsored</h3></a></div>
         </div>
         <div data-rpos="3">
           <div data-snf data-sncf><a href="https://ai.example/source"><h3>AI source</h3></a></div>
@@ -313,6 +306,54 @@ def test_media_and_news_cards_are_not_organic_results(browser: Browser) -> None:
     observation = observe_fixture(browser, ORGANIC_RESULT + video + PAGER)
 
     assert [result["url"] for result in observation["results"]] == ["https://example.com/result"]
+
+
+AD_REGION = "<div id='tads'>{}</div>"
+AD_REDIRECT = "data-rw='https://www.google.com/aclk?sa=L'"
+
+
+def test_ad_with_a_full_result_card_is_a_result(browser: Browser) -> None:
+    # Ads are dampened, not excluded: a paid card with a full result's title,
+    # displayed URL and snippet still qualifies.
+    ad = (
+        f"<div data-text-ad='1'><a href='https://quality-ad.example/guide' {AD_REDIRECT}>"
+        "<h3>Complete buyer guide</h3><cite>https://quality-ad.example</cite></a>"
+        "<div>A thorough description long enough to read as result prose.</div></div>"
+    )
+
+    observation = observe_fixture(browser, AD_REGION.format(ad) + f"<div id='rso'>{ORGANIC_RESULT}</div>{PAGER}")
+
+    assert [result["url"] for result in observation["results"]] == [
+        "https://quality-ad.example/guide",
+        "https://example.com/result",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("region", "link_attributes"),
+    [
+        pytest.param(AD_REGION, "", id="ad-region"),
+        pytest.param("<div>{}</div>", AD_REDIRECT, id="click-redirect"),
+    ],
+)
+def test_ad_needs_more_result_fingerprints_than_an_organic_card(
+    browser: Browser, region, link_attributes
+) -> None:
+    # This card shape (h3 title, host shown, snippet prose, no cite or result
+    # metadata) passes as organic but falls short once it is an ad.
+    def card(url: str, attributes: str = "") -> str:
+        host = url.split("/")[2]
+        return (
+            f"<div><a href='{url}' {attributes}><h3>Offer from {host}</h3></a>"
+            f"<span>{host}</span><div>A description long enough to read as result prose.</div></div>"
+        )
+
+    ad = region.format(card("https://ad.example/offer", link_attributes))
+    organic = card("https://organic.example/page")
+
+    observation = observe_fixture(browser, f"{ad}{organic}{PAGER}")
+
+    assert [result["url"] for result in observation["results"]] == ["https://organic.example/page"]
 
 
 def test_next_page_is_found_by_its_search_address(browser: Browser) -> None:

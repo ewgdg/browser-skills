@@ -3,7 +3,7 @@
 **Google Search** — A browser-mediated query of `google.com` whose product is the ordered, structured organic results. It excludes destination-page research and answer synthesis.
 _Avoid_: Websearch, web research
 
-**Organic result** — An ordered, visible, independently positioned Google Search result that points to an external destination. It includes standard and rich result cards while excluding advertisements, hidden or nested answer sources, multi-link Google modules, and navigation controls.
+**Organic result** — An ordered, visible, independently positioned Google Search result that points to an external destination. It includes standard and rich result cards, and ads that carry a full result's fingerprints, while excluding hidden or nested answer sources, multi-link Google modules, and navigation controls.
 _Avoid_: Search item, link
 
 **Destination URL** — The cleaned result hyperlink returned to the caller. Meaningful destination parameters and named or media fragments remain, while Google redirect wrappers, known Google-added tracking, and text-highlight directives are removed.

@@ -187,19 +187,21 @@ GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
     mainResults: 1,       // inside #rso / #search
     snippetProse: 1,      // descriptive text beside the title
     moduleCard: -3,       // a card with several titles is a news box or carousel
-    excludedRegion: -100, // ads and answer citations are never organic results
+    adCard: -3,           // paid cards must earn their place with more result fingerprints
+    excludedRegion: -100, // answer citations are never results
   };
   const RESULT_THRESHOLD = 6;
   const MIN_SNIPPET_LENGTH = 40;
   const CARD_CLIMB_LIMIT = 8;
   const MODULE_TITLE_COUNT = 3;
+  // Ads are dampened, not excluded: a paid card that carries a full result's
+  // fingerprints is still a qualified result.
+  const AD_REGIONS = '#tads, #tadsb, #bottomads, [data-text-ad]';
   const EXCLUDED_REGIONS = [
-    '#tads', '#tadsb', '#bottomads', '[data-text-ad]',  // ads
     '[data-subtree="aimc"]',                            // AI Overview
     '[data-q]', '.related-question-pair',               // People also ask
     '[data-sncf]',                                      // links cited inside a snippet
   ].join(', ');
-  const AD_LABEL = /^(Sponsored|Ads?)$/i;
 
   const normalize = value => (value || '').replace(/\s+/g, ' ').trim();
   const hostname = location.hostname.toLowerCase();
@@ -217,6 +219,21 @@ GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
   const isVisible = element => element.checkVisibility
     ? element.checkVisibility({checkOpacity: true, checkVisibilityCSS: true})
     : element.getClientRects().length > 0;
+  // Every ad click passes through Google's billing redirect, carried in href
+  // or in an attribute such as data-rw, so it marks ads the regions miss.
+  // Only a parsed Google redirect counts, so pages that merely mention it are
+  // not dampened.
+  const isAdClickUrl = value => {
+    try {
+      const url = new URL(value);
+      return (isGoogleHost(url.hostname) || /(^|\.)googleadservices\.com$/.test(url.hostname))
+        && /^\/(pagead\/)?aclk$/.test(url.pathname);
+    } catch {
+      return false;
+    }
+  };
+  const isAd = link => Boolean(link.closest(AD_REGIONS))
+    || [...link.attributes].some(attribute => isAdClickUrl(attribute.value));
   const destinationHost = link => {
     try {
       const url = new URL(link.href);
@@ -253,12 +270,10 @@ GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
     for (const link of links) text = text.replace(normalize(link.innerText), ' ');
     return normalize(text);
   };
-  const hasAdLabel = card => [...card.querySelectorAll('span, div')]
-    .some(node => node.childElementCount === 0 && AD_LABEL.test(normalize(node.textContent)));
 
   const score = (candidate, card) => {
     const {link, heading, host} = candidate;
-    if (link.closest(EXCLUDED_REGIONS) || hasAdLabel(card)) return RESULT_WEIGHTS.excludedRegion;
+    if (link.closest(EXCLUDED_REGIONS)) return RESULT_WEIGHTS.excludedRegion;
     const cardText = normalize(card.innerText).toLowerCase();
     const signals = {
       h3Title: heading.tagName === 'H3',
@@ -271,6 +286,7 @@ GOOGLE_PAGE_OBSERVATION_SCRIPT = r"""
       mainResults: Boolean(link.closest('#rso, #search')),
       snippetProse: proseBeside(card, card.querySelectorAll('a')).length >= MIN_SNIPPET_LENGTH,
       moduleCard: candidates.filter(other => card.contains(other.link)).length >= MODULE_TITLE_COUNT,
+      adCard: isAd(link),
     };
     return Object.entries(signals)
       .reduce((total, [signal, present]) => total + (present ? RESULT_WEIGHTS[signal] : 0), 0);

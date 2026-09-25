@@ -23,7 +23,7 @@ Success contains `ok: true`, `query`, `pages` (`start`, `requested`, `visited`),
 
 Result pages and page-local positions are one-based. Cleaned destination URLs are deduplicated within an invocation without compacting positions, so gaps are intentional. `exhausted` indicates affirmed no results or no next page; merely reaching the requested page count does not establish exhaustion.
 
-Eligible results include standard organic records and visible, independently positioned top-level rich results. Ads, hidden/nested answer sources, and multi-link Google modules are excluded. Returned URLs do not preserve Google referrer behavior; that requires clicking a rendered result in a retained Search page through a separate browsing workflow.
+Eligible results include standard organic records and visible, independently positioned top-level rich results. Ads are dampened rather than excluded: one with a full result's title, displayed URL and snippet is included. Hidden/nested answer sources and multi-link Google modules are excluded. Returned URLs do not preserve Google referrer behavior; that requires clicking a rendered result in a retained Search page through a separate browsing workflow.
 
 Failure contains `ok: false` and `error` with `type`, `message`, and `hint`. Types are `invalid_request`, `browser_unavailable`, `human_intervention_required`, `ui_changed`, and `internal_error`. A challenge also provides `handoff.thread`; follow the [handoff workflow](../SKILL.md#human-intervention) before retrying.
 
