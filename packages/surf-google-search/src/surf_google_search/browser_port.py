@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+import time
 from typing import Any, Protocol
 
 from surf_agent.errors import SurfAgentError
@@ -62,11 +63,25 @@ class SurfAgentPort(Protocol):
 
 AgentFactory = Callable[[str], SurfAgentPort]
 
+# Navigation returns at DOMContentLoaded, but Google streams result cards in
+# afterwards (observed 0.3-0.6s later), so an unrecognized page is re-observed
+# until it settles instead of being reported as an interface change at once.
+SETTLE_TIMEOUT_SECONDS = 10.0
+POLL_INTERVAL_SECONDS = 0.25
+
 
 class SurfBrowserPagePort:
-    def __init__(self, *, agent_factory: AgentFactory | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        agent_factory: AgentFactory | None = None,
+        settle_timeout_seconds: float = SETTLE_TIMEOUT_SECONDS,
+        poll_interval_seconds: float = POLL_INTERVAL_SECONDS,
+    ) -> None:
         self._agent_factory = agent_factory or _create_surf_agent
         self._agents: dict[str, SurfAgentPort] = {}
+        self._settle_timeout_seconds = settle_timeout_seconds
+        self._poll_interval_seconds = poll_interval_seconds
 
     def is_open(self, thread: str) -> bool:
         try:
@@ -81,6 +96,14 @@ class SurfBrowserPagePort:
             raise BrowserUnavailable from error
 
     def observe(self, thread: str) -> SearchPageObservation:
+        deadline = time.monotonic() + self._settle_timeout_seconds
+        observation = self._observe_once(thread)
+        while observation.kind is SearchPageKind.UNKNOWN and time.monotonic() < deadline:
+            time.sleep(self._poll_interval_seconds)
+            observation = self._observe_once(thread)
+        return observation
+
+    def _observe_once(self, thread: str) -> SearchPageObservation:
         try:
             raw = self._agent(thread).evaluate(GOOGLE_PAGE_OBSERVATION_SCRIPT)
         except SurfAgentError as error:

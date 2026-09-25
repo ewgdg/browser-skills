@@ -149,3 +149,50 @@ def test_surf_adapter_exposes_one_backend_agnostic_page_observation(
     assert observation.next_url == "https://www.google.com/search?q=patchright&start=10&num=10"
     assert agent.close_calls == 1
     assert capsys.readouterr().out == ""
+
+
+@dataclass
+class RenderingSurfAgent(FakeSurfAgent):
+    """Reports an unrecognized page until Google finishes rendering results."""
+
+    unknown_evaluations: int = 0
+
+    def evaluate(self, code: str) -> object:
+        self.calls.append(["eval", code])
+        if self.unknown_evaluations:
+            self.unknown_evaluations -= 1
+            return {"kind": "unknown", "results": [], "next_url": None}
+        return self.evaluation
+
+
+RENDERED_RESULTS = {
+    "kind": "results",
+    "results": [
+        {"title": "Rendered", "url": "https://example.com/r", "snippet": None, "displayed_date": None}
+    ],
+    "next_url": None,
+}
+
+
+def test_surf_adapter_waits_for_results_rendered_after_navigation() -> None:
+    agent = RenderingSurfAgent(RENDERED_RESULTS, unknown_evaluations=3)
+    browser = SurfBrowserPagePort(
+        agent_factory=lambda thread: agent, settle_timeout_seconds=5, poll_interval_seconds=0.001,
+    )
+
+    observation = browser.observe("thread-1")
+
+    assert observation.kind is SearchPageKind.RESULTS
+    assert observation.results[0].title == "Rendered"
+
+
+def test_surf_adapter_reports_an_unrecognized_page_after_the_settle_timeout() -> None:
+    agent = RenderingSurfAgent(RENDERED_RESULTS, unknown_evaluations=10**9)
+    browser = SurfBrowserPagePort(
+        agent_factory=lambda thread: agent, settle_timeout_seconds=0.05, poll_interval_seconds=0.001,
+    )
+
+    observation = browser.observe("thread-1")
+
+    assert observation.kind is SearchPageKind.UNKNOWN
+    assert len(agent.calls) > 1
