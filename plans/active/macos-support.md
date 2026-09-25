@@ -38,9 +38,14 @@ Surf has only run on Linux. The runtime assumes Linux in four places: Chrome dis
 ## Progress
 
 - [x] Steps 1–4 with tests (`209635c`)
-- [ ] Step 5–6 on the Mac
+- [x] Mac unit suite green (`bd4da7b`): socket limit, framework Python argv, test portability
+- [x] Mac: installed acceptance, live Patchright tests, real `Browser().setup()` (`606caeb`)
+- [ ] Step 5 and cookie import on the Mac: blocked by macOS privacy protection over SSH
 - [x] Step 7: platform line and cookie docs (ADR amended); revisit if the Mac run changes anything
 
 ## Surprises & Discoveries
 
 - `ps`-based argv parsing breaks on paths with spaces, which is the macOS default location.
+- macOS 27 blocks reading `~/Library/Application Support/Google/Chrome` from a process without Full Disk Access (`Operation not permitted`), even as the same user. Cookie import needs the host app (terminal, agent) to be granted access.
+- macOS `sun_path` is 104 bytes, and pytest's `tmp_path` under `/var/folders/...` is too long for session sockets.
+- Homebrew's framework Python reports argv[0] as `.../Python.app/Contents/MacOS/Python`.
