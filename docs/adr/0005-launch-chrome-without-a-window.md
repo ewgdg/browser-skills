@@ -15,7 +15,7 @@ Weighted for removing the focus grab (20), ongoing maintenance (25), surviving P
 - **This workaround:** 85 of 100. Nothing to maintain by hand, since the flags come from the installed Patchright on every launch.
 - **Patching the installed Patchright bundle:** 68. A text match on a generated file that changes between releases, and uv hardlinks installed packages from its cache, so an edit leaks into other environments.
 - **Forking Patchright:** 50. Patchright rebuilds Playwright's driver on each release; a fork either repeats that work or lags on stealth fixes.
-- **Waiting for an upstream fix:** does not remove the grab. Filing a Patchright request remains worthwhile; if accepted, the launch shrinks to passing `--no-startup-window`.
+- **Waiting for an upstream fix:** does not remove the grab. Requested in Patchright ([discussion 232](https://redirect.github.com/Kaliiiiiiiiii-Vinyzu/patchright/discussions/232)); if fixed, the launch shrinks to passing `--no-startup-window` and the flag capture goes.
 
 ## Consequences
 

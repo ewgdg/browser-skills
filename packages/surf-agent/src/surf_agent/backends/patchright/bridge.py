@@ -157,6 +157,9 @@ class PatchrightRuntime:
         }
         # Patchright opens a startup page and waits for it; the wait is skipped only when
         # it adds no args of its own, so pass its own flags back without that page.
+        # Remove this workaround (capture_default_args, ignore_default_args) once Patchright
+        # launches with --no-startup-window without hanging; requested upstream at
+        # https://redirect.github.com/Kaliiiiiiiiii-Vinyzu/patchright/discussions/232
         patchright_args = await capture_default_args(playwright.chromium, **launch_options)
         chrome_args = [
             arg for arg in patchright_args
