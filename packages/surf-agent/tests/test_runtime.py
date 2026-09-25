@@ -581,7 +581,7 @@ class AxiBackendTests(unittest.TestCase):
                     {
                         "url": "https://welcome.test/",
                         "newWindow": True,
-                        "background": False,
+                        "background": True,
                     },
                 )
             ],
@@ -708,7 +708,7 @@ class AxiBackendTests(unittest.TestCase):
                     {
                         "url": "https://welcome.test/",
                         "newWindow": True,
-                        "background": False,
+                        "background": True,
                     },
                 )
             ],
@@ -721,7 +721,7 @@ class AxiBackendTests(unittest.TestCase):
                     {
                         "url": "https://welcome.test/",
                         "newWindow": True,
-                        "background": False,
+                        "background": True,
                     },
                 )
             ],
@@ -812,7 +812,7 @@ class AxiBackendTests(unittest.TestCase):
                     {
                         "url": "https://example.test/",
                         "newWindow": True,
-                        "background": False,
+                        "background": True,
                     },
                 )
             ],
@@ -977,7 +977,7 @@ class AxiBackendTests(unittest.TestCase):
                     {
                         "url": "https://example.test/",
                         "newWindow": True,
-                        "background": False,
+                        "background": True,
                     },
                 )
             ],

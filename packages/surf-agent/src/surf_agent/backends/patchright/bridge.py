@@ -424,8 +424,10 @@ class PatchrightRuntime:
         try:
             await self._close_unmanaged_pages(context, keep_ids={id(anchor_page)})
             session = await self._maybe_await(context.new_cdp_session(anchor_page))
+            # Background: a foreground window activates Chrome and steals focus from the
+            # user's app (measured on macOS). Thread.focus() raises a window on request.
             response = await self._maybe_await(
-                session.send("Target.createTarget", {"url": url, "newWindow": True, "background": False})
+                session.send("Target.createTarget", {"url": url, "newWindow": True, "background": True})
             )
             target_id = response.get("targetId") if isinstance(response, dict) else None
             if not isinstance(target_id, str) or not target_id:
