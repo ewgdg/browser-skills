@@ -65,7 +65,7 @@ Projects import the same `surf_agent` package directly, without the launcher. In
 - `skills/<skill>/docs/`: shipped, on-demand references and specialized procedures. Each document states when to read it; it owns its detailed contracts or procedure rather than repeating the main workflow. These files are not separate skills.
 - Root `docs/`: project architecture, research and validation. Link to shipped skill references instead of duplicating them; installed skill docs must not depend on files outside the skill payload.
 
-## Installed acceptance and release
+## Installed acceptance
 
 Build a wheel and skill archive (`npm pack --pack-destination /tmp/surf-release`), then extract the archive outside this checkout. With Chrome available, run:
 
@@ -77,5 +77,3 @@ uv run pytest tests/test_installed_workflow.py packages/surf-agent/tests/test_pa
 ```
 
 The acceptance test uses isolated temporary profiles and a local website. It checks separate file/stdin invocations, browser reattachment, exact input, observations, navigation, persistent session retention, interpreter replacement with the browser preserved, and cleanup. Ordinary project imports and launcher failure/argument contracts are covered by `tests/test_skill_launcher.py`.
-
-Publication requires authorization: test and push the runtime commit, verify that its full SHA is reachable, then write that SHA into `skills/surf/runtime-revision` and publish the updated skill. Repeat installed acceptance with `SURF_AGENT_DEPENDENCY` unset to verify the published pin, not a local wheel. Users update the skill; its launcher selects the matching runtime. An unpushed SHA is not a release.
