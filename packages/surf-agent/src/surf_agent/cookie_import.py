@@ -76,7 +76,7 @@ class CookieImporter:
         if not force and self._stored_fingerprint() == fingerprint:
             return CookieImportResult(skipped=True, destination=destination_db or destination_profile / relative_candidate)
 
-        source_os_crypt = read_os_crypt(self.config.root / "Local State", required=True)
+        source_os_crypt = read_os_crypt(self.config.root / "Local State")
         destination_local_state_exists, existing_destination_os_crypt = read_destination_os_crypt(self.destination_root / "Local State")
         if destination_local_state_exists and existing_destination_os_crypt != source_os_crypt:
             raise SurfAgentError("destination Local State encryption metadata does not match the cookie source")
@@ -308,7 +308,7 @@ class CookieImporter:
             for suffix in _SIDECARS:
                 if Path(f"{candidate}{suffix}").exists():
                     raise SurfAgentError("initial cookie database could not be finalized without SQLite sidecars")
-            if destination_local_state_absent:
+            if destination_local_state_absent and source_os_crypt is not None:
                 local_state_path = self.destination_root / "Local State"
                 self.publication_hook("local-state", local_state_path)
                 self._ensure_destination_inactive()
@@ -367,18 +367,14 @@ def stat_fingerprint(path: Path) -> dict[str, int | bool]:
     return {"present": True, "inode": info.st_ino, "size": info.st_size, "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
 
 
-def read_os_crypt(path: Path, *, required: bool) -> Any:
+def read_os_crypt(path: Path) -> Any | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
-        if required:
-            raise SurfAgentError(f"cookie source Local State is missing: {path}") from exc
-        raise AssertionError("use read_destination_os_crypt for optional destination metadata")
+        raise SurfAgentError(f"cookie source Local State is missing: {path}") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise SurfAgentError(f"could not read Local State metadata: {exc}") from exc
-    if not isinstance(payload, dict) or "os_crypt" not in payload or payload["os_crypt"] is None:
-        raise SurfAgentError("cookie source Local State is missing required os_crypt metadata")
-    return payload["os_crypt"]
+    return _os_crypt(payload)
 
 
 def read_destination_os_crypt(path: Path) -> tuple[bool, Any | None]:
@@ -388,9 +384,15 @@ def read_destination_os_crypt(path: Path) -> tuple[bool, Any | None]:
         return False, None
     except (OSError, json.JSONDecodeError) as exc:
         raise SurfAgentError(f"could not read Local State metadata: {exc}") from exc
-    if not isinstance(payload, dict) or "os_crypt" not in payload or payload["os_crypt"] is None:
-        raise SurfAgentError("destination Local State is missing required os_crypt metadata")
-    return True, payload["os_crypt"]
+    return True, _os_crypt(payload)
+
+
+def _os_crypt(payload: Any) -> Any | None:
+    # None when absent: macOS Chrome keeps its key in the Keychain and writes no
+    # os_crypt. Absence is compared like any other value, so it matches only absence.
+    if not isinstance(payload, dict):
+        raise SurfAgentError("Local State is not a JSON object")
+    return payload.get("os_crypt")
 
 def write_local_state_os_crypt(path: Path, os_crypt: Any) -> None:
     # New destinations receive only encryption metadata, never source preferences.

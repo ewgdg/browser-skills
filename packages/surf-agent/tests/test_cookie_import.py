@@ -195,6 +195,31 @@ def test_matching_partitioned_identity_preserves_each_selected_source_row(tmp_pa
     ]
 
 
+def test_macos_profiles_without_os_crypt_import_and_still_must_match(tmp_path: Path) -> None:
+    # macOS Chrome keeps its cookie key in the Keychain and writes no os_crypt.
+    source_root = tmp_path / "Google" / "Chrome"
+    source = make_profile(source_root)
+    (source_root / "Local State").write_text(json.dumps({"browser": {}}))
+    put(source, ".example.com", "session", "source")
+
+    fresh = tmp_path / "fresh"
+    importer(tmp_path, source_root, fresh).run(force=True)
+    assert rows(fresh / "Default" / "Cookies") == [(".example.com", "session", "source", "")]
+    assert not (fresh / "Local State").exists()  # Chrome writes its own on first launch
+
+    launched = tmp_path / "launched"
+    launched.mkdir()
+    (launched / "Local State").write_text(json.dumps({"browser": {"keep": True}}))
+    importer(tmp_path, source_root, launched).run(force=True)
+    assert json.loads((launched / "Local State").read_text()) == {"browser": {"keep": True}}
+
+    linux_shaped = tmp_path / "linux-shaped"
+    linux_shaped.mkdir()
+    (linux_shaped / "Local State").write_text(json.dumps({"os_crypt": {"portal": {}}}))
+    with pytest.raises(SurfAgentError, match="encryption metadata"):
+        importer(tmp_path, source_root, linux_shaped).run(force=True)
+
+
 def test_existing_local_state_missing_or_null_os_crypt_fails_without_overwrite(tmp_path: Path) -> None:
     source_root = tmp_path / "google-chrome"
     source = make_profile(source_root)
@@ -205,7 +230,7 @@ def test_existing_local_state_missing_or_null_os_crypt_fails_without_overwrite(t
         local_state.parent.mkdir(parents=True)
         original = json.dumps(metadata, sort_keys=True)
         local_state.write_text(original)
-        with pytest.raises(SurfAgentError, match="os_crypt"):
+        with pytest.raises(SurfAgentError, match="encryption metadata"):
             importer(tmp_path, source_root, destination).run(force=True)
         assert local_state.read_text() == original
         assert not (destination / "Default" / "Cookies").exists()
