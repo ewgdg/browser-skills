@@ -13,6 +13,8 @@ import time
 
 import pytest
 
+from surf_agent.processes import iter_process_args
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -158,20 +160,17 @@ def test_missing_uv_explains_installation(installed_skill):
 
 
 @pytest.fixture
-def session_launcher(installed_skill, tmp_path):
+def session_launcher(installed_skill, short_tmp_path):
     """The installed launcher with a private runtime directory."""
     launcher, working, env = installed_skill
-    runtime = tmp_path / "runtime"
+    runtime = short_tmp_path / "runtime"
     env = {**env, "XDG_RUNTIME_DIR": str(runtime)}
     interpreters: list[int] = []
     yield launcher, working, env, interpreters
-    for pid in interpreters:
-        # Only signal a process that is still this test's session worker.
-        try:
-            command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
-        except OSError:
-            continue
-        if b"surf_agent.session" in command and str(runtime).encode() in command:
+    # Only signal a process that is still this test's session worker.
+    for pid, args in iter_process_args():
+        command = " ".join(args)
+        if pid in interpreters and "surf_agent.session" in command and str(runtime) in command:
             os.kill(pid, signal.SIGKILL)
 
 

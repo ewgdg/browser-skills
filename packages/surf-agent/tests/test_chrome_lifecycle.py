@@ -144,9 +144,12 @@ def test_interprocess_lock_serializes_import_and_second_health_recheck_avoids_du
     importer = Importer()
     coordinator = ChromeLifecycleCoordinator(destination_root=tmp_path / "profile", state_root=tmp_path / "state", importer=importer)
     coordinator.state_root.mkdir()
-    ready: multiprocessing.Queue = multiprocessing.Queue()
-    release = multiprocessing.Event()
-    holder = multiprocessing.Process(target=_hold_lifecycle_lock, args=(str(coordinator.lock_file), ready, release))
+    # Fork, not macOS's default spawn: a spawned child re-imports this test module by
+    # a name that --import-mode=importlib does not put on sys.path.
+    context = multiprocessing.get_context("fork")
+    ready: multiprocessing.Queue = context.Queue()
+    release = context.Event()
+    holder = context.Process(target=_hold_lifecycle_lock, args=(str(coordinator.lock_file), ready, release))
     holder.start()
     assert ready.get(timeout=2) is True
     entered = threading.Event()

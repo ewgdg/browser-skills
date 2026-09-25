@@ -60,8 +60,8 @@ PS_TIMEOUT_S = 5.0
 # of this module (tests, other harnesses) start the worker with sys.executable.
 WORKER_COMMAND_ENV = "SURF_SESSION_WORKER_COMMAND"
 SOCKET_BACKLOG = 8
-# Linux allows 107 bytes for sun_path plus the terminating NUL.
-SOCKET_PATH_LIMIT = 107
+# sun_path holds the path plus a terminating NUL: 108 bytes on Linux, 104 on macOS.
+SOCKET_PATH_LIMIT = 103 if sys.platform == "darwin" else 107
 # Ids are file names, so they stay inside one path segment and cannot begin with
 # a dash or a dot.
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -274,7 +274,8 @@ def _names_session_socket(arguments: list[str], socket_path: Path) -> bool:
     wrapper around the worker, a shell command in an agent transcript - cannot
     match, and a pid we kill is the interpreter rather than its parent.
     """
-    if not arguments or not Path(arguments[0]).name.startswith("python"):
+    # Lowercased because macOS framework builds run as `Python.app/Contents/MacOS/Python`.
+    if not arguments or not Path(arguments[0]).name.lower().startswith("python"):
         return False
     joined = " ".join(arguments)
     # Worker shape: `python -m surf_agent.session worker ...` or that command

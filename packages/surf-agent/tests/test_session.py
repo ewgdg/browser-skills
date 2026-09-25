@@ -15,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 
+import psutil
 import pytest
 
 from surf_agent import session
@@ -23,12 +24,8 @@ from surf_agent.processes import iter_process_args
 
 def process_state(pid: int) -> str | None:
     try:
-        raw = Path(f"/proc/{pid}/stat").read_bytes()
-    except OSError:
-        return None
-    try:
-        return raw.rsplit(b") ", 1)[1].split()[0].decode()
-    except (IndexError, ValueError):
+        return psutil.Process(pid).status()
+    except psutil.NoSuchProcess:
         return None
 
 
@@ -42,7 +39,7 @@ def wait_for(predicate, timeout_s: float = 10.0) -> bool:
 
 
 def wait_for_exit(pid: int, timeout_s: float = 10.0) -> bool:
-    return wait_for(lambda: process_state(pid) in (None, "Z"), timeout_s)
+    return wait_for(lambda: process_state(pid) in (None, psutil.STATUS_ZOMBIE), timeout_s)
 
 
 def stop_worker(socket_path: Path) -> None:
@@ -58,9 +55,9 @@ def stop_worker(socket_path: Path) -> None:
 
 
 @pytest.fixture(autouse=True)
-def isolated_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def isolated_runtime(monkeypatch: pytest.MonkeyPatch, short_tmp_path: Path):
     """Keep every test's sockets and worker processes out of the real runtime dir."""
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(short_tmp_path / "runtime"))
     monkeypatch.delenv(session.WORKER_COMMAND_ENV, raising=False)
     yield
     directory = session.session_socket_dir()
@@ -161,6 +158,21 @@ def fake_interpreter(socket_path: Path, reply: bytes | None):
 
 
 # Cells and bindings
+
+
+def test_socket_path_limit_is_what_this_platform_can_bind(short_tmp_path: Path):
+    def bindable(length: int) -> bool:
+        path = short_tmp_path / ("s" * (length - len(os.fsencode(str(short_tmp_path))) - 1))
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            try:
+                listener.bind(str(path))
+            except OSError:
+                return False
+        path.unlink()
+        return True
+
+    assert bindable(session.SOCKET_PATH_LIMIT)
+    assert not bindable(session.SOCKET_PATH_LIMIT + 1)
 
 
 def test_cells_run_in_order_and_retain_bindings():
@@ -369,6 +381,15 @@ def test_listener_ignores_a_process_that_merely_names_the_socket():
         decoy.wait(timeout=5)
 
 
+def test_macos_framework_python_worker_is_recognized(monkeypatch):
+    """Homebrew's framework build runs as `.../Python.app/Contents/MacOS/Python`."""
+    socket_path = session.session_socket_path(session.new_session_id("mac"))
+    framework = "/opt/homebrew/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python"
+    worker = [framework, "-m", "surf_agent.session", "worker", str(socket_path), "1800"]
+    monkeypatch.setattr(session, "iter_process_args", lambda: [(4242, worker)])
+    assert session._candidate_pid(socket_path) == 4242
+
+
 def test_two_listeners_at_one_path_are_not_guessed_between(monkeypatch):
     """A rebound path has two owners, and the table cannot say which one is current."""
     monkeypatch.setattr(session, "HELLO_TIMEOUT_S", 0.5)
@@ -385,7 +406,7 @@ def test_two_listeners_at_one_path_are_not_guessed_between(monkeypatch):
             session.kill_session(session_id)
         # Neither process was signalled: the innocent listener is still there.
         assert process_state(first.interpreter_pid) is not None
-        assert process_state(second.interpreter_pid) == "T"
+        assert process_state(second.interpreter_pid) == psutil.STATUS_STOPPED
     finally:
         with contextlib.suppress(OSError):
             os.kill(second.interpreter_pid, signal.SIGCONT)
@@ -415,7 +436,7 @@ def test_a_second_process_naming_the_socket_makes_it_ambiguous(monkeypatch):
         with pytest.raises(session.SessionError, match="could not be identified"):
             session.kill_session(session_id)
         assert decoy.poll() is None
-        assert process_state(created.interpreter_pid) == "T"
+        assert process_state(created.interpreter_pid) == psutil.STATUS_STOPPED
     finally:
         decoy.kill()
         decoy.wait(timeout=5)
@@ -447,7 +468,7 @@ def test_a_command_line_match_is_reported_but_never_signalled(monkeypatch):
         with pytest.raises(session.SessionError, match="could not be identified"):
             session.kill_session(created.session_id)
         # The candidate was named, not killed: it is still the stopped interpreter.
-        assert process_state(created.interpreter_pid) == "T"
+        assert process_state(created.interpreter_pid) == psutil.STATUS_STOPPED
     finally:
         os.kill(created.interpreter_pid, signal.SIGCONT)
         os.kill(created.interpreter_pid, signal.SIGKILL)
@@ -680,7 +701,7 @@ def test_timeout_that_cannot_confirm_the_pid_is_reported_not_claimed(monkeypatch
     assert "not stopped" in frames
     assert f"kill -9 {created.interpreter_pid}" in frames
     # It is still there: the call reported that instead of claiming it was destroyed.
-    assert process_state(created.interpreter_pid) == "T"
+    assert process_state(created.interpreter_pid) == psutil.STATUS_STOPPED
     os.kill(created.interpreter_pid, signal.SIGCONT)
     os.kill(created.interpreter_pid, signal.SIGKILL)
     assert wait_for_exit(created.interpreter_pid)
@@ -810,8 +831,10 @@ def test_session_files_are_private_and_leave_no_artifacts():
     assert stat.S_IMODE(directory.stat().st_mode) == 0o700
     assert stat.S_IMODE(socket_path.stat().st_mode) == 0o600
     assert [path.name for path in directory.iterdir()] == [socket_path.name]
-    assert os.readlink(f"/proc/{created.interpreter_pid}/fd/1") == os.devnull
-    assert os.readlink(f"/proc/{created.interpreter_pid}/fd/2") == os.devnull
+    descriptors = Path(f"/proc/{created.interpreter_pid}/fd")
+    if descriptors.exists():  # macOS has no /proc; the detach itself is platform-neutral
+        assert os.readlink(descriptors / "1") == os.devnull
+        assert os.readlink(descriptors / "2") == os.devnull
 
 
 def test_a_cell_that_closes_its_stream_keeps_what_it_printed():

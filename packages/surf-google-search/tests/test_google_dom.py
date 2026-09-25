@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shlex
 from collections.abc import Iterator
 
 import pytest
@@ -11,8 +12,9 @@ from surf_google_search.browser_port import GOOGLE_PAGE_OBSERVATION_SCRIPT
 
 @pytest.fixture(scope="module")
 def browser() -> Iterator[Browser]:
-    executable = find_chrome_bin()
-    assert executable is not None, "Google DOM contract tests require a Chrome-family browser"
+    command = find_chrome_bin()
+    assert command is not None, "Google DOM contract tests require a Chrome-family browser"
+    executable = shlex.split(command)[0]
     with sync_playwright() as playwright:
         # Headless fixture pages do not need the production profile's Chromium sandbox.
         launched = playwright.chromium.launch(
