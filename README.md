@@ -65,8 +65,6 @@ To set up cookie import yourself, add `cookie_source` to Surf's `config.json` (`
 - `family` is `chrome`, `chromium`, `brave` or `edge`, and must match Surf's browser.
 - `scope` holds either a domain list or `{"all_domains": true}`, not both.
 
-Keep any other keys already in the file. Surf imports on its next start with no browser running; an invalid entry stops startup with an error saying what is wrong.
-
 ## Develop
 
 ```bash
