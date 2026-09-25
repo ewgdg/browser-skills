@@ -40,8 +40,10 @@ Surf has only run on Linux. The runtime assumes Linux in four places: Chrome dis
 - [x] Steps 1–4 with tests (`209635c`)
 - [x] Mac unit suite green (`bd4da7b`): socket limit, framework Python argv, test portability
 - [x] Mac: installed acceptance, live Patchright tests, real `Browser().setup()` (`606caeb`)
-- [ ] Step 5 and cookie import on the Mac: blocked by macOS privacy protection over SSH
-- [x] Step 7: platform line and cookie docs (ADR amended); revisit if the Mac run changes anything
+- [x] Step 5: macOS `Local State` has no `os_crypt`; absence is compared as a value (`9944143`)
+- [x] Cookie import verified in the desktop session: an imported GitHub session authenticates (`45e40cc`)
+- [x] `--class`/`--name` are harmless: the Patchright bridge passes them on every Mac run above
+- [x] Step 7: platform line, cookie docs (permission, 30 s write delay, one login source per site), ADR amended
 
 ## Surprises & Discoveries
 
@@ -49,3 +51,9 @@ Surf has only run on Linux. The runtime assumes Linux in four places: Chrome dis
 - macOS 27 blocks reading `~/Library/Application Support/Google/Chrome` from a process without Full Disk Access (`Operation not permitted`), even as the same user. Cookie import needs the host app (terminal, agent) to be granted access.
 - macOS `sun_path` is 104 bytes, and pytest's `tmp_path` under `/var/folders/...` is too long for session sockets.
 - Homebrew's framework Python reports argv[0] as `.../Python.app/Contents/MacOS/Python`.
+- Chrome started from SSH cannot read the locked Keychain and drops imported rows; cookie checks must run in the desktop session.
+- Chrome flushes new cookies to disk about every 30 s, so an import right after signing in misses them.
+
+## Outcome
+
+Surf runs on macOS with the Linux contract, including live cookie import. Follow-up idea, not started: an extension backend that drives the user's own Chrome (as Claude in Chrome and Codex do), which would avoid cookie import and restore Windows as an option.
