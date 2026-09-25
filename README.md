@@ -48,6 +48,25 @@ Surf uses a dedicated Chrome profile, separate from the user's main tabs. For ma
 
 Cookie import requires explicit scope consent and an inactive, verifiably owned destination. It refreshes changed sources before startup, not on a timer. Source Chrome may remain open. Same Chrome family, OS user, and encryption metadata are required. Imports upsert cookies without propagating source deletions; disabling imports does not remove already imported cookies.
 
+To set up cookie import yourself, add `cookie_source` to Surf's `config.json` (`~/.config/surf-agent/` on Linux, `~/Library/Application Support/surf-agent/` on macOS):
+
+```json
+{
+  "cookie_source": {
+    "root": "/home/you/.config/google-chrome",
+    "profile": "Default",
+    "family": "chrome",
+    "scope": {"domains": ["github.com"]}
+  }
+}
+```
+
+- `root` is the absolute path of Chrome's user-data directory (`/Users/you/Library/Application Support/Google/Chrome` on macOS); `profile` names a profile inside it.
+- `family` is `chrome`, `chromium`, `brave` or `edge`, and must match Surf's browser.
+- `scope` holds either a domain list or `{"all_domains": true}`, not both.
+
+Keep any other keys already in the file. Surf imports on its next start with no browser running; an invalid entry stops startup with an error saying what is wrong.
+
 ## Develop
 
 ```bash
