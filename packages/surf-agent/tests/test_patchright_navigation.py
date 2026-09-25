@@ -44,8 +44,9 @@ def test_back_returns_dom_ready_for_cached_and_reloaded_history(tmp_path, monkey
         page.set_default_navigation_timeout(3_000)
         page.set_default_timeout(3_000)
         # Empty and same-document history must remain successful no-ops/traversals.
-        assert runtime.call("back", {}) == "opened about:blank\n"
-        assert runtime.call("back", {}) == "opened about:blank\n"
+        # The thread window opens at its URL, so there is no earlier entry to go back to.
+        assert runtime.call("back", {}) == f"opened {base_url}/index.html\n"
+        assert runtime.call("back", {}) == f"opened {base_url}/index.html\n"
         runtime.call("open", {"url": f"{base_url}/index.html"})
         runtime._run(page.evaluate("history.pushState({}, '', '#section')"))
         assert runtime.call("back", {}) == f"opened {base_url}/index.html\n"

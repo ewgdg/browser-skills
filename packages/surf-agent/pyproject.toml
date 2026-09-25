@@ -10,7 +10,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-patchright = ["patchright"]
+patchright = [
+    "patchright>=1.60.1,<2",
+]
 
 [build-system]
 requires = ["hatchling"]

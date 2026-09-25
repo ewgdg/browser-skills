@@ -13,7 +13,6 @@ from ..errors import ErrorCode
 
 STALE_REF_MESSAGE = "Ref {ref!r} not found in the current page snapshot. Capture a new snapshot."
 CLOSED_TARGET_MESSAGE = "Target page, context or browser has been closed"
-STARTUP_PAGE_URLS = {"", "about:blank", "about:home", "about:newtab", "chrome://newtab/"}
 SNAPSHOT_DEPTH: int | None = None
 SNAPSHOT_BOXES = False
 # Playwright's aria-ref selector accepts AI snapshot refs from main frames and iframes.

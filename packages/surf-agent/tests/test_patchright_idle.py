@@ -25,10 +25,23 @@ class Context:
         self.closed = True
 
 
-def test_patchright_launch_uses_host_theme_and_keychain(monkeypatch, tmp_path: Path) -> None:
+def test_patchright_launch_is_windowless_with_patchrights_own_flags(monkeypatch, tmp_path: Path) -> None:
     from surf_agent.backends.patchright import bridge
 
+    captured_with: dict[str, object] = {}
     launch_options: dict[str, object] = {}
+    patchright_flags = [
+        "--disable-field-trial-config",
+        "--password-store=basic",
+        "--use-mock-keychain",
+        f"--user-data-dir={tmp_path / 'chrome'}",
+        "--remote-debugging-pipe",
+        "about:blank",
+    ]
+
+    async def capture(chromium, **options):
+        captured_with.update(options)
+        return patchright_flags
 
     class Chromium:
         async def launch_persistent_context(self, **kwargs):
@@ -46,6 +59,7 @@ def test_patchright_launch_uses_host_theme_and_keychain(monkeypatch, tmp_path: P
             return None
 
     monkeypatch.setattr(bridge, "async_playwright", Manager)
+    monkeypatch.setattr(bridge, "capture_default_args", capture)
     runtime = PatchrightRuntime(
         profile_dir=tmp_path / "chrome",
         app_id="surf-agent",
@@ -56,15 +70,28 @@ def test_patchright_launch_uses_host_theme_and_keychain(monkeypatch, tmp_path: P
     finally:
         runtime.stop()
 
-    assert launch_options == {
+    shared = {
         "user_data_dir": str(tmp_path / "chrome"),
-        "channel": "chrome",
         "headless": False,
         "no_viewport": True,
         "color_scheme": "null",
         "chromium_sandbox": True,
-        "args": ["--class=Surf Agent", "--name=surf-agent"],
-        "ignore_default_args": ("--password-store=basic", "--use-mock-keychain"),
+    }
+    assert captured_with == shared
+    assert launch_options == {
+        **shared,
+        "channel": "chrome",
+        # Patchright skips its first-page wait only when it adds no args of its own.
+        "ignore_default_args": True,
+        "timeout": bridge.LAUNCH_TIMEOUT_MS,
+        "args": [
+            "--disable-field-trial-config",
+            f"--user-data-dir={tmp_path / 'chrome'}",
+            "--remote-debugging-pipe",
+            "--class=Surf Agent",
+            "--name=surf-agent",
+            "--no-startup-window",
+        ],
     }
 
 

@@ -16,13 +16,13 @@ from typing import Any
 from ...constants import DEFAULT_PATCHRIGHT_APP_ID, DEFAULT_WAIT_TIMEOUT_MS, PATCHRIGHT_BACKEND
 from ...errors import ErrorCode
 from .constants import CONTEXT_RESTART_REQUIRED
+from .launch_args import STARTUP_PAGE_ARG, capture_default_args
 from ..bridge_common import (
     CLOSED_TARGET_MESSAGE,
     NATIVE_ARIA_REF_PATTERN,
     SNAPSHOT_BOXES,
     SNAPSHOT_DEPTH,
     STALE_REF_MESSAGE,
-    STARTUP_PAGE_URLS,
     BridgeCodedError,
     BridgeRequestHandler,
     PageSlot,
@@ -55,6 +55,12 @@ CDP_NEW_WINDOW_TIMEOUT_S = 3.0
 CDP_NEW_WINDOW_POLL_INTERVAL_S = 0.05
 # Linux v11 cookies require Chrome’s real OS password store/keychain, not Patchright automation defaults.
 PATCHRIGHT_INCOMPATIBLE_DEFAULT_ARGS = ("--password-store=basic", "--use-mock-keychain")
+# Chrome starts without a window: on macOS showing one activates Chrome and steals
+# focus. Thread windows are created later, in the background.
+NO_STARTUP_WINDOW_ARG = "--no-startup-window"
+# The windowless launch relies on Patchright skipping its first-page wait; if a
+# Patchright release stops skipping it, fail after this instead of hanging.
+LAUNCH_TIMEOUT_MS = 30_000
 
 async_playwright: Any = None
 PlaywrightTimeoutError: type[Exception] | None = None
@@ -140,19 +146,30 @@ class PatchrightRuntime:
             playwright = await self.manager.__aenter__()
         else:
             playwright = self.manager.__enter__()
-        # Chrome channel keeps existing Chrome profile behavior; bundled browsers break that reuse.
         self._cancel_shutdown_request()
+        launch_options = {
+            "user_data_dir": str(self.profile_dir),
+            "headless": self.headless,
+            "no_viewport": True,
+            # Patchright otherwise emulates light mode instead of honoring the desktop theme.
+            "color_scheme": "null",
+            "chromium_sandbox": True,
+        }
+        # Patchright opens a startup page and waits for it; the wait is skipped only when
+        # it adds no args of its own, so pass its own flags back without that page.
+        patchright_args = await capture_default_args(playwright.chromium, **launch_options)
+        chrome_args = [
+            arg for arg in patchright_args
+            if arg != STARTUP_PAGE_ARG and arg not in PATCHRIGHT_INCOMPATIBLE_DEFAULT_ARGS
+        ]
         self.browser_or_context = await self._maybe_await(
             playwright.chromium.launch_persistent_context(
-                user_data_dir=str(self.profile_dir),
+                **launch_options,
+                # Chrome channel keeps existing Chrome profile behavior; bundled browsers break that reuse.
                 channel="chrome",
-                headless=self.headless,
-                no_viewport=True,
-                # Patchright otherwise emulates light mode instead of honoring the desktop theme.
-                color_scheme="null",
-                chromium_sandbox=True,
-                args=launch_args,
-                ignore_default_args=PATCHRIGHT_INCOMPATIBLE_DEFAULT_ARGS,
+                ignore_default_args=True,
+                timeout=LAUNCH_TIMEOUT_MS,
+                args=[*chrome_args, *launch_args, NO_STARTUP_WINDOW_ARG],
             )
         )
 
@@ -372,58 +389,29 @@ class PatchrightRuntime:
             await self._maybe_await(old.page.close())
         target_url = str(url or "about:blank")
 
-        async def create_page() -> Any:
-            initial_page = await self._adopt_initial_page(target_url)
-            if initial_page is not None:
-                return initial_page
-            return await self._create_new_window_page(target_url)
-
         try:
-            page = await create_page()
+            page = await self._create_new_window_page(target_url)
         except Exception as exc:
             if not self._is_closed_target_error(exc):
                 raise
             # Manual window close can close the whole persistent context; recreate it.
             await self._restart_closed_context()
-            page = await create_page()
+            page = await self._create_new_window_page(target_url)
         slot = PageSlot(page=page, page_id=self._next_page_id)
         self._next_page_id += 1
         self.pages[thread] = slot
         return slot
 
-    async def _adopt_initial_page(self, url: str) -> Any | None:
-        if self._open_managed_pages():
-            return None
-        context = self._context()
-        open_pages = [page for page in list(context.pages) if self._page_is_open(page)]
-        if not open_pages:
-            return None
-        # The first thread reuses one launch page to avoid a visible window swap; later
-        # threads require CDP target IDs so concurrent windows cannot be misidentified.
-        page = next((page for page in open_pages if self._page_url(page) in STARTUP_PAGE_URLS), open_pages[0])
-        await self._close_unmanaged_pages(context, keep_ids={id(page)})
-        if not self._page_is_open(page):
-            raise RuntimeError(CLOSED_TARGET_MESSAGE)
-        try:
-            await self._maybe_await(page.goto(url, wait_until="domcontentloaded"))
-        except Exception as exc:
-            if not self._page_is_open(page):
-                raise RuntimeError(CLOSED_TARGET_MESSAGE) from exc
-            raise
-        if not self._page_is_open(page):
-            raise RuntimeError(CLOSED_TARGET_MESSAGE)
-        return page
-
     async def _create_new_window_page(self, url: str) -> Any:
         context = self._context()
-        anchor_page, close_anchor = await self._cdp_anchor_page(context)
         excluded_page_ids = {id(page) for page in self._open_managed_pages()}
-        excluded_page_ids.add(id(anchor_page))
         session = None
         target_id: str | None = None
         try:
-            await self._close_unmanaged_pages(context, keep_ids={id(anchor_page)})
-            session = await self._maybe_await(context.new_cdp_session(anchor_page))
+            await self._close_unmanaged_pages(context)
+            # Browser-level: a page-level session needs an open page, and opening one
+            # while Chrome has no window shows it in the foreground.
+            session = await self._maybe_await(context.browser.new_browser_cdp_session())
             # Background: a foreground window activates Chrome and steals focus from the
             # user's app (measured on macOS). Thread.focus() raises a window on request.
             response = await self._maybe_await(
@@ -439,19 +427,6 @@ class PatchrightRuntime:
                 raise
         finally:
             await self._best_effort_detach(session)
-            if close_anchor:
-                await self._best_effort_close_page(anchor_page)
-
-    async def _cdp_anchor_page(self, context: Any) -> tuple[Any, bool]:
-        managed_pages = self._open_managed_pages()
-        if managed_pages:
-            return managed_pages[0], False
-        for page in list(context.pages):
-            if self._page_is_open(page):
-                return page, True
-        # Patchright CDP sessions need a page anchor. This temporary page must never become
-        # the controlled thread page; it is closed after Target.createTarget finishes.
-        return await self._maybe_await(context.new_page()), True
 
     def _open_managed_pages(self) -> list[Any]:
         return [slot.page for slot in self.pages.values() if self._page_is_open(slot.page)]
@@ -518,13 +493,6 @@ class PatchrightRuntime:
             return
         try:
             await self._maybe_await(detach())
-        except Exception:
-            return
-
-    async def _best_effort_close_page(self, page: Any) -> None:
-        try:
-            if self._page_is_open(page):
-                await self._maybe_await(page.close())
         except Exception:
             return
 
