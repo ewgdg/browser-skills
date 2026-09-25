@@ -155,8 +155,9 @@ class PatchrightRuntime:
             "color_scheme": "null",
             "chromium_sandbox": True,
         }
-        # Patchright opens a startup page and waits for it; the wait is skipped only when
-        # it adds no args of its own, so pass its own flags back without that page.
+        # --no-startup-window (see NO_STARTUP_WINDOW_ARG) hangs Patchright: it opens a startup
+        # page and waits for it, skipping the wait only when it adds no args of its own. So
+        # pass its own flags back without that page.
         # Remove this workaround (capture_default_args, ignore_default_args) once Patchright
         # launches with --no-startup-window without hanging; requested upstream at
         # https://redirect.github.com/Kaliiiiiiiiii-Vinyzu/patchright/discussions/232
