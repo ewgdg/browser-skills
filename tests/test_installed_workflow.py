@@ -18,11 +18,12 @@ import sys
 import threading
 import time
 
+import psutil
 import pytest
 
 
 @pytest.mark.skipif(not os.environ.get("SURF_INSTALLED_SKILL"), reason="installed skill acceptance is opt-in")
-def test_installed_skill_across_fresh_invocations(tmp_path):
+def test_installed_skill_across_fresh_invocations(tmp_path, short_tmp_path):
     skill = Path(os.environ["SURF_INSTALLED_SKILL"]).resolve()
     launcher = skill / "scripts" / "run.py"
     checkout = Path(__file__).resolve().parents[1]
@@ -45,7 +46,8 @@ def test_installed_skill_across_fresh_invocations(tmp_path):
         bridge_port = reservation.getsockname()[1]
     environment = {
         **os.environ,
-        "SURF_AGENT_HOME": str(tmp_path / "surf-home"),
+        # Session sockets live under this home, so it needs a short path on macOS.
+        "SURF_AGENT_HOME": str(short_tmp_path / "surf-home"),
         "SURF_AGENT_BACKEND": "patchright",
         "SURF_AGENT_PATCHRIGHT_PORT": str(bridge_port),
         "PYTHONPATH": "",
@@ -149,10 +151,10 @@ print('cleanup passed')
 
         def stop_session_worker(pid):
             try:
-                command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ")
-            except OSError:
+                command = " ".join(psutil.Process(pid).cmdline())
+            except psutil.Error:
                 return
-            if session["id"] is not None and session["id"].encode() in command:
+            if session["id"] is not None and session["id"] in command:
                 os.kill(pid, signal.SIGKILL)
 
         first_cell = invoke_session('''
@@ -181,9 +183,9 @@ t.emit(t.snapshot())
         worker_pid = int(created.group(1))
         os.kill(worker_pid, signal.SIGKILL)
         deadline = time.time() + 5
-        while time.time() < deadline and os.path.exists(f"/proc/{worker_pid}"):
+        while time.time() < deadline and psutil.pid_exists(worker_pid):
             time.sleep(0.05)
-        assert not os.path.exists(f"/proc/{worker_pid}")
+        assert not psutil.pid_exists(worker_pid)
 
         # A killed interpreter takes its session id with it: the bindings are gone
         # and the id is refused rather than quietly remade.
