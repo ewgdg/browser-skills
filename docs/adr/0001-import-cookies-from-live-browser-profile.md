@@ -17,3 +17,5 @@ The configured source is fingerprinted using its Cookies database and WAL/journa
 ## Amendment: macOS, not Windows
 
 macOS is supported with the same verbatim row copy: Chrome keeps one cookie key per app in the Keychain item `Chrome Safe Storage`, and Surf's destination is the same signed Chrome app, so it reads that key. Windows is unsupported: a running Chrome holds its Cookies database under a mandatory Windows file lock, so the online backup this design relies on cannot read it without closing the source browser.
+
+Verified on macOS 27 with Chrome 153: an imported GitHub session authenticates in Surf. Two macOS differences follow. Chrome writes no `os_crypt` to `Local State`, so absent metadata is compared like any other value and matches only absence. macOS also denies Chrome's data directory to other apps, so the app running Surf needs a one-time permission to access other apps' data. A Chrome launched from an SSH session cannot read the locked Keychain and drops the imported rows, so verification must run in the logged-in desktop session.

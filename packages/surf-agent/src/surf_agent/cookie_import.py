@@ -372,9 +372,23 @@ def read_os_crypt(path: Path) -> Any | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise SurfAgentError(f"cookie source Local State is missing: {path}") from exc
+    except PermissionError as exc:
+        raise SurfAgentError(f"could not read Local State metadata: {exc}{_macos_privacy_hint()}") from exc
     except (OSError, json.JSONDecodeError) as exc:
         raise SurfAgentError(f"could not read Local State metadata: {exc}") from exc
     return _os_crypt(payload)
+
+
+def _macos_privacy_hint() -> str:
+    # macOS denies another app's data even to the same user until the app running
+    # Surf (terminal or agent) is granted access; the error alone does not say so.
+    if sys.platform != "darwin":
+        return ""
+    return (
+        "; macOS blocks Chrome's data until the app running Surf (terminal or agent) is allowed"
+        " to access other apps' data: accept its prompt, or grant it in System Settings >"
+        " Privacy & Security > Full Disk Access"
+    )
 
 
 def read_destination_os_crypt(path: Path) -> tuple[bool, Any | None]:

@@ -220,6 +220,16 @@ def test_macos_profiles_without_os_crypt_import_and_still_must_match(tmp_path: P
         importer(tmp_path, source_root, linux_shaped).run(force=True)
 
 
+def test_macos_privacy_denial_names_the_permission_to_grant(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source_root = tmp_path / "Google" / "Chrome"
+    make_profile(source_root)
+    (source_root / "Local State").chmod(0)
+    monkeypatch.setattr("surf_agent.cookie_import.sys.platform", "darwin")
+
+    with pytest.raises(SurfAgentError, match="Full Disk Access"):
+        importer(tmp_path, source_root, tmp_path / "destination").run(force=True)
+
+
 def test_existing_local_state_missing_or_null_os_crypt_fails_without_overwrite(tmp_path: Path) -> None:
     source_root = tmp_path / "google-chrome"
     source = make_profile(source_root)
