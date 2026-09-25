@@ -4,4 +4,3 @@
 
 - Pin the local SHA right after committing the runtime change, before pushing; do not wait for the push. Use the newest commit touching `packages/surf-agent`: `git log -1 --format=%H -- packages/surf-agent`.
 - Push the runtime commit and its pin together: a pinned SHA that is not on the remote cannot be installed.
-- After pushing, rerun the README's installed acceptance with `SURF_AGENT_DEPENDENCY` unset, so it installs the published pin rather than a local wheel.
