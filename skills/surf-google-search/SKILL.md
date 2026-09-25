@@ -5,16 +5,16 @@ description: Search the web through rendered Google Search and return compact st
 
 # surf-google-search
 
-Use the installed `surf-google-search` CLI for retrieval, then use the results for the requested research. Follow this workflow; open linked `docs/` only when the stated task or problem applies.
+Search through `scripts/run.py`, then use the results for the requested research. Follow this workflow; open linked `docs/` only when the stated task or problem applies.
 
-If the command is missing or needs updating, read [installation](docs/cli.md#installation). For browser startup or backend-selection problems, read [Surf backends](../surf/docs/backends.md).
+Set `GOOGLE_SEARCH_SKILL` to the absolute directory containing this installed `SKILL.md`. The launcher installs the runtime pinned by the Surf skill installed beside it; for launcher or dependency failures, read [setup](docs/cli.md#setup). For browser startup or backend-selection problems, read [Surf backends](../surf/docs/backends.md).
 
 ## Search
 
 ```bash
-surf-google-search "latest Patchright documentation"
-surf-google-search --page 2 --page-count 2 "latest Patchright documentation"
-printf 'latest Patchright documentation\n' | surf-google-search -
+python3 "$GOOGLE_SEARCH_SKILL/scripts/run.py" "latest Patchright documentation"
+python3 "$GOOGLE_SEARCH_SKILL/scripts/run.py" --page 2 --page-count 2 "latest Patchright documentation"
+printf 'latest Patchright documentation\n' | python3 "$GOOGLE_SEARCH_SKILL/scripts/run.py" -
 ```
 
 Read the returned JSON before continuing. On success, use its ordered results and destination URLs for browsing or research. For pagination limits, field meanings, result eligibility, or exit codes, consult the [CLI contract](docs/cli.md#request-and-output).
@@ -26,11 +26,11 @@ A `human_intervention_required` error preserves a browser thread. Tell the user 
 After confirmation, retry the original query and pagination options with `--thread` set to `handoff.thread`. For a default-page search:
 
 ```bash
-surf-google-search --thread '<thread>' "same query"
+python3 "$GOOGLE_SEARCH_SKILL/scripts/run.py" --thread '<thread>' "same query"
 ```
 
 ## Outcomes
 
 Report affirmed zero results as a valid result. Treat `ui_changed` as a compatibility failure, not an empty result set or permission to substitute another provider. For other errors, report the returned type and hint; do not present failed retrieval as a completed search.
 
-The CLI cleans up ordinary search threads automatically. A challenge thread remains open for the human handoff; when abandoning it, use [Surf cleanup](../surf/SKILL.md#cleanup) for that thread only.
+Each search cleans up its ordinary threads automatically. A challenge thread remains open for the human handoff; when abandoning it, use [Surf cleanup](../surf/SKILL.md#cleanup) for that thread only.

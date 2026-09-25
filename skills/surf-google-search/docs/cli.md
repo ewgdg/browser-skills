@@ -1,19 +1,12 @@
 # Google Search CLI reference
 
-Read this to install/update the command, interpret options or output, or focus a preserved challenge window. The operating workflow and human-confirmation rules live in [SKILL.md](../SKILL.md).
+Read this to fix launcher setup, interpret options or output, or focus a preserved challenge window. The operating workflow and human-confirmation rules live in [SKILL.md](../SKILL.md).
 
-## Installation
+## Setup
 
-Requires `uv`, Google Chrome, and a working Surf backend. Install Google Search and its Surf dependency from the same published revision. Replace the placeholder with a reachable full commit ID; an unpushed local commit is not installable this way:
+`scripts/run.py` requires Python 3, `uv`, Google Chrome, and the Surf skill installed beside this skill. It installs Google Search and `surf-agent` from the commit in Surf's `runtime-revision`, so both skills always drive the shared browser with the same runtime. Update the skills to receive runtime updates; there is no separate installation. Arguments, stdin and exit codes pass through unchanged. It honors the [selected Surf backend](../../surf/docs/backends.md), and [Surf launcher setup](../../surf/docs/launcher.md) covers `uv` and pin failures.
 
-```bash
-SURF_REV='<published-40-character-commit>'
-uv tool install \
-  --with "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git@$SURF_REV#subdirectory=packages/surf-agent" \
-  "surf-google-search @ git+https://github.com/ewgdg/browser-skills.git@$SURF_REV#subdirectory=packages/surf-google-search"
-```
-
-Google Search retains its own CLI; Surf's removed action CLI is not a prerequisite. It honors the [selected Surf backend](../../surf/docs/backends.md). Its installed Python dependency is separate from the [Surf skill launcher's runtime pin](../../surf/docs/launcher.md).
+For local development, set both `SURF_AGENT_DEPENDENCY` and `SURF_GOOGLE_SEARCH_DEPENDENCY` to absolute built-wheel paths, as in [Surf's local-wheel validation](../../surf/docs/launcher.md#local-development-validation).
 
 ## Request and output
 

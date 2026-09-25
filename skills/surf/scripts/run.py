@@ -29,28 +29,51 @@ SESSION_VALUES = ("--name", "--ttl", "--timeout")
 WORKER_COMMAND_ENV = "SURF_SESSION_WORKER_COMMAND"
 
 
-def dependency_requirement() -> str | None:
-    override = os.environ.get("SURF_AGENT_DEPENDENCY")
+REPOSITORY = "git+https://github.com/ewgdg/browser-skills.git"
+RUNTIME_PIN = Path(__file__).resolve().parents[1] / "runtime-revision"
+
+
+def dependency_requirement(
+    distribution: str = "surf-agent",
+    extras: str = "[patchright]",
+    override_variable: str = "SURF_AGENT_DEPENDENCY",
+) -> str | None:
+    """The pinned requirement for one repository package, or its local wheel override.
+
+    Other skills load this launcher to install their packages at the same pin.
+    """
+    override = os.environ.get(override_variable)
     if override is not None:
         wheel = Path(override).expanduser()
         if not wheel.is_absolute() or wheel.suffix != ".whl" or not wheel.is_file():
-            print("SURF_AGENT_DEPENDENCY must be an absolute path to a built wheel.",
+            print(f"{override_variable} must be an absolute path to a built wheel.",
                   file=sys.stderr)
             return None
-        return f"surf-agent[patchright] @ {wheel.as_uri()}"
-    revision = (Path(__file__).resolve().parents[1] / "runtime-revision").read_text().strip()
+        return f"{distribution}{extras} @ {wheel.as_uri()}"
+    revision = RUNTIME_PIN.read_text().strip()
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         print(
             "This Surf skill has a missing or invalid runtime pin, so it is not "
             "correctly installed; update or reinstall it. For local development, "
-            "set SURF_AGENT_DEPENDENCY to an absolute built-wheel path.",
+            f"set {override_variable} to an absolute built-wheel path.",
             file=sys.stderr,
         )
         return None
-    return (
-        "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git@"
-        f"{revision}#subdirectory=packages/surf-agent"
-    )
+    return f"{distribution}{extras} @ {REPOSITORY}@{revision}#subdirectory=packages/{distribution}"
+
+
+def uv_python_command(requirements: list[str]) -> list[str] | None:
+    """The uv command that runs Python with only these requirements installed."""
+    uv = shutil.which("uv")
+    if uv is None:
+        print("Surf requires uv: https://docs.astral.sh/uv/getting-started/installation/",
+              file=sys.stderr)
+        return None
+    dependencies = [argument for requirement in requirements for argument in ("--with", requirement)]
+    return [
+        uv, "run", "--no-project", "--no-config", "--isolated", "--python", "3.11",
+        *dependencies, "--", "python",
+    ]
 
 
 @dataclass(frozen=True)
@@ -211,15 +234,9 @@ def main():
     dependency = dependency_requirement()
     if dependency is None:
         return 2
-    uv = shutil.which("uv")
-    if uv is None:
-        print("Surf requires uv: https://docs.astral.sh/uv/getting-started/installation/",
-              file=sys.stderr)
+    uv_command = uv_python_command([dependency])
+    if uv_command is None:
         return 127
-    uv_command = [
-        uv, "run", "--no-project", "--no-config", "--isolated", "--python", "3.11",
-        "--with", dependency, "--", "python",
-    ]
     environment = dict(os.environ)
     if invocation.session_mode:
         environment[WORKER_COMMAND_ENV] = json.dumps(
@@ -227,7 +244,7 @@ def main():
         )
     # Execute Python directly: uv must not reinterpret script metadata or change
     # ordinary Python's stdin, sibling imports, arguments, or exception behavior.
-    os.execve(uv, [*uv_command, *invocation.python_arguments], environment)
+    os.execve(uv_command[0], [*uv_command, *invocation.python_arguments], environment)
 
 
 if __name__ == "__main__":

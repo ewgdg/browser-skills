@@ -33,5 +33,9 @@ def test_skill_distribution_contains_executable_payload():
         for pattern in ("skills/*/SKILL.md", "skills/*/docs/**/*.md")
         for path in root.glob(pattern)
     }
-    assert documents | {"skills/surf/scripts/run.py", "skills/surf/runtime-revision"} <= paths
+    assert documents | {
+        "skills/surf/scripts/run.py",
+        "skills/surf/runtime-revision",
+        "skills/surf-google-search/scripts/run.py",
+    } <= paths
     assert not any(path.startswith("packages/") for path in paths), "the skill installs its runtime, not bundled source"

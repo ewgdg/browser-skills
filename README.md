@@ -34,10 +34,10 @@ PY
 
 ## Google Search CLI
 
-Google Search retains its CLI and depends on Surf's Python API. Follow the shipped [installation instructions](skills/surf-google-search/docs/cli.md#installation) to install matching published revisions.
+Google Search runs through `skills/surf-google-search/scripts/run.py`, which installs its package at the Surf skill's `runtime-revision`; install both skills together. See [setup](skills/surf-google-search/docs/cli.md#setup).
 
 ```bash
-surf-google-search "latest Patchright documentation"
+python3 "$GOOGLE_SEARCH_SKILL/scripts/run.py" "latest Patchright documentation"
 ```
 
 Follow the [Google Search skill](skills/surf-google-search/SKILL.md) for retrieval and human handoff. Consult its [CLI reference](skills/surf-google-search/docs/cli.md#request-and-output) for pagination, result eligibility, output fields and errors.

@@ -10,7 +10,7 @@ The launcher executes Python directly: file-relative imports, working directory,
 
 ## Published runtime
 
-`runtime-revision`, beside `SKILL.md`, selects a full 40-character Git commit for the runtime dependency. Users update the skill; the launcher installs its matching runtime.
+`runtime-revision`, beside `SKILL.md`, selects a full 40-character Git commit for the runtime dependency. Users update the skill; the launcher installs its matching runtime. The Google Search skill's launcher reads the same pin, so both skills share one runtime revision.
 
 The pinned requirement is what gets installed into the environment above; there is no
 separate runtime installation to manage, and a new revision builds a new environment.
