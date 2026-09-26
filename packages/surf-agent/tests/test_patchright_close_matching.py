@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 import urllib.error
 from io import BytesIO
 from pathlib import Path
@@ -177,6 +178,25 @@ def test_call_tool_if_running_preserves_bridge_errors(tmp_path: Path) -> None:
     ):
         client.call_tool_if_running("close-matching", {"pattern": "*"})
 
+
+
+def test_bridge_tool_error_traceback_omits_the_http_transport(tmp_path: Path) -> None:
+    # The HTTP 500 only carries the bridge's structured error; chaining it buried the message.
+    client = local_client(tmp_path)
+    http_error = urllib.error.HTTPError(
+        "http://127.0.0.1:9555/call", 500, "Internal Server Error", hdrs=None, fp=BytesIO(b'{"error":"bridge failed"}')
+    )
+
+    with (
+        patch.object(client, "_health_ok", return_value=True),
+        patch("surf_agent.backends.local_bridge.urllib.request.urlopen", side_effect=http_error),
+        pytest.raises(SurfAgentError) as raised,
+    ):
+        client.call_tool_if_running("close-matching", {"pattern": "*"})
+
+    rendered = "".join(traceback.format_exception(raised.value))
+    assert "HTTPError" not in rendered
+    assert "bridge failed" in rendered
 
 def test_patchright_health_proves_the_configured_profile_identity(
     tmp_path: Path,

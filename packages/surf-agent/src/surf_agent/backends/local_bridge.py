@@ -78,7 +78,10 @@ class LocalBridgeClient:
             with urllib.request.urlopen(request, timeout=timeout_s) as response:
                 data = json.loads(response.read().decode())
         except urllib.error.HTTPError as exc:
-            raise self._tool_error(name, exc) from exc
+            # The HTTP status only transports the bridge's structured error, which
+            # _tool_error carries in full; chaining it buried that message under a
+            # transport traceback.
+            raise self._tool_error(name, exc) from None
         except TimeoutError as exc:
             raise self._tool_timeout(name, timeout_s) from exc
         except urllib.error.URLError as exc:
