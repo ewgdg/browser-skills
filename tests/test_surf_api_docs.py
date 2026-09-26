@@ -43,6 +43,13 @@ def test_python_api_heads_every_method_with_its_runtime_signature(handle):
     assert {key: value for key, value in headings.items() if key[0] == handle} == expected
 
 
+def test_python_api_method_bodies_fit_the_skill_grep_window():
+    # SKILL.md teaches `grep -A3 '^### ...'`: heading, blank line, one paragraph. A second paragraph would be cut off silently.
+    sections = re.split(r"^#{2,3} ", PYTHON_API.read_text(), flags=re.M)
+    method_bodies = {section.splitlines()[0]: section.split("\n", 1)[1].strip() for section in sections if re.match(r"`(thread|browser)\.", section)}
+    assert {heading: body for heading, body in method_bodies.items() if "\n\n" in body} == {}
+
+
 def test_skill_lists_every_thread_method_with_its_runtime_signature():
     expected = {("thread", method): rendered(Thread, method) for method in public_methods(Thread)}
     assert documented(SKILL.read_text(), SKILL_LINE) == expected

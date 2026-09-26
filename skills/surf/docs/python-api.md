@@ -26,11 +26,11 @@ Checks without opening a window or starting a bridge. An unavailable bridge retu
 
 ### `thread.click(target) -> str`
 
-Action output. `target` per Targets above.
+Action output. `target` is a snapshot ref such as `@e12` or a CSS selector; see Targets above.
 
 ### `thread.fill(target, text) -> str`
 
-Replaces the field's value; action output. `target` per Targets above.
+Replaces the field's value; action output. `target` is a snapshot ref such as `@e12` or a CSS selector; see Targets above.
 
 ### `thread.type_text(text) -> str`
 
@@ -133,6 +133,10 @@ Baselines belong to the Python process, keyed by thread name: not to the handle,
 
 Methods are silent; print their result only when needed.
 
+Successfully closing a thread, by `thread.close()` or `close_matching()`, removes its remembered entry: Patchright's bridge-held entry or AXI's local state file. An unavailable Patchright bridge yields an empty inventory, not proof that every browser page is closed.
+
+Backend/profile guidance: [selection](backends.md), [manual 1Password setup](1password-setup.md), [cookie consent and failures](cookie-import.md).
+
 ### `Browser()`
 
 Constructs without opening a window.
@@ -192,10 +196,6 @@ Stops the selected automation runtime.
 ### `browser.close_matching(pattern) -> None`
 
 Closes remembered pages whose thread names match the glob.
-
-Successful closing removes the remembered thread: Patchright's bridge-held entry or AXI's local state file. An unavailable Patchright bridge yields an empty inventory, not proof that every browser page is closed.
-
-Backend/profile guidance: [selection](backends.md), [manual 1Password setup](1password-setup.md), [cookie consent and failures](cookie-import.md).
 
 ## Errors
 
