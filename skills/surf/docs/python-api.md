@@ -46,7 +46,7 @@ Presses one key, such as `Enter`; action output.
 
 ### `thread.wait(target=None, *, gone=None, url=None, timeout_ms=None) -> str`
 
-An `int` target sleeps that many nonnegative milliseconds and takes no other argument. Otherwise waits until every given condition holds: `target` text becomes visible, `gone` text stops being visible, `url` glob (`fnmatch`, full URL) matches. `timeout_ms` defaults to 10000. Failure raises code `wait_timeout` naming unmet conditions, current URL and title. Numeric strings are text, not durations. `gone`, `url` and `timeout_ms` are Patchright-only.
+An `int` target sleeps that many nonnegative milliseconds and takes no other argument. Otherwise waits until every given condition holds: `target` text becomes visible (case-insensitive substring of an element's text, where child texts can join without the space a snapshot name shows), `gone` text stops being visible, `url` glob (`fnmatch`, full URL) matches. `timeout_ms` defaults to 10000. Failure raises code `wait_timeout` naming unmet conditions, current URL and title. Numeric strings are text, not durations. `gone`, `url` and `timeout_ms` are Patchright-only.
 
 ### `thread.back() -> str`
 
@@ -54,7 +54,7 @@ Navigation output; resets the emission baseline.
 
 ### `thread.text(target=None) -> str`
 
-Visible text: the whole body, or one region by snapshot ref or CSS selector (`"@e5"`, `"main, article"`). Targets are Patchright-only.
+Visible text: the whole body, or one region by snapshot ref or CSS selector (`"@e5"`, `"article"`). Prefer the ref: a selector matches HTML tags, not the ARIA roles a snapshot prints. Targets are Patchright-only.
 
 ### `thread.screenshot(path, *, full_page=False) -> str`
 

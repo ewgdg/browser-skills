@@ -85,7 +85,7 @@ thread.wait(url="*/search*")  # confirm the effect instead of sleeping
 thread.emit(thread.snapshot())
 ```
 
-Confirm an action's effect with `wait(text)`, `wait(gone=...)` or `wait(url=...)` rather than a fixed sleep. Read one region with `thread.text("@e5")` or `thread.text("main")` instead of the whole body. When a call fails, branch on `error.code` ([codes](docs/python-api.md#errors)): `intercepted` names the covering element, `outcome_unknown` means the action may already have happened.
+Confirm an action's effect with `wait(text)`, `wait(gone=...)` or `wait(url=...)` rather than a fixed sleep. Text conditions match the page's own text, where child elements can join without the space a snapshot name shows: for `option "Cloud Run run.googleapis.com"`, wait for `"Cloud Run"`, one child's text. Read one region by its snapshot ref, `thread.text("@e5")`, instead of the whole body; a CSS selector such as `"main"` matches HTML tags, which apps often replace with ARIA roles. When a call fails, branch on `error.code` ([codes](docs/python-api.md#errors)): `intercepted` names the covering element, `outcome_unknown` means the action may already have happened.
 
 Actions and observations are silent; print only useful results. `snapshot().text` is complete. `emit(snapshot)` outputs a numbered observation with explicit BEGIN/END boundaries: full text first, then useful diffs; `emit(snapshot, full=True)` forces full output. Multiple emissions appear in order in the same script output, not separate agent turns. End the script when the next action requires a decision. Read [snapshot semantics](docs/python-api.md#snapshot-output) for the format, baselines or custom sinks.
 
