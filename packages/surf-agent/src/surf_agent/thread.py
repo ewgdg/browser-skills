@@ -15,6 +15,10 @@ from .errors import ErrorCode, SurfAgentError
 
 Snapshot = SnapshotCapture
 _observation_ids = count(1)
+# Keyed by thread name, not handle: the agent reads one stdout per process, and
+# models rebuild Thread(name) in every session cell, which would otherwise drop
+# the baseline and print the full page each time.
+_baselines: dict[str, tuple[int, Snapshot]] = {}
 
 
 def _create_agent(name: str) -> SurfAgent:
@@ -26,18 +30,17 @@ class Thread:
     """A named, agent-owned browser interaction context.
 
     A thread maps to Surf's currently dedicated browser window. It is not a
-    tab selector: callers own this context and should use one handle for the
-    lifetime of an interaction.
+    tab selector. Handles for the same name in one process share its emission
+    baseline.
     """
 
     def __init__(self, name: str = DEFAULT_THREAD) -> None:
         self.name = safe_thread_name(name)
         self._agent = _create_agent(self.name)
-        self._baseline: tuple[int, Snapshot] | None = None
 
     def open(self, url: str) -> str:
         """Navigate this thread's page to *url* and return backend output."""
-        self._baseline = None
+        _baselines.pop(self.name, None)
         return self._agent.browser_backend.open(url)
 
     def is_open(self) -> bool:
@@ -101,7 +104,7 @@ class Thread:
         )
 
     def back(self) -> str:
-        self._baseline = None
+        _baselines.pop(self.name, None)
         return self._agent.browser_backend.back()
 
     def text(self, target: str | None = None) -> str:
@@ -130,10 +133,11 @@ class Thread:
             raise TypeError("emit expects a snapshot returned by snapshot()")
         # Reserve before writing: partial output must never reuse an observation ID.
         observation_id = next(_observation_ids)
-        if full or self._baseline is None:
+        baseline = _baselines.get(self.name)
+        if full or baseline is None:
             output = snapshot.text
         else:
-            baseline_id, baseline_snapshot = self._baseline
+            baseline_id, baseline_snapshot = baseline
             output = choose_snapshot_diff(
                 baseline_snapshot,
                 snapshot,
@@ -151,14 +155,14 @@ class Thread:
         destination = sys.stdout if sink is None else sink
         if destination.write(frame) != len(frame):
             raise SurfAgentError("observation output was not completely written")
-        self._baseline = observation_id, snapshot
+        _baselines[self.name] = observation_id, snapshot
 
     def close(self) -> None:
         """Close this thread's managed browser page."""
         status = self._agent.browser_backend.close()
         if status not in (None, 0):
             raise SurfAgentError(f"close failed for thread {self.name}: backend returned status {status}")
-        self._baseline = None
+        _baselines.pop(self.name, None)
 
     def focus(self) -> None:
         """Bring the managed window to the foreground."""
@@ -174,7 +178,7 @@ class Thread:
                 "reset is not supported by Patchright; use close() to release the thread", code=ErrorCode.UNSUPPORTED
             )
         self._agent.reset_state()
-        self._baseline = None
+        _baselines.pop(self.name, None)
 
     def _capture(self) -> Snapshot:
         capture = self._agent.browser_backend.capture_snapshot()

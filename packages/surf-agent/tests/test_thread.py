@@ -178,6 +178,22 @@ def test_navigation_clears_emission_baseline_and_handles_are_independent(monkeyp
     assert observation_frames(independent.getvalue())[0][1] == second.text
 
 
+def test_rebuilt_handle_for_the_same_thread_continues_its_diffs(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Agents rebuild Thread(name) in every session cell; the diff chain must survive that.
+    use_backend(monkeypatch, FakeBackend([], []))
+    before = capture("".join(f"stable line {index}\n" for index in range(220)))
+    changed = capture(before.text.replace("stable line 100", "changed line"))
+    first_output, rebuilt_output = io.StringIO(), io.StringIO()
+
+    Thread("research").emit(before, sink=first_output)
+    Thread("research").emit(changed, sink=rebuilt_output)
+
+    before_id, _ = observation_frames(first_output.getvalue())[0]
+    changed_id, body = observation_frames(rebuilt_output.getvalue())[0]
+    assert body.startswith(f"--- observation {before_id}\n+++ observation {changed_id}\n")
+    assert "+changed line\n" in body
+
+
 def test_close_raises_on_backend_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = FakeBackend([], [], close_status=1)
     use_backend(monkeypatch, backend)

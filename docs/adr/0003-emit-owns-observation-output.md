@@ -18,7 +18,7 @@ status: accepted
 
 ## Consequences
 
-`emit()` is the only writer that touches emission state, so a successful write is the baseline advance: numbers are reserved before writing and may therefore have gaps, and a failed or short write leaves the baseline unchanged. `emit(..., sink=io.StringIO())` hands the same frame text to callers that want it, keeping that need inside the existing path. Baselines remain per handle and die with the interpreter, so a replaced interpreter's first emission is full by construction. The accepted cost is vocabulary: `emit` is non-standard and does not reveal that it writes and returns `None`, so the rule must be taught in `skills/surf/SKILL.md` and `skills/surf/docs/python-api.md` rather than inferred. If observed sessions show models wrapping it in `print`, the fix is a guidance line, not a signature change.
+`emit()` is the only writer that touches emission state, so a successful write is the baseline advance: numbers are reserved before writing and may therefore have gaps, and a failed or short write leaves the baseline unchanged. `emit(..., sink=io.StringIO())` hands the same frame text to callers that want it, keeping that need inside the existing path. Baselines die with the interpreter, so a replaced interpreter's first emission is full by construction; ADR 0007 keys them by thread name rather than handle. The accepted cost is vocabulary: `emit` is non-standard and does not reveal that it writes and returns `None`, so the rule must be taught in `skills/surf/SKILL.md` and `skills/surf/docs/python-api.md` rather than inferred. If observed sessions show models wrapping it in `print`, the fix is a guidance line, not a signature change.
 
 ## Reconsidered
 
