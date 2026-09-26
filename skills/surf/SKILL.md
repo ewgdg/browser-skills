@@ -78,7 +78,7 @@ Use a unique thread name per task. Surf owns a dedicated Chrome window/profile, 
 
 The user watches the Surf window, so clear overlays before working the page. When a snapshot after a page load shows a cookie banner, consent dialog, signup or app-install prompt, or other overlay covering content, dismiss it first and confirm with `wait(gone=...)`:
 
-- Cookie consent: on its first layer, prefer "Reject all", then "Necessary only" or equivalent; accept only when it is the only choice. Leave its settings panel closed.
+- Cookie consent: choose among the banner's first-layer buttons: prefer "Reject all", then "Necessary only" or equivalent, else accept.
 - Other overlays: click its close or "No thanks" control, or press `Escape`.
 - A click failing with `error.code == "intercepted"` names the covering element: dismiss it, then retry.
 - Still covering after two dismiss attempts: hide the overlay and its backdrop with `thread.evaluate` (`display: none`; removing nodes can break framework-rendered pages), then undo the page locks it left: `overflow` on `html`/`body`, and `inert` or `aria-hidden` on the main content. A new snapshot should show that content, ready to click.
