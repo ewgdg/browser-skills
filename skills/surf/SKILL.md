@@ -34,10 +34,10 @@ For backend selection, profile configuration, or startup problems, read [backend
 
 Choose one mode per task:
 
-- **Fresh interpreter** — `run.py FILE|-` starts a new interpreter for that call. Import and initialize handles each time; write intermediate data to files when a later call needs it.
-- **Session** — `run.py --new-session -` creates a session interpreter and reports its id, and later cells pass `--session ID`. Multi-step work that repeatedly inspects the same page benefits from one; a one-shot script does not need it.
+- **Session** — the default for multi-step work: `run.py --new-session -` creates a session interpreter and reports its id, and later cells pass `--session ID`.
+- **Fresh interpreter** — `run.py FILE|-` starts a new interpreter for that call; suits a one-shot script. Import and initialize handles each time; write intermediate data to files when a later call needs it.
 
-A session is one Python process kept alive between calls, as in a notebook: each call is a cell, so the handle, its emission baseline and earlier helpers stay in scope, and later cells use them directly instead of importing again. Create the session once and keep its id: `--new-session` prints it as the last stdout output of that call.
+A session is one Python process kept alive between calls, as in a notebook: each call is a cell. The first cell imports, binds `thread = Thread(name)` and opens the page; every later cell calls the bound `thread` and earlier helpers directly, with no import line. Create the session once and keep its id: `--new-session` prints it as the last stdout output of that call.
 
 ```bash
 python3 "$SURF_SKILL/scripts/run.py" --new-session --name research - <<'PY'
@@ -53,12 +53,12 @@ PY
 
 ```bash
 python3 "$SURF_SKILL/scripts/run.py" --session research-1f3a9c02 - <<'PY'
-thread.click("@e6")  # ref from the snapshot above; the handle and its baseline survived
-thread.emit(thread.snapshot())
+thread.click("@e6")  # ref from the snapshot above; `thread` is still bound
+thread.emit(thread.snapshot())  # a diff against the observation above
 PY
 ```
 
-The id is the session's only handle: an unknown id is refused rather than started, so reuse only ids this task created. Another task's interpreter holds its own bindings and emission baseline, so attaching to it yields diffs against observations this task never received. If the id is lost, `--list-sessions` lists each live session with its working directory; a task that waits on a human should create its session with a longer `--ttl`. `--session ID --reset` discards bindings but keeps the interpreter and id.
+The id is the session's only handle: an unknown id is refused rather than started, so reuse only ids this task created. Another task's interpreter holds its own bindings and emission baselines, so attaching to it yields diffs against observations this task never received. If the id is lost, `--list-sessions` lists each live session with its working directory; a task that waits on a human should create its session with a longer `--ttl`. `--session ID --reset` discards bindings but keeps the interpreter, its id and its emission baselines.
 
 Send a cell on stdin, or a file as `- < cell.py`. Cells run one at a time. For defaults, output limits, and an interpreter that stops answering, read [launcher sessions](docs/launcher.md#sessions).
 
@@ -68,30 +68,17 @@ A cell that exceeds `--timeout SECONDS` (default 300) ends the session: the call
 
 1. Create a new session with `--new-session`.
 2. Rebuild the handle with the task's thread name, `Thread("research")`, without calling `open()`.
-3. Emit a full observation (the new handle has no baseline), then follow [Recovery](#recovery) before repeating any action.
+3. Emit a full observation (the new interpreter has no baseline), then follow [Recovery](#recovery) before repeating any action.
 
 If the call instead reports the interpreter was not stopped, it may still hold the bindings; read [launcher sessions](docs/launcher.md#sessions).
 
 ## Browse, observe, decide
 
-Use a unique thread name per task. Surf owns a dedicated Chrome window/profile, separate from the user's main browser. Reuse the name to continue the task without navigating again.
+Use a unique thread name per task. Surf owns a dedicated Chrome window/profile, separate from the user's main browser. `open()` creates the thread's window when missing; a fresh interpreter continues the task by rebuilding `Thread(name)` without navigating again.
 
-```bash
-python3 "$SURF_SKILL/scripts/run.py" - <<'PY'
-from surf_agent import Thread
-
-thread = Thread("research-42")
-thread.open("https://example.com")  # creates its window when missing
-thread.emit(thread.snapshot())
-PY
-```
-
-Inspect the snapshot before choosing targets: use a ref the snapshot printed, so a line `- searchbox "Search" [ref=e12]` is targeted as `@e12` ([target forms](docs/python-api.md#thread)). Batch deterministic actions until a new observation or human decision is needed:
+Inspect the snapshot before choosing targets: use a ref the snapshot printed, so a line `- searchbox "Search" [ref=e12]` is targeted as `@e12` ([target forms](docs/python-api.md#thread)). Batch deterministic actions in one cell until a new observation or human decision is needed:
 
 ```python
-from surf_agent import Thread
-
-thread = Thread("research-42")
 thread.fill("@e12", "browser skills")  # ref from the observed snapshot
 thread.press("Enter")
 thread.wait(url="*/search*")  # confirm the effect instead of sleeping
@@ -100,7 +87,7 @@ thread.emit(thread.snapshot())
 
 Confirm an action's effect with `wait(text)`, `wait(gone=...)` or `wait(url=...)` rather than a fixed sleep. Read one region with `thread.text("@e5")` or `thread.text("main")` instead of the whole body. When a call fails, branch on `error.code` ([codes](docs/python-api.md#errors)): `intercepted` names the covering element, `outcome_unknown` means the action may already have happened.
 
-Actions and observations are silent; print only useful results. `snapshot().text` is complete. `emit(snapshot)` outputs a numbered observation with explicit BEGIN/END boundaries: full text first, then useful diffs; `full=True` forces full output. Multiple emissions appear in order in the same script output, not separate agent turns. End the script when the next action requires a decision. Read [snapshot semantics](docs/python-api.md#snapshot-output) for the format, baselines or custom sinks.
+Actions and observations are silent; print only useful results. `snapshot().text` is complete. `emit(snapshot)` outputs a numbered observation with explicit BEGIN/END boundaries: full text first, then useful diffs; `emit(snapshot, full=True)` forces full output. Multiple emissions appear in order in the same script output, not separate agent turns. End the script when the next action requires a decision. Read [snapshot semantics](docs/python-api.md#snapshot-output) for the format, baselines or custom sinks.
 
 Pass a Python file or `-` for stdin; subsequent arguments reach `sys.argv`. For large text or JavaScript, read files in Python rather than nesting shell quoting:
 
@@ -108,7 +95,32 @@ Pass a Python file or `-` for stdin; subsequent arguments reach `sys.argv`. For 
 python3 "$SURF_SKILL/scripts/run.py" /tmp/surf-step.py /tmp/body.txt /tmp/inspect.js
 ```
 
-For action signatures and administrative operations, read [Python API](docs/python-api.md).
+### Thread API
+
+Signatures are exact; pass keywords as written, such as `timeout_ms=`.
+
+```python
+thread = Thread(name='default')  # bind once per session
+thread.open(url) -> str
+thread.is_open() -> bool
+thread.click(target) -> str  # target: "@ref" from the latest snapshot, or a CSS selector
+thread.fill(target, text) -> str
+thread.type_text(text) -> str
+thread.press(key) -> str
+thread.scroll(direction) -> str  # up, down, top, bottom
+thread.wait(target=None, *, gone=None, url=None, timeout_ms=None) -> str  # int target sleeps ms; str waits for visible text
+thread.back() -> str
+thread.text(target=None) -> str
+thread.screenshot(path, *, full_page=False) -> str
+thread.evaluate(code) -> Any
+thread.snapshot() -> Snapshot
+thread.emit(snapshot, *, full=False, sink=None) -> None
+thread.close() -> None
+thread.focus() -> None
+thread.reset() -> None  # AXI only
+```
+
+For one method's contract, `Browser` administration and error codes, grep [Python API](docs/python-api.md): each method is a heading holding its signature, such as `grep -n -A3 '^### .*wait(' "$SURF_SKILL/docs/python-api.md"`.
 
 ## Login and human unblock
 
