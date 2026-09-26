@@ -76,6 +76,14 @@ If the call instead reports the interpreter was not stopped, it may still hold t
 
 Use a unique thread name per task. Surf owns a dedicated Chrome window/profile, separate from the user's main browser. `open()` creates the thread's window when missing; a fresh interpreter continues the task by rebuilding `Thread(name)` without navigating again.
 
+The user watches the Surf window, so clear overlays before working the page. When a snapshot after a page load shows a cookie banner, consent dialog, signup or app-install prompt, or other overlay covering content, dismiss it first and confirm with `wait(gone=...)`:
+
+- Cookie consent: click the least-consent choice on its first layer, such as "Reject all" or "Necessary only"; when accepting is the only choice, accept. Leave its settings panel closed.
+- Other overlays: click its close or "No thanks" control, or press `Escape`.
+- A click failing with `error.code == "intercepted"` names the covering element: dismiss it, then retry.
+
+An overlay that gates the task (login, captcha, paywall, age or terms confirmation) is a human decision; follow [Login and human unblock](#login-and-human-unblock).
+
 Inspect the snapshot before choosing targets: use a ref the snapshot printed, so a line `- searchbox "Search" [ref=e12]` is targeted as `@e12` ([target forms](docs/python-api.md#thread)). Batch deterministic actions in one cell until a new observation or human decision is needed:
 
 ```python
