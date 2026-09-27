@@ -1,6 +1,6 @@
 ---
 name: surf
-description: Real browser control for web research, documentation lookup, testing, screenshots, forms, page inspection, and debugging. Use when lightweight API tools are unavailable or rendered pages, authenticated sessions, or browser interaction are required.
+description: Operate websites in a real browser for the user: sign in to their accounts, click through pages, fill and submit forms, change account settings, and read pages exactly as rendered. Use when a task means acting on a site (an account, a dashboard, a support ticket), getting past a login, reading JavaScript-rendered content, or testing, screenshotting and debugging pages. Static reading starts with fetch tools; switch here when a fetch result is missing, truncated, summarized or otherwise lower fidelity than the task needs.
 ---
 
 # Surf
