@@ -39,3 +39,16 @@ def test_skill_distribution_contains_executable_payload():
         "skills/surf-google-search/scripts/run.py",
     } <= paths
     assert not any(path.startswith("packages/") for path in paths), "the skill installs its runtime, not bundled source"
+
+
+def test_every_skill_frontmatter_parses_as_yaml():
+    # Installers skip a skill whose frontmatter is invalid YAML, and an unquoted
+    # value containing ": " is one: `npx skills update` then fails with no reason.
+    import yaml
+
+    root = Path(__file__).resolve().parents[1]
+    for skill in sorted(root.glob("skills/*/SKILL.md")):
+        frontmatter = skill.read_text().split("---\n")[1]
+        fields = yaml.safe_load(frontmatter)
+        assert fields["name"] == skill.parent.name, skill
+        assert isinstance(fields["description"], str) and fields["description"], skill
