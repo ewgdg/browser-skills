@@ -1,6 +1,6 @@
 ---
 name: surf
-description: Operate websites in a real browser for the user: act on a site (their account, a dashboard, a form, a support ticket), get past a login, read JavaScript-rendered pages, or test, screenshot and debug pages. Prefer direct APIs, CLIs and fetch tools when they reach the same result in fewer calls and tokens; switch here when they cannot, or when a fetch result is summarized or otherwise lower fidelity than the task needs.
+description: Operate websites in a real browser for the user: act on a site (their account, a dashboard, a form, a support ticket), get past a login, read JavaScript-rendered pages, or test, screenshot and debug pages. Prefer direct APIs, CLIs and fetch tools when they reach the same result in fewer calls and tokens; switch here when they cannot, or when a fetch result is summarized unasked or otherwise lower fidelity than the task needs.
 ---
 
 # Surf
