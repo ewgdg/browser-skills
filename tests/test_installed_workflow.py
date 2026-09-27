@@ -204,8 +204,9 @@ assert frame.startswith('--- BEGIN observation 1 ---\\n'), frame[:80]
 assert '+++ observation' not in frame, 'the new interpreter must emit full output first'
 print('reattached')
 ''', create=True)
-        # --new-session appends its metadata block after the cell output.
-        assert reattached.stdout.startswith("reattached\n--- BEGIN session metadata ---\n"), reattached.stdout
+        # --new-session prints its metadata block before the cell output.
+        assert reattached.stdout.startswith("--- BEGIN session metadata ---\n"), reattached.stdout
+        assert reattached.stdout.endswith("--- END session metadata ---\nreattached\n"), reattached.stdout
         new_worker = int(re.search(r"--- interpreter (\d+) ", reattached.stderr).group(1))
 
         # A later cell must be able to start the bridge process itself: the

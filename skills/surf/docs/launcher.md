@@ -19,7 +19,7 @@ A missing or invalid pin is an installation defect. Stop and report it, then upd
 
 ## Sessions
 
-`run.py --new-session [--name SLUG] [--ttl SECONDS] -` creates an interpreter and reports the session id as the last stdout output of that call; [SKILL.md](../SKILL.md) covers when a session is worth using:
+`run.py --new-session [--name SLUG] [--ttl SECONDS] -` creates an interpreter and reports the session id as the first stdout output of that call; [SKILL.md](../SKILL.md) covers when a session is worth using:
 
 ```text
 --- BEGIN session metadata ---

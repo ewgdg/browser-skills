@@ -37,7 +37,7 @@ Choose one mode per task:
 - **Session** — the default for multi-step work: `run.py --new-session -` creates a session interpreter and reports its id, and later cells pass `--session ID`.
 - **Fresh interpreter** — `run.py FILE|-` starts a new interpreter for that call; suits a one-shot script. Import and initialize handles each time; write intermediate data to files when a later call needs it.
 
-A session is one Python process kept alive between calls, as in a notebook: each call is a cell. The first cell imports, binds `thread = Thread(name)` and opens the page; every later cell calls the bound `thread` and earlier helpers directly, with no import line. Create the session once and keep its id: `--new-session` prints it as the last stdout output of that call.
+A session is one Python process kept alive between calls, as in a notebook: each call is a cell. The first cell imports, binds `thread = Thread(name)` and opens the page; every later cell calls the bound `thread` and earlier helpers directly, with no import line. Create the session once and keep its id: `--new-session` prints it as the first stdout output of that call.
 
 ```bash
 python3 "$SURF_SKILL/scripts/run.py" --new-session --name research - <<'PY'
@@ -47,8 +47,8 @@ thread = Thread("research")
 thread.open("https://example.com")
 thread.emit(thread.snapshot())
 PY
+# --- BEGIN session metadata --- / session_id: research-1f3a9c02 / --- END session metadata --- …
 # … - link "Learn more" [ref=e6] …
-# … --- BEGIN session metadata --- / session_id: research-1f3a9c02 / --- END session metadata ---
 ```
 
 ```bash

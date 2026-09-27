@@ -206,8 +206,8 @@ def test_session_mode_retains_bindings_across_launcher_invocations(session_launc
     )
     assert first.returncode == 0, first.stderr
     assert session_id is not None and re.fullmatch(r"[0-9a-f]{8}", session_id)
-    # The id is the last thing the create call prints, after the cell's own output.
-    assert first.stdout == "initialized\n" + metadata_block(session_id)
+    # The id is the first thing the create call prints, before the cell's own output.
+    assert first.stdout == metadata_block(session_id) + "initialized\n"
     assert "cell #1, created; idle timeout 1800 s" in first.stderr
 
     second = run_session(

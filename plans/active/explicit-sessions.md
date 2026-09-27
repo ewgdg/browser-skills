@@ -20,7 +20,7 @@ The interpreter already existed; the complexity came from how sessions were addr
 
 ## Scope & constraints
 
-- `--new-session [--name SLUG] [--ttl SECONDS] -` creates an interpreter and appends a `--- BEGIN session metadata ---` … `--- END session metadata ---` block to stdout as the final output of that call. Later calls print no metadata at all.
+- `--new-session [--name SLUG] [--ttl SECONDS] -` creates an interpreter and prints a `--- BEGIN session metadata ---` … `--- END session metadata ---` block to stdout as the first output of that call. Later calls print no metadata at all.
 - `--session ID -` reuses exactly that interpreter. An unknown id is an error listing live sessions: no implicit creation, no bare-name reuse, so a typo cannot silently start a fresh interpreter.
 - **TTL**: idle timeout measured between cells. A running cell is never interrupted by it — that is `--timeout`'s job. Default `DEFAULT_SESSION_IDLE_TIMEOUT_S` = 1800, overridable per session at creation.
 - `--kill-session ID` kills immediately. A cell in flight dies with it and its side effects are unknown, exactly as with a timeout. An interpreter that cannot answer the shutdown request is killed instead of refusing to stop, and an interpreter that cannot be identified on this host is reported rather than signalled.
@@ -37,7 +37,7 @@ The interpreter already existed; the complexity came from how sessions were addr
 2. **TTL default 1800 s**, per-session override. Rationale: 35.5 MB measured per live interpreter, so an idle session should not outlive a task by much, while a human handoff inside one task should survive. Shorter favours memory, longer favours handoffs.
 3. **Discovery is required** (`--list-sessions`), because an opaque id cannot be re-derived from memory the way a name could. Working directory plus idle time is the identification hint.
 4. **Kill is immediate and documented as such**; clean shutdown removes the socket, and the listing skips sockets with no listener. A socket that is bound but silent belongs to a live interpreter, so it keeps its name and is listed as unresponsive: only a refused connection proves nothing is listening.
-5. **One metadata block, create call only**: the id is reported once, as a delimited key-value block appended to stdout at the end of the create call. No later call and no stderr frame repeats it.
+5. **One metadata block, create call only**: the id is reported once, as a delimited key-value block printed to stdout at the start of the create call. No later call and no stderr frame repeats it.
 6. **No session log file, and no other artifact.** The worker's stdout and stderr start on a pipe the launcher owns and drains during the readiness window, then point at `/dev/null` once the interpreter is listening.
 
 ### Metadata block
@@ -50,11 +50,11 @@ idle_timeout_s: 1800
 ```
 
 - **Why stdout**: a consumer that captures only stdout, or routes stderr into its own channel, would lose the one value the caller cannot re-derive. pi's bash tool returns both streams together, so either would be readable there, but stdout is the safer bet across harnesses.
-- **Why last**: ordering between the streams is not stable — the same command shape produced stderr-first once and interleaved output another time — so the block anchors itself at the end of the cell's own stdout rather than depending on a position among frames. It is written after the cell's output, so it is still the final stdout content when the first cell raises.
+- **Why first**: harnesses shorten a large result by keeping its head (Claude Code saves output over its limit and previews the first 2 KB), so a block after a large first cell was cut off and the agent fell back to `--list-sessions`. Ordering between the streams is not stable, so the block anchors itself at the start of stdout rather than a position among stderr frames. It is written once the interpreter exists and before the cell runs, so it is there whatever the cell prints or raises; a cell that ends the session follows it with the stderr frame saying so.
 - **Why BEGIN/END rather than bare `---` fences**: the same tool result can contain observation frames and unified diffs, whose headers are `--- observation 1` and `+++ observation 2`. A bare fence would read as a diff header; named delimiters match the existing observation convention and make a truncated block detectable.
 - **Why not on every call**: the id is already in the caller's command line, which is in its context. Repetition adds noise without adding recoverability; `--list-sessions` is the recovery path after context loss.
 - **Why key-value rather than prose**: fields can be added later without a new format, and a caller that parses has exactly one shape to parse.
-- **Not an escaping protocol**: page text is arbitrary, so a cell can print a lookalike block. The rule is that the *final* block on stdout of the create call is the launcher's and nothing else can be trusted, which is the same standing the frames have today.
+- **Not an escaping protocol**: page text is arbitrary, so a cell can print a lookalike block. The rule is that the *first* block on stdout of the create call is the launcher's and nothing else can be trusted, which is the same standing the frames have today.
 - Printing every frame on stdout stays rejected: each cell's stdout would carry launcher noise and `run.py --session ID - | jq` would stop working.
 
 ### Why the log file goes away
@@ -76,9 +76,9 @@ Neither is worth a file:
 ## Work plan
 
 1. Test-first, before implementation:
-   - creating a session appends a metadata block whose `session_id` is the final stdout content, including when the first cell raises;
+   - creating a session prints a metadata block as the first stdout content, including when the first cell raises;
    - a reusing call writes no metadata block and nothing extra to stdout, so cell output stays pipeable;
-   - a cell that prints its own lookalike `--- BEGIN session metadata ---` block does not change the rule: the final block is the launcher's;
+   - a cell that prints its own lookalike `--- BEGIN session metadata ---` block does not change the rule: the first block is the launcher's;
    - no log file is created in the runtime directory, and a cell that writes with `os.write(1, …)` or runs a subprocess produces no agent-visible output and leaves nothing behind;
    - a worker that cannot start puts its own startup text into the launcher's error, and leaves no file behind;
    - reusing that id attaches and the cell counter continues;
@@ -143,4 +143,5 @@ If TTL expiry or a lost id is observed to cost real re-derivation in practice, t
 - Ancestor stability is harness-specific: consecutive tool calls gave different `python3` pids but the same `exec_bridge` and `pi`, so "key on the parent pid" is not portable.
 - The owner guard detour looked like scope reduction and was the opposite: more code than keying, a refusal instead of a namespace, and no coverage of the wrong-anchor case.
 - The entire ownership apparatus existed to compensate for implicit session creation. Making creation explicit deletes it rather than fixing it.
+- A trailing metadata block was lost in real use: a first cell that emitted a 60 KB snapshot had its output saved to a file with only the first 2 KB previewed, so the id was out of view and the agent recovered it with `--list-sessions`. The block now comes first.
 

@@ -914,6 +914,9 @@ def run_cell(
     if create:
         pid, cells = _start_interpreter(socket_path, idle_timeout_s)
         origin = f"created; idle timeout {idle_timeout_s:g} s"
+        # First on stdout, before the cell's own output: harnesses that shorten a
+        # large result keep its head, so the id stays readable whatever the cell prints.
+        _write_bytes(sys.stdout, _metadata_block(session_id, idle_timeout_s))
     else:
         probe = _probe(socket_path, HELLO_TIMEOUT_S)
         if probe.state == "wedged":
@@ -1000,11 +1003,6 @@ def run_cell(
     capped = [name for name in reply.get("capped") or [] if name in {"stdout", "stderr"}]
     bounded = f"; {'/'.join(capped)} capped at {_output_limit_text()}" if capped else ""
     _frame(f"--- cell #{number} {status}{suffix}{bounded} ({elapsed * 1000:.0f} ms) ---")
-    if create:
-        # Last on stdout, after the cell's own output: the caller reads the session
-        # id from the end of its own stream. An ended session reports no id,
-        # because the session it names no longer exists.
-        _write_bytes(sys.stdout, _metadata_block(session_id, idle_timeout_s))
     return CellResult(status, session_id, result_pid, number, create, detail, stdout, stderr, elapsed)
 
 

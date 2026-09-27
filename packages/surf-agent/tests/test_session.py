@@ -250,10 +250,10 @@ def test_two_sessions_do_not_share_globals():
 # The metadata block
 
 
-def test_create_prints_the_metadata_block_last_on_stdout(capfd):
+def test_create_prints_the_metadata_block_first_on_stdout(capfd):
     created = create("print('cell output')", name="demo", idle_timeout_s=90.0)
     captured = capfd.readouterr()
-    assert captured.out == "cell output\n" + metadata_block(created.session_id, 90.0)
+    assert captured.out == metadata_block(created.session_id, 90.0) + "cell output\n"
     assert created.session_id.startswith("demo-")
     assert "(cell #1, created; idle timeout 90 s)" in captured.err
 
@@ -278,7 +278,7 @@ def test_cell_lookalike_block_does_not_change_the_rule(capfd):
     created = create(f"print({lookalike!r})")
     captured = capfd.readouterr()
     assert "session_id: fake" in captured.out
-    assert captured.out.endswith(metadata_block(created.session_id))
+    assert captured.out.startswith(metadata_block(created.session_id))
 
 
 # Lifetime
@@ -915,7 +915,7 @@ def test_worker_never_inherits_the_callers_stdout():
     assert "child output" not in result.stdout
     session_id = re.search(r"session_id: (\S+)", result.stdout).group(1)
     try:
-        assert result.stdout.endswith(metadata_block(session_id))
+        assert result.stdout.startswith(metadata_block(session_id))
     finally:
         assert session.kill_session(session_id) is True
 
