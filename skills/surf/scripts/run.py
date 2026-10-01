@@ -35,7 +35,6 @@ RUNTIME_PIN = Path(__file__).resolve().parents[1] / "runtime-revision"
 
 def dependency_requirement(
     distribution: str = "surf-agent",
-    extras: str = "[patchright]",
     override_variable: str = "SURF_AGENT_DEPENDENCY",
 ) -> str | None:
     """The pinned requirement for one repository package, or its local wheel override.
@@ -49,7 +48,7 @@ def dependency_requirement(
             print(f"{override_variable} must be an absolute path to a built wheel.",
                   file=sys.stderr)
             return None
-        return f"{distribution}{extras} @ {wheel.as_uri()}"
+        return f"{distribution} @ {wheel.as_uri()}"
     revision = RUNTIME_PIN.read_text().strip()
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         print(
@@ -59,7 +58,7 @@ def dependency_requirement(
             file=sys.stderr,
         )
         return None
-    return f"{distribution}{extras} @ {REPOSITORY}@{revision}#subdirectory=packages/{distribution}"
+    return f"{distribution} @ {REPOSITORY}@{revision}#subdirectory=packages/{distribution}"
 
 
 def uv_python_command(requirements: list[str]) -> list[str] | None:

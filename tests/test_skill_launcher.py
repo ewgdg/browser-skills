@@ -432,7 +432,7 @@ def test_launcher_rejects_invalid_session_arguments():
         assert launcher.parse_arguments(arguments) is None, arguments
 
 
-def test_release_pin_requests_exact_git_revision_and_extra(installed_skill):
+def test_release_pin_requests_exact_git_revision(installed_skill):
     launcher, working, env = installed_skill
     revision = "0123456789abcdef0123456789abcdef01234567"
     (launcher.parents[1] / "runtime-revision").write_text(revision)
@@ -448,6 +448,6 @@ def test_release_pin_requests_exact_git_revision_and_extra(installed_skill):
     )
     assert result.returncode == 0, result.stderr
     assert (
-        "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git@"
+        "surf-agent @ git+https://github.com/ewgdg/browser-skills.git@"
         "0123456789abcdef0123456789abcdef01234567#subdirectory=packages/surf-agent"
     ) in result.stdout

@@ -14,7 +14,6 @@ members = [
 
 [manifest.dependency-groups]
 dev = [
-    { name = "patchright" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruff", specifier = ">=0.8.0" },
@@ -454,24 +453,19 @@ name = "surf-agent"
 version = "0.1.0"
 source = { editable = "packages/surf-agent" }
 dependencies = [
+    { name = "patchright" },
     { name = "platformdirs" },
     { name = "psutil" },
     { name = "tldextract" },
 ]
 
-[package.optional-dependencies]
-patchright = [
-    { name = "patchright" },
-]
-
 [package.metadata]
 requires-dist = [
-    { name = "patchright", marker = "extra == 'patchright'", specifier = ">=1.60.1,<2" },
+    { name = "patchright", specifier = ">=1.60.1,<2" },
     { name = "platformdirs" },
     { name = "psutil", specifier = ">=7.2.2" },
     { name = "tldextract", specifier = ">=5.3" },
 ]
-provides-extras = ["patchright"]
 
 [[package]]
 name = "surf-google-search"

@@ -13,10 +13,9 @@ from ..local_bridge import LocalBridgeBackend, LocalBridgeClient, stable_local_p
 from ..bridge_common import bridge_health_payload
 from .constants import CONTEXT_RESTART_REQUIRED
 
-PATCHRIGHT_INSTALL_HINT = (
-    'run `uv tool install "surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent"`, '
-    "install Google Chrome yourself, and set SURF_AGENT_CHROME_BIN if Chrome is not on PATH"
-)
+# Patchright ships with surf-agent; what a fresh host most often lacks is Chrome,
+# which automation launches through Patchright's `chrome` channel.
+PATCHRIGHT_STARTUP_HINT = "install Google Chrome in its standard location, where Patchright's `chrome` channel finds it"
 
 
 class PatchrightBridgeClient(LocalBridgeClient):
@@ -27,7 +26,7 @@ class PatchrightBridgeClient(LocalBridgeClient):
             timeout_s=timeout_s,
             port=port,
             profile_dir=profile_dir,
-            startup_error=PATCHRIGHT_INSTALL_HINT,
+            startup_error=PATCHRIGHT_STARTUP_HINT,
             timeout_hint="; restart it with `Browser().stop_bridge()` if it stays wedged",
         )
 

@@ -29,7 +29,7 @@ def main():
     requirements = [
         surf.dependency_requirement(),
         surf.dependency_requirement(
-            "surf-google-search", extras="", override_variable="SURF_GOOGLE_SEARCH_DEPENDENCY",
+            "surf-google-search", override_variable="SURF_GOOGLE_SEARCH_DEPENDENCY",
         ),
     ]
     if None in requirements:

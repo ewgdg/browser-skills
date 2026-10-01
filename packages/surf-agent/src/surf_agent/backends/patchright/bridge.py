@@ -11,6 +11,7 @@ import time
 from http.server import HTTPServer
 from pathlib import Path
 
+from patchright.async_api import TimeoutError as PlaywrightTimeoutError, async_playwright
 from platformdirs import PlatformDirs
 from typing import Any
 from ...constants import DEFAULT_PATCHRIGHT_APP_ID, DEFAULT_WAIT_TIMEOUT_MS, PATCHRIGHT_BACKEND
@@ -61,16 +62,6 @@ NO_STARTUP_WINDOW_ARG = "--no-startup-window"
 # The windowless launch relies on Patchright skipping its first-page wait; if a
 # Patchright release stops skipping it, fail after this instead of hanging.
 LAUNCH_TIMEOUT_MS = 30_000
-
-async_playwright: Any = None
-PlaywrightTimeoutError: type[Exception] | None = None
-try:
-    from patchright import async_api as patchright_async_api
-except ImportError:
-    pass
-else:
-    async_playwright = patchright_async_api.async_playwright
-    PlaywrightTimeoutError = patchright_async_api.TimeoutError
 
 
 class PatchrightRuntime:
@@ -137,8 +128,6 @@ class PatchrightRuntime:
     async def _start_async(self) -> None:
         if self.browser_or_context is not None:
             return
-        if async_playwright is None:
-            raise RuntimeError("Patchright is not installed. Run `uv tool install \"surf-agent[patchright] @ git+https://github.com/ewgdg/browser-skills.git#subdirectory=packages/surf-agent\"`, install Google Chrome yourself, and set SURF_AGENT_CHROME_BIN if Chrome is not on PATH.")
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         launch_args = [f"--class={self.window_class}", f"--name={self.app_id}"] if self.app_id or self.window_class else []
         self.manager = async_playwright()
@@ -570,7 +559,7 @@ class PatchrightRuntime:
         try:
             await self._maybe_await(action())
         except Exception as exc:
-            if PlaywrightTimeoutError is None or not isinstance(exc, PlaywrightTimeoutError):
+            if not isinstance(exc, PlaywrightTimeoutError):
                 raise
             raise await self._actionability_error(target, locator, editable=editable) from exc
 

@@ -17,7 +17,7 @@ The Surf skill launches ordinary Python files or stdin through `skills/surf/scri
 
 Supported platforms: Linux and macOS. Windows is unsupported.
 
-The launcher requires Python 3 and `uv`, selects Python 3.11, and supplies `surf-agent[patchright]`. Google Chrome must be installed separately. Patchright is the default; AXI remains an explicitly selected alternative. Camoufox is not supported.
+The launcher requires Python 3 and `uv`, selects Python 3.11, and supplies `surf-agent`, which includes Patchright. Google Chrome must be installed separately. Patchright is the default; AXI remains an explicitly selected alternative. Camoufox is not supported.
 
 The installed skill's `runtime-revision` selects its matching published runtime. Update the skill to receive runtime updates; no separate Surf runtime installation or dependency override is needed. Set `SURF_SKILL` to the absolute directory containing the installed Surf `SKILL.md`, then validate setup:
 
@@ -74,7 +74,7 @@ uv run ruff check packages tests benchmarks
 
 Skill payloads live under `skills/<skill>/`; Python packages under `packages/<dist-name>/`. For deliberate local development, build a wheel with `uv build packages/surf-agent --wheel --out-dir /tmp/surf-wheels`, then follow the [local-wheel validation procedure](skills/surf/docs/launcher.md#local-development-validation). This override is not part of normal browsing setup.
 
-Projects import the same `surf_agent` package directly, without the launcher. Install the built wheel with the Patchright extra for local development; after publication, use `uv add` with the same commit-pinned Git requirement recorded by the launcher.
+Projects import the same `surf_agent` package directly, without the launcher. Install the built wheel for local development; after publication, use `uv add` with the same commit-pinned Git requirement recorded by the launcher.
 
 ### Documentation boundaries
 
