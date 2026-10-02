@@ -24,6 +24,10 @@ PAGE = """<title>Primitives</title>
   <button id="hidden" style="display:none">Hidden</button>
   <button id="disabled" disabled>Disabled</button>
   <input id="readonly" readonly value="fixed">
+  <label>Kind <select id="kind" onchange="document.getElementById('extra').hidden=this.value!=='handoff'">
+    <option value="">Choose</option><option value="handoff">Handoff request</option>
+  </select></label>
+  <div id="extra" hidden>Extra field</div>
   <div id="covered-wrap" style="position:relative">
     <button id="covered">Covered</button>
     <div id="cookie-banner" style="position:absolute;inset:0;background:white">Accept cookies</div>
@@ -89,6 +93,17 @@ def test_action_failures_carry_actionability_codes(runtime, site, name, args, ex
     code, _message = call_code(runtime, name, args)
 
     assert code == expected
+
+
+@pytest.mark.parametrize("choice", ["handoff", "Handoff request"])
+def test_fill_selects_dropdown_option_by_value_or_label(runtime, site, choice):
+    runtime.call("open", {"url": f"{site}/index.html"})
+
+    assert runtime.call("fill", {"uid": "#kind", "text": choice}) == "filled\n"
+
+    # The page's own change handler must run, as when a user picks the option.
+    state = runtime.call("eval", {"code": "() => [kind.value, extra.hidden]"})
+    assert '"handoff"' in state and "false" in state
 
 
 def test_intercepted_click_names_the_blocking_element(runtime, site):

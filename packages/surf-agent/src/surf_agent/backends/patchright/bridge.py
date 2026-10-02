@@ -285,7 +285,7 @@ class PatchrightRuntime:
             target = str(args["uid"])
             locator = await self._target_locator(slot, target)
             text = str(args.get("text") or "")
-            await self._act(target, locator, lambda: locator.fill(text, timeout=ACTION_TIMEOUT_MS), editable=True)
+            await self._act(target, locator, lambda: self._fill_or_select(locator, text), editable=True)
             return "filled\n"
         if name == "type":
             await self._maybe_await(slot.page.keyboard.type(str(args.get("text") or "")))
@@ -554,6 +554,15 @@ class PatchrightRuntime:
                 return str(await self._maybe_await(target.aria_snapshot(mode="ai", timeout=SNAPSHOT_ARIA_TIMEOUT_MS)))
             except TypeError:
                 return str(await self._maybe_await(target.aria_snapshot(timeout=SNAPSHOT_ARIA_TIMEOUT_MS)))
+
+    async def _fill_or_select(self, locator: Any, text: str) -> None:
+        # Playwright's fill rejects <select>; agents reach for fill on dropdowns,
+        # so choose the option whose value or visible label matches instead.
+        tag = await self._maybe_await(locator.evaluate("element => element.tagName", timeout=ACTION_TIMEOUT_MS))
+        if tag == "SELECT":
+            await self._maybe_await(locator.select_option(text, timeout=ACTION_TIMEOUT_MS))
+        else:
+            await self._maybe_await(locator.fill(text, timeout=ACTION_TIMEOUT_MS))
 
     async def _act(self, target: str, locator: Any, action: Any, *, editable: bool) -> None:
         try:

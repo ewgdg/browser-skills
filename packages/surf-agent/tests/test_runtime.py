@@ -775,6 +775,11 @@ class AxiBackendTests(unittest.TestCase):
             def fill(self, text, timeout=None):
                 return self.first.fill(text)
 
+            def evaluate(self, script, timeout=None):
+                if script != "element => element.tagName":
+                    raise AssertionError(f"unexpected locator script: {script}")
+                return "INPUT"
+
         class FakeBodyLocator:
             def inner_text(self, timeout=None):
                 return "Body text"

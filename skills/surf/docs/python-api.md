@@ -30,7 +30,7 @@ Action output. `target` is a snapshot ref such as `@e12` or a CSS selector; see 
 
 ### `thread.fill(target, text) -> str`
 
-Replaces the field's value; action output. `target` is a snapshot ref such as `@e12` or a CSS selector; see Targets above.
+Replaces the field's value; on a `<select>`, picks the option whose value or visible label equals `text`. Action output. `target` is a snapshot ref such as `@e12` or a CSS selector; see Targets above.
 
 ### `thread.type_text(text) -> str`
 
