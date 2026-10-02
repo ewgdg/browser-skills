@@ -272,6 +272,9 @@ def test_actions_use_real_local_backend_without_stdout(monkeypatch: pytest.Monke
     assert thread.is_open() is True
     assert thread.click("@button") == "click ok\n"
     assert thread.fill("@name", "Ada Lovelace") == "fill ok\n"
+    resume = tmp_path / "resume.pdf"
+    resume.write_bytes(b"%PDF")
+    assert thread.upload("input[type=file]", resume) == "upload ok\n"
     assert thread.type_text("hello") == "type ok\n"
     assert thread.press("Enter") == "press ok\n"
     assert thread.scroll("down") == "scroll ok\n"
@@ -283,10 +286,11 @@ def test_actions_use_real_local_backend_without_stdout(monkeypatch: pytest.Monke
     assert thread.evaluate("({ready: true})") == {"ready": True}
 
     assert [name for name, _args in client.calls] == [
-        "state", "click", "fill", "type", "press", "scroll", "wait", "wait-for", "back", "text", "screenshot", "eval"
+        "state", "click", "fill", "upload", "type", "press", "scroll", "wait", "wait-for", "back", "text", "screenshot", "eval"
     ]
-    assert client.calls[6][1]["target"] == 250
-    assert client.calls[7][1]["text"] == "Loaded"
+    assert client.calls[3][1]["paths"] == [str(resume)]
+    assert client.calls[7][1]["target"] == 250
+    assert client.calls[8][1]["text"] == "Loaded"
     assert capsys.readouterr().out == ""
 
 
@@ -318,6 +322,42 @@ def test_wait_string_that_looks_numeric_is_text_not_duration(
     assert client.calls == [
         ("wait-for", {"thread": "research", "text": "123", "gone": None, "url": None, "timeoutMs": None})
     ]
+
+
+def test_upload_resolves_paths_in_caller_and_refuses_missing_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class StubClient:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def call_tool(self, name: str, args: dict[str, object], **_transport: object) -> str:
+            self.calls.append((name, args))
+            return "uploaded\n"
+
+    class Agent:
+        state_file = tmp_path / "research.json"
+
+    client = StubClient()
+    agent = Agent()
+    agent.stub_client = client
+    backend = LocalBridgeBackend(agent, client=client, welcome_url=lambda: "about:blank")
+    backend.client_attr = "stub_client"
+    backend.display_name = "Stub"
+    agent.browser_backend = backend
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
+    (tmp_path / "a.txt").write_text("a")
+    (tmp_path / "b.txt").write_text("b")
+    monkeypatch.chdir(tmp_path)
+    thread = Thread("research")
+
+    # The bridge runs in another process with its own working directory.
+    thread.upload("@e3", ["a.txt", "b.txt"])
+    assert client.calls[-1][1]["paths"] == [str(tmp_path / "a.txt"), str(tmp_path / "b.txt")]
+
+    with pytest.raises(FileNotFoundError, match="missing.txt"):
+        thread.upload("@e3", "missing.txt")
+    assert len(client.calls) == 1
 
 
 def test_evaluate_preserves_scalar_string_types_and_rejects_malformed_local_value(

@@ -270,6 +270,9 @@ class AxiBackend:
     def fill(self, target: str, text: str) -> str:
         return self._run_current(["fill", target, text])
 
+    def upload(self, target: str, paths: list[str]) -> str:
+        raise _unsupported("upload")
+
     def type_text(self, text: str) -> str:
         return self._run_current(["type", text])
 

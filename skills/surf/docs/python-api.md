@@ -32,6 +32,10 @@ Action output. `target` is a snapshot ref such as `@e12` or a CSS selector; see 
 
 Replaces the field's value; on a `<select>`, picks the option whose value or visible label equals `text`. Action output. `target` is a snapshot ref such as `@e12` or a CSS selector; see Targets above.
 
+### `thread.upload(target, paths) -> str`
+
+Sets the files of an `<input type=file>`; `paths` is one path or a list, and an empty list clears the selection. Target the input itself, not the button or dropzone that styles it: it works while the input is hidden, so a CSS selector such as `input[type=file]` reaches inputs a snapshot does not list. Relative paths resolve against the caller's working directory; a missing file raises `FileNotFoundError` before the browser is touched. Action output. Patchright-only.
+
 ### `thread.type_text(text) -> str`
 
 Types into the focused element; action output.

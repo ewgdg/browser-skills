@@ -207,6 +207,7 @@ def axi_thread(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         lambda thread: thread.wait(gone="Loading"),
         lambda thread: thread.wait(url="*/done"),
         lambda thread: thread.wait("Saved", timeout_ms=1_000),
+        lambda thread: thread.upload("input[type=file]", []),
     ],
 )
 def test_axi_refuses_patchright_only_capabilities(axi_thread, call) -> None:

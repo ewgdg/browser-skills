@@ -114,6 +114,7 @@ thread.open(url) -> str
 thread.is_open() -> bool
 thread.click(target) -> str  # target: "@ref" from the latest snapshot, or a CSS selector
 thread.fill(target, text) -> str  # on a <select>, picks the option by value or label
+thread.upload(target, paths) -> str  # target the <input type=file>, even if hidden; Patchright only
 thread.type_text(text) -> str
 thread.press(key) -> str
 thread.scroll(direction) -> str  # up, down, top, bottom

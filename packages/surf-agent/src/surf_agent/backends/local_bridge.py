@@ -289,6 +289,9 @@ class LocalBridgeBackend:
     def fill(self, target: str, text: str) -> str:
         return self._call("fill", {"uid": target, "text": text})
 
+    def upload(self, target: str, paths: list[str]) -> str:
+        return self._call("upload", {"uid": target, "paths": paths})
+
     def type_text(self, text: str) -> str:
         return self._call("type", {"text": text})
 

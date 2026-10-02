@@ -28,6 +28,9 @@ PAGE = """<title>Primitives</title>
     <option value="">Choose</option><option value="handoff">Handoff request</option>
   </select></label>
   <div id="extra" hidden>Extra field</div>
+  <label class="dropzone">Attach <input id="attachment" type="file" multiple hidden
+    onchange="document.getElementById('picked').textContent=[...this.files].map(f => f.name).join(',')"></label>
+  <div id="picked"></div>
   <div id="covered-wrap" style="position:relative">
     <button id="covered">Covered</button>
     <div id="cookie-banner" style="position:absolute;inset:0;background:white">Accept cookies</div>
@@ -104,6 +107,17 @@ def test_fill_selects_dropdown_option_by_value_or_label(runtime, site, choice):
     # The page's own change handler must run, as when a user picks the option.
     state = runtime.call("eval", {"code": "() => [kind.value, extra.hidden]"})
     assert '"handoff"' in state and "false" in state
+
+
+def test_upload_sets_files_on_a_hidden_file_input(runtime, site, tmp_path):
+    report = tmp_path / "report.txt"
+    report.write_text("quarterly")
+    runtime.call("open", {"url": f"{site}/index.html"})
+
+    # Sites hide the native input behind a styled dropzone; upload must still reach it.
+    assert runtime.call("upload", {"uid": "#attachment", "paths": [str(report)]}) == "uploaded\n"
+
+    assert "report.txt" in runtime.call("eval", {"code": "() => picked.textContent"})
 
 
 def test_intercepted_click_names_the_blocking_element(runtime, site):

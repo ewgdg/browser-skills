@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import sys
+from collections.abc import Sequence
 from itertools import count
+from pathlib import Path
 from typing import Any, TextIO
 
 from .backends.base import ScreenshotOptions, WaitConditions
@@ -56,6 +59,15 @@ class Thread:
 
     def fill(self, target: str, text: str) -> str:
         return self._agent.browser_backend.fill(target, text)
+
+    def upload(self, target: str, paths: str | os.PathLike[str] | Sequence[str | os.PathLike[str]]) -> str:
+        """Set the files of an ``<input type=file>``; an empty sequence clears it."""
+        if isinstance(paths, (str, os.PathLike)):
+            paths = [paths]
+        # The bridge runs in another process with its own working directory,
+        # so resolve against the caller's and fail here on a missing file.
+        resolved = [Path(path).resolve(strict=True) for path in paths]
+        return self._agent.browser_backend.upload(target, [str(path) for path in resolved])
 
     def type_text(self, text: str) -> str:
         return self._agent.browser_backend.type_text(text)

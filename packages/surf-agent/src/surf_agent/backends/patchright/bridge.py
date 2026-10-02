@@ -287,6 +287,13 @@ class PatchrightRuntime:
             text = str(args.get("text") or "")
             await self._act(target, locator, lambda: self._fill_or_select(locator, text), editable=True)
             return "filled\n"
+        if name == "upload":
+            target = str(args["uid"])
+            locator = await self._target_locator(slot, target)
+            paths = [str(path) for path in args["paths"]]
+            # set_input_files skips the visibility check, so hidden inputs behind styled dropzones work.
+            await self._act(target, locator, lambda: locator.set_input_files(paths, timeout=ACTION_TIMEOUT_MS), editable=False)
+            return "uploaded\n"
         if name == "type":
             await self._maybe_await(slot.page.keyboard.type(str(args.get("text") or "")))
             return "typed\n"
