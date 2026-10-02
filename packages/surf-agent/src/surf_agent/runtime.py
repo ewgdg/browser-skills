@@ -140,10 +140,6 @@ def surf_agent_data_dir() -> Path:
     return surf_agent_home() or Path(APP_DIRS.user_data_dir)
 
 
-def skill_data_dir() -> Path:
-    return surf_agent_data_dir()
-
-
 def config_file() -> Path:
     return surf_agent_config_dir() / "config.json"
 
@@ -319,9 +315,6 @@ def coerce_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
-
-
-SnapshotMode = str
 
 
 def python_module_available(module_name: str) -> bool:

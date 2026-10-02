@@ -21,7 +21,6 @@ from surf_agent.runtime import (
     surf_agent_config_dir,
     surf_agent_data_dir,
     surf_agent_state_dir,
-    skill_data_dir,
 )
 
 
@@ -87,7 +86,7 @@ class RuntimeTests(unittest.TestCase):
             patch.dict("os.environ", {"SURF_AGENT_HOME": tmp}, clear=True),
         ):
             self.assertEqual(
-                default_patchright_profile_dir(), skill_data_dir() / "profiles" / "chrome"
+                default_patchright_profile_dir(), surf_agent_data_dir() / "profiles" / "chrome"
             )
 
     def test_patchright_profile_open_uses_patchright_profile_dir_and_class(self):
