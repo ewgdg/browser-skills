@@ -46,11 +46,19 @@ Stale config: a persisted `"backend"` key is ignored, not migrated. Patchright i
 
 ## Progress
 
-- [ ] Source
-- [ ] Tests
-- [ ] Docs
-- [ ] Commit + pin
+- [x] Source
+- [x] Tests
+- [x] Docs
+- [x] Commit + pin
 
 ## Surprises & Discoveries
 
+- Patchright read its thread name through `agent.state_file.stem`, a leftover of AXI's per-thread state file; it now reads `agent.thread`.
+- `AgentPage.backend` defaulted to `"axi"` and had no readers; removed.
+- `browser_executable_family` stays: Patchright's manual profile open still proves the executable is Google Chrome.
+- `backend_config_file()` renamed `config_file()`: it holds only the cookie source now.
+
 ## Outcomes & Retrospective
+
+- `surf-agent` lost ~1,500 source lines; the suite went from 366 to 299 passing tests, the difference being AXI-only cases.
+- Full `uv run pytest` green; one live Patchright open/text/close/stop run against an isolated `SURF_AGENT_HOME` passed.
