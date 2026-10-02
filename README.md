@@ -17,7 +17,7 @@ The Surf skill launches ordinary Python files or stdin through `skills/surf/scri
 
 Supported platforms: Linux and macOS. Windows is unsupported.
 
-The launcher requires Python 3 and `uv`, selects Python 3.11, and supplies `surf-agent`, which includes Patchright. Google Chrome must be installed separately. Patchright is the default; AXI remains an explicitly selected alternative. Camoufox is not supported.
+The launcher requires Python 3 and `uv`, selects Python 3.11, and supplies `surf-agent`, which includes Patchright. Google Chrome must be installed separately. Camoufox is not supported.
 
 The installed skill's `runtime-revision` selects its matching published runtime. Update the skill to receive runtime updates; no separate Surf runtime installation or dependency override is needed. Set `SURF_SKILL` to the absolute directory containing the installed Surf `SKILL.md`, then validate setup:
 
@@ -27,7 +27,6 @@ from surf_agent import Browser
 
 browser = Browser()
 browser.setup()
-print(browser.backend())
 print(browser.profile())
 PY
 ```

@@ -221,7 +221,7 @@ class LocalBridgeBackend:
         return result["pages"]
 
     def is_open(self) -> bool:
-        output = self.client.call_tool_if_running("state", {"thread": self.agent.state_file.stem})
+        output = self.client.call_tool_if_running("state", {"thread": self.agent.thread})
         if output is None:
             return False
         try:
@@ -252,7 +252,7 @@ class LocalBridgeBackend:
         return snapshot_capture_from_page(text=text, page=current)
 
     def capture_page_metadata(self) -> Any:
-        fallback = AgentPage(stable_local_page_id(self.agent.state_file.stem), backend=self.name)
+        fallback = AgentPage(stable_local_page_id(self.agent.thread))
         try:
             output = self._call("state")
         except SurfAgentError:
@@ -268,7 +268,6 @@ class LocalBridgeBackend:
             page_id,
             url=string_or_none(data.get("url")) or fallback.url,
             title=string_or_none(data.get("title")) or fallback.title,
-            backend=self.name,
         )
 
     def open(self, url: str) -> str:
@@ -337,7 +336,7 @@ class LocalBridgeBackend:
         return self.client.call_tool(name, self._thread_args(payload))
 
     def _thread_args(self, payload: dict[str, Any] | None) -> dict[str, Any]:
-        return {"thread": self.agent.state_file.stem, **(payload or {})}
+        return {"thread": self.agent.thread, **(payload or {})}
 
 
 

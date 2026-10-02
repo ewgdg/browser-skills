@@ -80,13 +80,9 @@ Writes the captured observation to stdout or a text sink; `full=True` forces com
 
 Brings the remembered page forward.
 
-### `thread.reset() -> None`
-
-AXI-only: clears remembered ownership and emission baseline without closing the window. Patchright raises before mutation; use close instead.
-
 ### `thread.close() -> None`
 
-Closes the managed page and clears the emission baseline; raises on backend failure.
+Closes the managed page and clears the emission baseline; raises on bridge failure.
 
 ## Snapshot output
 
@@ -137,9 +133,9 @@ Baselines belong to the Python process, keyed by thread name: not to the handle,
 
 Methods are silent; print their result only when needed.
 
-Successfully closing a thread, by `thread.close()` or `close_matching()`, removes its remembered entry: Patchright's bridge-held entry or AXI's local state file. An unavailable Patchright bridge yields an empty inventory, not proof that every browser page is closed.
+Successfully closing a thread, by `thread.close()` or `close_matching()`, removes its bridge-held entry. An unavailable bridge yields an empty inventory, not proof that every browser page is closed.
 
-Backend/profile guidance: [selection](backends.md), [manual 1Password setup](1password-setup.md), [cookie consent and failures](cookie-import.md).
+Profile guidance: [browser runtime](patchright-backend.md), [manual 1Password setup](1password-setup.md), [cookie consent and failures](cookie-import.md).
 
 ### `Browser()`
 
@@ -147,23 +143,11 @@ Constructs without opening a window.
 
 ### `browser.setup() -> None`
 
-Validates selected-backend prerequisites. Does not install Chrome.
-
-### `browser.backend() -> BackendInfo`
-
-Fields `backend`, `source`, `config_file`.
-
-### `browser.set_backend(name) -> None`
-
-Stops the prior persisted backend before changing selection; cleanup failure leaves config unchanged. Temporary environment overrides are ignored for this cleanup.
-
-### `browser.reset_backend() -> None`
-
-Clears persisted selection. Stop the current runtime first. Environment selection retains priority.
+Validates the Patchright dependency and a Chrome executable. Does not install Chrome.
 
 ### `browser.profile() -> ProfileInfo`
 
-Backend, profile directory, browser URL, Chrome class, Patchright bridge port and app ID.
+Fields `profile_dir`, `patchright_bridge_port`, `patchright_app_id`.
 
 ### `browser.open_profile(url='about:blank') -> None`
 
@@ -191,11 +175,11 @@ Adds one consented domain to the configured scope, stops the browser, and import
 
 ### `browser.stop_bridge() -> None`
 
-Stops the selected automation runtime.
+Stops the automation bridge and its Chrome.
 
 ### `browser.threads() -> list[ThreadInfo]`
 
-`ThreadInfo(name, page_id, url, title)` entries from Patchright's running bridge or AXI's local records; does not start a bridge or scan every browser page.
+`ThreadInfo(name, page_id, url, title)` entries from the running bridge; does not start a bridge or scan every browser page.
 
 ### `browser.close_matching(pattern) -> None`
 
@@ -214,6 +198,3 @@ Closes remembered pages whose thread names match the glob.
 - `page_closed`: The page closed during the call. Inspect with `is_open()` before reopening.
 - `bridge_unavailable`: The browser bridge is not reachable. The call did not reach the browser.
 - `outcome_unknown`: The call reached the browser but its result was lost. It may have taken effect; follow the [recovery workflow](../SKILL.md#recovery).
-- `unsupported`: The selected backend lacks this capability.
-
-Actionability codes come from Patchright; AXI failures carry `None` except `unsupported`.

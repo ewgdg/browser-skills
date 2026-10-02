@@ -25,7 +25,6 @@ class AgentPage:
     page_id: int
     url: str | None = None
     title: str | None = None
-    backend: str = "axi"
 
 
 class BrowserBackend(Protocol):

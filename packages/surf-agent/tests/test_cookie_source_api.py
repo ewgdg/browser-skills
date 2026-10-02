@@ -14,14 +14,14 @@ def make_source(root: Path) -> None:
     (root / "Default").mkdir(parents=True)
 
 
-def test_cookie_source_commands_do_not_construct_browser_and_preserve_backend(
+def test_cookie_source_commands_do_not_construct_browser_and_preserve_other_keys(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "config.json"
     source = tmp_path / "google-chrome"
     make_source(source)
-    config.write_text(json.dumps({"backend": "axi", "unknown": 1}))
-    monkeypatch.setattr("surf_agent.runtime.backend_config_file", lambda: config)
+    config.write_text(json.dumps({"unknown": 1}))
+    monkeypatch.setattr("surf_agent.runtime.config_file", lambda: config)
     monkeypatch.setenv("SURF_AGENT_CHROME_BIN", "google-chrome")
 
     class MustNotConstruct:
@@ -33,7 +33,6 @@ def test_cookie_source_commands_do_not_construct_browser_and_preserve_backend(
         str(source), "Default", domains=["Example.com", "example.com"]
     )
     stored = json.loads(config.read_text())
-    assert stored["backend"] == "axi"
     assert stored["unknown"] == 1
     assert stored["cookie_source"]["scope"]["domains"] == ["example.com"]
 
@@ -42,7 +41,7 @@ def test_cookie_source_commands_do_not_construct_browser_and_preserve_backend(
         assert Browser().cookie_source() is not None
     assert "secret" not in out.getvalue()
     Browser().reset_cookie_source()
-    assert json.loads(config.read_text()) == {"backend": "axi", "unknown": 1}
+    assert json.loads(config.read_text()) == {"unknown": 1}
 
 
 @pytest.mark.parametrize("domains,all_domains", [((), False), (("example.com",), True)])
@@ -57,7 +56,7 @@ def test_import_requires_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "config.json"
-    monkeypatch.setattr("surf_agent.runtime.backend_config_file", lambda: config)
+    monkeypatch.setattr("surf_agent.runtime.config_file", lambda: config)
     with pytest.raises(SurfAgentError, match="no cookie source"):
         Browser().import_cookies()
 
@@ -66,11 +65,10 @@ def test_cookie_source_set_rejects_source_family_that_cannot_match_destination(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "config.json"
-    source = tmp_path / "google-chrome"
+    # Patchright's destination is always Chrome, so a Chromium source cannot match.
+    source = tmp_path / "chromium"
     make_source(source)
-    monkeypatch.setattr("surf_agent.runtime.backend_config_file", lambda: config)
-    monkeypatch.setenv("SURF_AGENT_BACKEND", "axi")
-    monkeypatch.setenv("SURF_AGENT_CHROME_BIN", "chromium")
+    monkeypatch.setattr("surf_agent.runtime.config_file", lambda: config)
 
     with pytest.raises(SurfAgentError, match="family"):
         Browser().set_cookie_source(str(source), "Default", domains=["example.com"])
@@ -93,11 +91,9 @@ def test_explicit_import_delegates_to_agent_lifecycle(
             }
         )
     )
-    monkeypatch.setattr("surf_agent.runtime.backend_config_file", lambda: config)
+    monkeypatch.setattr("surf_agent.runtime.config_file", lambda: config)
 
     class Agent:
-        backend = "axi"
-
         def __init__(self) -> None:
             self.force_calls = 0
 
@@ -133,14 +129,12 @@ def configure_domain_scope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, a
             }
         )
     )
-    monkeypatch.setattr("surf_agent.runtime.backend_config_file", lambda: config)
+    monkeypatch.setattr("surf_agent.runtime.config_file", lambda: config)
     monkeypatch.setenv("SURF_AGENT_CHROME_BIN", "google-chrome")
     return config
 
 
 class DomainImportAgent:
-    backend = "patchright"
-
     def __init__(self, threads: list[dict[str, object]]) -> None:
         self.events: list[str] = []
         self._threads = threads
@@ -208,7 +202,7 @@ def test_import_cookies_for_keeps_all_domain_scope(
 def test_import_cookies_for_requires_configured_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("surf_agent.runtime.backend_config_file", lambda: tmp_path / "config.json")
+    monkeypatch.setattr("surf_agent.runtime.config_file", lambda: tmp_path / "config.json")
 
     with pytest.raises(SurfAgentError, match="set_cookie_source"):
         Browser().import_cookies_for("github.com")

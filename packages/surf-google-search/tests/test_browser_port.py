@@ -93,12 +93,12 @@ def test_surf_adapter_consumes_typed_evaluation_value() -> None:
         "next_url": None,
     }
 
-    class AxiAgent(FakeSurfAgent):
+    class TypedEvaluationAgent(FakeSurfAgent):
         def evaluate(self, code: str) -> object:
             self.calls.append(["eval", code])
             return payload
 
-    browser = SurfBrowserPagePort(agent_factory=lambda thread: AxiAgent(payload))
+    browser = SurfBrowserPagePort(agent_factory=lambda thread: TypedEvaluationAgent(payload))
 
     observation = browser.observe("thread-1")
 

@@ -371,8 +371,8 @@ def test_patchright_backend_rejects_empty_close_matching_pattern() -> None:
 
 def test_browser_close_all_reaches_patchright_close_matching(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     client = BridgeClient({"pattern": "*", "closed": [], "failed": []})
-    with patch.dict("os.environ", {"SURF_AGENT_BACKEND": "patchright", "SURF_AGENT_HOME": str(tmp_path)}, clear=True):
-        agent = SurfAgent(state_file=tmp_path / "state" / "thread.json")
+    with patch.dict("os.environ", {"SURF_AGENT_HOME": str(tmp_path)}, clear=True):
+        agent = SurfAgent(thread="thread")
         agent.patchright_client = client
         with patch("surf_agent.browser.SurfAgent", return_value=agent):
             Browser().close_matching("*")

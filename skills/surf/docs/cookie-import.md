@@ -6,7 +6,7 @@ Read this for initial setup, missing login state, or cookie-import startup failu
 
 Live cookie import runs on Linux and macOS, is opt-in, and limited to explicitly allowed domains unless the user deliberately consents to all-domain exposure. Do not set, broaden, or reset access without user intent.
 
-Before starting an inactive dedicated profile, AXI and Patchright import configured cookies only when the source fingerprint changed. There is no timed refresh. Imports upsert matching identities; destination-only cookies survive. Logging out in source Chrome therefore does not delete the corresponding Surf cookie, but same-named cookies a logged-out source still holds overwrite Surf's and can break a login made in Surf. Use one login source per site: a site the user logs in to inside Surf stays out of the import scope.
+Before starting an inactive dedicated profile, Surf imports configured cookies only when the source fingerprint changed. There is no timed refresh. Imports upsert matching identities; destination-only cookies survive. Logging out in source Chrome therefore does not delete the corresponding Surf cookie, but same-named cookies a logged-out source still holds overwrite Surf's and can break a login made in Surf. Use one login source per site: a site the user logs in to inside Surf stays out of the import scope.
 
 Inspect configuration without exposing cookie values:
 
@@ -71,7 +71,7 @@ Source and destination must use the same Chrome family, belong to the same OS us
 
 On macOS, reading another app's data needs a one-time permission for the app running Surf (terminal or agent): accept macOS's prompt to access other apps' data, or grant it under System Settings → Privacy & Security → Full Disk Access. Without it the import fails with `Operation not permitted`.
 
-Validation and identity failures stop startup instead of silently accepting stale cookies. Correct the reported mismatch and retry explicit import with the destination inactive. For AXI identity overrides, see [AXI backend](axi-backend.md).
+Validation and identity failures stop startup instead of silently accepting stale cookies. Correct the reported mismatch and retry explicit import with the destination inactive.
 
 ## Disable future imports
 

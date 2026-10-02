@@ -23,12 +23,11 @@ from surf_agent import Browser
 
 browser = Browser()
 browser.setup()
-print(browser.backend())
 print(browser.profile())
 PY
 ```
 
-For backend selection, profile configuration, or startup problems, read [backends](docs/backends.md) and its backend-specific guide.
+For profile configuration or startup problems, read [browser runtime](docs/patchright-backend.md).
 
 ## Sessions
 
@@ -127,7 +126,6 @@ thread.snapshot() -> Snapshot
 thread.emit(snapshot, *, full=False, sink=None) -> None
 thread.close() -> None
 thread.focus() -> None
-thread.reset() -> None  # AXI only
 ```
 
 For one method's contract, `Browser` administration and error codes, grep [Python API](docs/python-api.md): each method is a heading holding its signature, such as `grep -n -A3 '^### .*wait(' "$SURF_SKILL/docs/python-api.md"`.

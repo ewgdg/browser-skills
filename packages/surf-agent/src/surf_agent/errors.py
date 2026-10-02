@@ -17,7 +17,6 @@ class ErrorCode(StrEnum):
     PAGE_CLOSED = "page_closed"
     BRIDGE_UNAVAILABLE = "bridge_unavailable"
     OUTCOME_UNKNOWN = "outcome_unknown"
-    UNSUPPORTED = "unsupported"
 
 
 class SurfAgentError(RuntimeError):

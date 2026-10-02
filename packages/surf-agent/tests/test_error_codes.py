@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from surf_agent.backends.axi import AxiBackend
 from surf_agent.backends.base import WaitConditions
 from surf_agent.backends.bridge_common import BridgeCodedError, BridgeRequestHandler
 from surf_agent.backends.local_bridge import LocalBridgeBackend, LocalBridgeClient
@@ -97,7 +96,7 @@ def test_wait_transport_timeout_covers_the_wait_duration(bridge_client) -> None:
         time.sleep(0.3)
         return "waited\n"
 
-    agent = SimpleNamespace(state_file=Path("research.json"))
+    agent = SimpleNamespace(thread="research")
     backend = LocalBridgeBackend(agent, client=bridge_client(slow_wait, timeout_s=0.2), welcome_url=lambda: "about:blank")
     backend.client_attr = "unused"
 
@@ -109,7 +108,7 @@ def test_sleep_transport_timeout_covers_the_sleep_duration(bridge_client) -> Non
         time.sleep(0.3)
         return "waited\n"
 
-    agent = SimpleNamespace(state_file=Path("research.json"))
+    agent = SimpleNamespace(thread="research")
     backend = LocalBridgeBackend(agent, client=bridge_client(slow_sleep, timeout_s=0.2), welcome_url=lambda: "about:blank")
     backend.client_attr = "unused"
 
@@ -128,7 +127,7 @@ class RecordingClient:
 @pytest.fixture
 def local_thread(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     client = RecordingClient()
-    agent = SimpleNamespace(state_file=tmp_path / "research.json", stub_client=client)
+    agent = SimpleNamespace(thread="research", stub_client=client)
     backend = LocalBridgeBackend(agent, client=client, welcome_url=lambda: "about:blank")
     backend.client_attr = "stub_client"
     backend.display_name = "Stub"
@@ -188,30 +187,3 @@ def test_text_target_reaches_the_bridge(local_thread) -> None:
         ("text", {"thread": "research"}),
         ("text", {"thread": "research", "target": "@e5"}),
     ]
-
-
-@pytest.fixture
-def axi_thread(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    state_file = tmp_path / "research.json"
-    state_file.write_text('{"backend": "axi", "page_id": 7}')
-    agent = SimpleNamespace(state_file=state_file, bridge_client=None)
-    agent.browser_backend = AxiBackend(agent)
-    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
-    return Thread("research")
-
-
-@pytest.mark.parametrize(
-    "call",
-    [
-        lambda thread: thread.text("main"),
-        lambda thread: thread.wait(gone="Loading"),
-        lambda thread: thread.wait(url="*/done"),
-        lambda thread: thread.wait("Saved", timeout_ms=1_000),
-        lambda thread: thread.upload("input[type=file]", []),
-    ],
-)
-def test_axi_refuses_patchright_only_capabilities(axi_thread, call) -> None:
-    with pytest.raises(SurfAgentError) as raised:
-        call(axi_thread)
-
-    assert raised.value.code == ErrorCode.UNSUPPORTED

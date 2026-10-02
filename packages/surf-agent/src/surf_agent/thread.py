@@ -13,7 +13,7 @@ from .backends.base import ScreenshotOptions, WaitConditions
 from .runtime import SurfAgent, safe_thread_name
 from .snapshots import SnapshotCapture, choose_snapshot_diff
 from .constants import DEFAULT_THREAD
-from .errors import ErrorCode, SurfAgentError
+from .errors import SurfAgentError
 
 
 Snapshot = SnapshotCapture
@@ -181,16 +181,6 @@ class Thread:
         status = self._agent.browser_backend.focus()
         if status not in (None, 0):
             raise SurfAgentError(f"focus failed for thread {self.name}")
-
-    def reset(self) -> None:
-        """Forget AXI ownership without closing its window; unsupported on Patchright."""
-        if self._agent.backend != "axi":
-            # Patchright owns its mapping in the bridge, not the local state file.
-            raise SurfAgentError(
-                "reset is not supported by Patchright; use close() to release the thread", code=ErrorCode.UNSUPPORTED
-            )
-        self._agent.reset_state()
-        _baselines.pop(self.name, None)
 
     def _capture(self) -> Snapshot:
         capture = self._agent.browser_backend.capture_snapshot()

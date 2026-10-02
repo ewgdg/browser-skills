@@ -10,7 +10,7 @@ import threading
 
 import pytest
 
-from surf_agent.chrome_lifecycle import ChromeLifecycleCoordinator, destination_browser_family, find_active_chrome_roots
+from surf_agent.chrome_lifecycle import ChromeLifecycleCoordinator, browser_executable_family, find_active_chrome_roots
 from surf_agent.errors import SurfAgentError
 
 
@@ -89,14 +89,14 @@ def test_explicit_import_is_serialized_and_rechecks_destination_activity(tmp_pat
     assert inspections == [tmp_path / "profile"]
 
 
-def test_destination_family_is_derived_or_unprovable() -> None:
-    assert destination_browser_family(backend="patchright", executable=None) == "chrome"
-    assert destination_browser_family(backend="axi", executable="/usr/bin/google-chrome") == "chrome"
-    assert destination_browser_family(backend="axi", executable="/usr/bin/chromium") == "chromium"
-    assert destination_browser_family(backend="axi", executable="/opt/custom-browser") is None
+def test_executable_family_is_derived_or_unprovable() -> None:
+    assert browser_executable_family(None) is None
+    assert browser_executable_family("/usr/bin/google-chrome") == "chrome"
+    assert browser_executable_family("/usr/bin/chromium") == "chromium"
+    assert browser_executable_family("/opt/custom-browser") is None
 
 
-def test_destination_family_recognizes_macos_app_bundles() -> None:
+def test_executable_family_recognizes_macos_app_bundles() -> None:
     bundles = {
         "'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'": "chrome",
         "'/Applications/Chromium.app/Contents/MacOS/Chromium'": "chromium",
@@ -104,7 +104,7 @@ def test_destination_family_recognizes_macos_app_bundles() -> None:
         "'/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'": "edge",
     }
     for executable, family in bundles.items():
-        assert destination_browser_family(backend="axi", executable=executable) == family
+        assert browser_executable_family(executable) == family
 
 
 def test_live_process_discovery_keeps_user_data_dir_with_spaces(tmp_path: Path) -> None:

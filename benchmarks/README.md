@@ -13,14 +13,13 @@ export SURF_AGENT_PATCHRIGHT_PORT=19331  # Runner: reserve a different unused po
 uv run python benchmarks/fixture.py --info "$RUN/runner-info.json"
 ```
 
-Keep the fixture process running in a terminal. Its stdout gives the public URL; the info file also holds the private oracle bearer token. Start a separate fixture per participant: state resets by restarting. No profile/cookie import is needed or allowed. Configure the benchmark browser backend in this isolated Surf home, never copy a user's profile. All modes must use the same backend and pacing settings; this harness does not initialize them. A separate home alone does not isolate Patchright's listening port: reserve distinct unused `SURF_AGENT_PATCHRIGHT_PORT` values per arm and pass each arm's home and port to every browser command and worker startup.
+Keep the fixture process running in a terminal. Its stdout gives the public URL; the info file also holds the private oracle bearer token. Start a separate fixture per participant: state resets by restarting. No profile/cookie import is needed or allowed. Never copy a user's profile into this isolated Surf home. All modes must use the same pacing settings; this harness does not initialize them. A separate home alone does not isolate Patchright's listening port: reserve distinct unused `SURF_AGENT_PATCHRIGHT_PORT` values per arm and pass each arm's home and port to every browser command and worker startup.
 
 ### Keep browser lifecycle independent of the execution mode
 
 Some agent shell runners reap child processes when a command finishes. An automatically started browser bridge then disappears between calls, unfairly penalizing CLI/fresh scripts. Start the bridge in a controller-owned persistent terminal (use `tty=true` in this harness), with the same isolated environment in every mode:
 
 ```sh
-export SURF_AGENT_BACKEND=patchright
 uv run python -m surf_agent.backends.patchright.bridge \
   --port "$SURF_AGENT_PATCHRIGHT_PORT" \
   --profile-dir "$SURF_AGENT_HOME/profiles/chrome"

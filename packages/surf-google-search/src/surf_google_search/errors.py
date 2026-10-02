@@ -18,7 +18,7 @@ _ERROR_DETAILS = {
     ),
     PublicErrorType.BROWSER_UNAVAILABLE: (
         "The browser bridge or page is unavailable.",
-        "Start or repair the selected Surf backend, then retry.",
+        "Start or repair the Surf browser, then retry.",
     ),
     PublicErrorType.HUMAN_INTERVENTION_REQUIRED: (
         "Google requires user intervention.",

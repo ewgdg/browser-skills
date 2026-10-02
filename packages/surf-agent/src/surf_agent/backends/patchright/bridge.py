@@ -710,7 +710,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("SURF_AGENT_PATCHRIGHT_PORT", "9346")))
     parser.add_argument(
         "--profile-dir",
-        default=os.environ.get("SURF_AGENT_PATCHRIGHT_PROFILE_DIR") or os.environ.get("SURF_AGENT_CHROME_PROFILE_DIR") or os.environ.get("CHROME_DEVTOOLS_AXI_USER_DATA_DIR") or "",
+        default=os.environ.get("SURF_AGENT_PATCHRIGHT_PROFILE_DIR") or "",
     )
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--app-id", default=os.environ.get("SURF_AGENT_PATCHRIGHT_APP_ID") or os.environ.get("SURF_AGENT_PATCHRIGHT_CLASS") or DEFAULT_PATCHRIGHT_APP_ID)

@@ -11,7 +11,6 @@ from pathlib import Path
 import pytest
 
 from surf_agent.backends.local_bridge import LocalBridgeBackend
-from surf_agent.backends.axi import parse_axi_eval_value
 from surf_agent.snapshots import SnapshotCapture
 from surf_agent.errors import SurfAgentError
 from surf_agent.thread import Thread
@@ -214,7 +213,7 @@ def test_close_is_silent_through_real_local_backend(monkeypatch: pytest.MonkeyPa
             return "closed by bridge\n"
 
     class Agent:
-        state_file = Path("research.json")
+        thread = "research"
 
     client = StubClient()
     agent = Agent()
@@ -257,7 +256,7 @@ def test_actions_use_real_local_backend_without_stdout(monkeypatch: pytest.Monke
             return None
 
     class Agent:
-        state_file = tmp_path / "research.json"
+        thread = "research"
 
     client = StubClient()
     agent = Agent()
@@ -306,7 +305,7 @@ def test_wait_string_that_looks_numeric_is_text_not_duration(
             return "waited\n"
 
     class Agent:
-        state_file = tmp_path / "research.json"
+        thread = "research"
 
     client = StubClient()
     agent = Agent()
@@ -336,7 +335,7 @@ def test_upload_resolves_paths_in_caller_and_refuses_missing_files(
             return "uploaded\n"
 
     class Agent:
-        state_file = tmp_path / "research.json"
+        thread = "research"
 
     client = StubClient()
     agent = Agent()
@@ -370,7 +369,7 @@ def test_evaluate_preserves_scalar_string_types_and_rejects_malformed_local_valu
             return next(values) + "\n"
 
     class Agent:
-        state_file = tmp_path / "research.json"
+        thread = "research"
 
     client = StubClient()
     agent = Agent()
@@ -398,7 +397,7 @@ def test_malformed_local_state_is_not_treated_as_closed(
             return "not-json"
 
     class Agent:
-        state_file = tmp_path / "research.json"
+        thread = "research"
 
     client = StubClient()
     agent = Agent()
@@ -411,119 +410,6 @@ def test_malformed_local_state_is_not_treated_as_closed(
 
     with pytest.raises(SurfAgentError, match="invalid state"):
         Thread("research").is_open()
-
-
-@pytest.mark.parametrize(
-    ("output", "expected"),
-    [
-        ('result: "123"\n', "123"),
-        ('result: "true"\n', "true"),
-        ('result: "null"\n', "null"),
-        ('result: {"x": 1}\n', {"x": 1}),
-        ("result: true\n", True),
-        ("result: null\n", None),
-    ],
-)
-def test_axi_eval_value_decodes_transport_once(output: str, expected: object) -> None:
-    assert parse_axi_eval_value(output) == expected
-
-
-def test_axi_eval_value_rejects_malformed_transport() -> None:
-    with pytest.raises(SurfAgentError, match="invalid AXI evaluation"):
-        parse_axi_eval_value("not an AXI result")
-
-
-def test_axi_thread_selects_owned_page_for_numeric_text_wait_and_typed_evaluation(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from types import SimpleNamespace
-
-    from surf_agent.backends.axi import AxiBackend
-
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    class Client:
-        def call_tool(self, name: str, args: dict[str, object]) -> str:
-            calls.append((name, args))
-            if name == "evaluate_script":
-                return 'Script ran on page and returned:\n```json\n{\n  "count": 2\n}\n```'
-            return "selected\n" if name == "select_page" else "ok\n"
-
-    state_file = tmp_path / "research.json"
-    state_file.write_text('{"backend": "axi", "page_id": 7}')
-    agent = SimpleNamespace(state_file=state_file, bridge_client=Client())
-    agent.browser_backend = AxiBackend(agent)
-    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
-    thread = Thread("research")
-
-    thread.wait("123")
-    assert [name for name, _args in calls] == ["select_page", "wait_for"]
-    assert calls[0][1]["pageId"] == 7
-    assert thread.evaluate("({count: 2})") == {"count": 2}
-
-
-def test_axi_eval_value_handles_multiline_json() -> None:
-    assert parse_axi_eval_value('result: {\n  "count": 2\n}\n') == {"count": 2}
-
-
-@pytest.mark.parametrize(
-    ("response", "expected", "remembered"),
-    [
-        ('{"pages":[{"id":7,"url":"https://example.test/"}]}', True, True),
-        ('{"pages":[{"id":8,"url":"https://other.test/"}]}', False, False),
-        ("No pages open\n", False, False),
-        (None, False, True),
-    ],
-)
-def test_axi_is_open_checks_running_inventory_without_selecting_or_starting(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-    response: str | None, expected: bool, remembered: bool,
-) -> None:
-    from types import SimpleNamespace
-
-    from surf_agent.backends.axi import AxiBackend, AxiBridgeUnavailable
-
-    calls: list[str] = []
-
-    class Client:
-        def call_tool(self, name: str, args: dict[str, object]) -> str:
-            calls.append(name)
-            assert (name, args) == ("list_pages", {})
-            if response is None:
-                raise AxiBridgeUnavailable("bridge not running")
-            return response
-
-    state_file = tmp_path / "research.json"
-    state_file.write_text('{"backend": "axi", "page_id": 7}')
-    agent = SimpleNamespace(state_file=state_file, bridge_client=Client())
-    agent.browser_backend = AxiBackend(agent)
-    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
-
-    assert Thread("research").is_open() is expected
-    assert calls == ["list_pages"]
-    assert state_file.exists() is remembered
-
-
-def test_axi_is_open_preserves_state_on_invalid_inventory(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
-) -> None:
-    from types import SimpleNamespace
-
-    from surf_agent.backends.axi import AxiBackend
-
-    class Client:
-        def call_tool(self, _name: str, _args: dict[str, object]) -> str:
-            return "unexpected response"
-
-    state_file = tmp_path / "research.json"
-    state_file.write_text('{"backend": "axi", "page_id": 7}')
-    agent = SimpleNamespace(state_file=state_file, bridge_client=Client())
-    agent.browser_backend = AxiBackend(agent)
-    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
-
-    with pytest.raises(SurfAgentError, match="inventory"):
-        Thread("research").is_open()
-    assert state_file.exists()
 
 
 def test_emit_separates_unterminated_snapshots_without_changing_the_value(
@@ -669,11 +555,11 @@ def test_unterminated_changed_lines_remain_separate_in_unified_diff(monkeypatch)
     assert after.text == prefix + "new"
 
 
-@pytest.mark.parametrize("action", ["open", "back", "close", "reset"])
+@pytest.mark.parametrize("action", ["open", "back", "close"])
 def test_lifecycle_actions_clear_snapshot_and_observation_identity(monkeypatch, action):
     from unittest.mock import Mock
 
-    agent = Mock(backend="axi")
+    agent = Mock()
     agent.browser_backend.close.return_value = 0
     monkeypatch.setattr("surf_agent.thread._create_agent", lambda name: agent)
     thread = Thread("research")
@@ -715,7 +601,7 @@ def test_is_open_does_not_start_missing_local_bridge(monkeypatch: pytest.MonkeyP
             raise AssertionError("state query must not start the bridge")
 
     class Agent:
-        state_file = tmp_path / "research.json"
+        thread = "research"
 
     client = StubClient()
     agent = Agent()

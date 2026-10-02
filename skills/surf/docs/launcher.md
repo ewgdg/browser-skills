@@ -6,7 +6,7 @@ Read this for dependency or release-installation failures, or deliberate local d
 
 `scripts/run.py` requires Python 3 and `uv` on PATH. It asks uv for Python 3.11 and `surf-agent`, which includes Patchright, independently of the current project's environment and uv configuration. Install missing uv using its [installation guide](https://docs.astral.sh/uv/getting-started/installation/).
 
-The launcher executes Python directly: file-relative imports, working directory, script arguments, stdin, exceptions and exit codes follow ordinary Python behavior. It does not process inline dependency metadata. Google Chrome is a separate prerequisite; see [Patchright setup](patchright-backend.md#setup-and-selection) for detection and executable overrides.
+The launcher executes Python directly: file-relative imports, working directory, script arguments, stdin, exceptions and exit codes follow ordinary Python behavior. It does not process inline dependency metadata. Google Chrome is a separate prerequisite; see [browser runtime setup](patchright-backend.md#setup) for detection and executable overrides.
 
 ## Published runtime
 

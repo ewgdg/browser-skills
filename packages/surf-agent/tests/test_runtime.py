@@ -1,41 +1,23 @@
-import io
 import json
-import os
 import shlex
-import shutil
-import subprocess
-import tempfile
 import sys
 import types
 import unittest
-from contextlib import redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import surf_agent.backends.patchright.bridge as patchright_bridge
 from surf_agent.backends.patchright.bridge import PageSlot, PatchrightRuntime
-from surf_agent.backends.axi import AxiBackend
 from surf_agent.errors import BridgeUnavailable
-from surf_agent.backends import AxiBridgeUnavailable
 from surf_agent.snapshots import SnapshotCapture, choose_snapshot_diff
-from surf_agent.backends import (
-    AgentPage,
-    ScreenshotOptions,
-    map_axi_cli_args_to_bridge,
-    parse_axi_pages,
-    strip_axi_page_list,
-    surf_agent_app_url,
-)
 from surf_agent.runtime import (
     find_chrome_bin,
     APP_DIRS,
-    AxiBridgeClient,
     SurfAgent,
     SurfAgentError,
-    backend_config_file,
-    default_chrome_profile_dir,
-    default_state_dir,
+    config_file,
+    default_patchright_profile_dir,
     surf_agent_config_dir,
     surf_agent_data_dir,
     surf_agent_state_dir,
@@ -43,29 +25,10 @@ from surf_agent.runtime import (
 )
 
 
-def page_state(page_id, **extra):
-    payload = {"backend": "axi", "page_id": page_id}
-    payload.update(extra)
-    return payload
-
-
-def extra_page_state(page_id, **extra):
-    payload = {
-        "backend": "axi",
-        "page_id": page_id,
-        "owner": "surf-agent",
-        "token": "surf-agent:test-token",
-    }
-    payload.update(extra)
-    return payload
-
-
-def bridge_eval_raw(value):
-    return "Script ran on page and returned:\n```json\n" + json.dumps(value) + "\n```\n"
-
-
-def axi_identity_result(title="Surf Agent", href=None):
-    return bridge_eval_raw({"title": title, "href": href or surf_agent_app_url()})
+def make_agent(home: str, **kwargs) -> SurfAgent:
+    """An agent whose lifecycle state stays under *home*, with a stub Chrome command."""
+    with patch.dict("os.environ", {"SURF_AGENT_HOME": home}):
+        return SurfAgent(chrome_bin="chrome", command_timeout_s=1, **kwargs)
 
 
 def snapshot_text(changes=None, *, line_count=220):
@@ -75,20 +38,6 @@ def snapshot_text(changes=None, *, line_count=220):
         text = changes.get(index, f"stable content line {index:03d}")
         lines.append(f"uid=g{index}: {text} {'x' * 30}")
     return "\n".join(lines) + "\n"
-
-
-def page_metadata_result(url="https://example.test/", title="Example"):
-    return json.dumps({"title": title, "url": url})
-
-
-def page_metadata_call():
-    return [
-        "bridge",
-        "evaluate_script",
-        {
-            "function": "() => (JSON.stringify({title:document.title,url:location.href}))"
-        },
-    ]
 
 
 def snapshot_capture(text=None, **overrides):
@@ -105,142 +54,7 @@ def snapshot_capture(text=None, **overrides):
     )
 
 
-class FakeBridgeClient:
-    def __init__(self, agent):
-        self.agent = agent
-
-    def call_tool(self, name, args=None):
-        self.agent.calls.append((["bridge", name, args or {}], {}))
-        response = self.agent.next_response(["bridge", name, args or {}])
-        if isinstance(response, subprocess.CompletedProcess):
-            if response.returncode != 0:
-                raise SurfAgentError(
-                    response.stderr or response.stdout or "bridge failed"
-                )
-            return response.stdout or ""
-        return response
-
-
-class FakeAxiAgent(SurfAgent):
-    def __init__(self, responses, *args, **kwargs):
-        self._surf_agent_home_tmp = None
-        if "SURF_AGENT_HOME" not in os.environ:
-            self._surf_agent_home_tmp = tempfile.mkdtemp(prefix="surf-agent-test-home-")
-            with patch.dict(
-                "os.environ",
-                {"SURF_AGENT_HOME": self._surf_agent_home_tmp},
-                clear=False,
-            ):
-                super().__init__(
-                    axi_bin="axi",
-                    chrome_bin="chrome",
-                    command_timeout_s=1,
-                    *args,
-                    **kwargs,
-                )
-        else:
-            super().__init__(
-                axi_bin="axi", chrome_bin="chrome", command_timeout_s=1, *args, **kwargs
-            )
-        self.responses = list(responses)
-        self.calls = []
-        self.bridge_client = FakeBridgeClient(self)
-        # Keep tests isolated from a developer's persisted surf-agent backend config.
-        # Tests that intentionally cover Patchright set SURF_AGENT_BACKEND explicitly.
-        if os.environ.get("SURF_AGENT_BACKEND") != "patchright":
-            self.backend = "axi"
-            self.browser_backend = AxiBackend(self)
-
-    def next_response(self, command):
-        if not self.responses:
-            raise AssertionError(f"unexpected call: {command}")
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-    def _ensure_dedicated_chrome_running(self):
-        return None
-
-    def __del__(self):
-        tmp = getattr(self, "_surf_agent_home_tmp", None)
-        if tmp is not None:
-            shutil.rmtree(tmp, ignore_errors=True)
-            self._surf_agent_home_tmp = None
-
-    def _chrome_debug_endpoint_ready(self):
-        return True
-
-    def _subprocess_run(self, command, **kwargs):
-        self.calls.append((list(command), kwargs))
-        response = self.next_response(command)
-        if isinstance(response, subprocess.CompletedProcess):
-            return response
-        return subprocess.CompletedProcess(command, 0, stdout=response, stderr="")
-
-    def _subprocess_popen(self, command, **kwargs):
-        self.calls.append((list(command), kwargs))
-        return object()
-
-
-class AxiBackendTests(unittest.TestCase):
-    def test_constructs_without_backend_env(self):
-        with (
-            TemporaryDirectory() as tmp,
-            patch.dict("os.environ", {"SURF_AGENT_HOME": tmp}, clear=True),
-        ):
-            agent = SurfAgent(state_file=Path(tmp) / "thread.json")
-            self.assertEqual(agent.axi_bin, "npx -y chrome-devtools-axi")
-
-    def test_axi_screenshot_mapping_defaults_to_viewport_and_full_page_uses_cli_fallback(
-        self,
-    ):
-        mapped = map_axi_cli_args_to_bridge(["screenshot", "/tmp/shot.png"])
-        self.assertIsNotNone(mapped)
-        self.assertEqual(mapped[0], "take_screenshot")
-        self.assertEqual(mapped[1], {"filePath": "/tmp/shot.png"})
-
-        self.assertIsNone(
-            map_axi_cli_args_to_bridge(["screenshot", "--full-page", "/tmp/full.png"])
-        )
-
-    def test_axi_screenshot_command_defaults_to_viewport_and_accepts_full_page(self):
-        with TemporaryDirectory() as tmp:
-            state_file = Path(tmp) / "thread.json"
-            state_file.write_text(json.dumps(page_state(22)))
-            agent = FakeAxiAgent(
-                [
-                    "selected\n",
-                    "screenshot: /tmp/shot.png\n",
-                    "selected\n",
-                    "screenshot: /tmp/full.png\n",
-                ],
-                state_file=state_file,
-            )
-
-            self.assertEqual(
-                agent.browser_backend.screenshot(
-                    ScreenshotOptions(path="/tmp/shot.png")
-                ),
-                "screenshot: /tmp/shot.png\n",
-            )
-            self.assertEqual(
-                agent.browser_backend.screenshot(
-                    ScreenshotOptions(path="/tmp/full.png", full_page=True)
-                ),
-                "screenshot: /tmp/full.png\n",
-            )
-
-        self.assertEqual(
-            [call[0] for call in agent.calls],
-            [
-                ["bridge", "select_page", {"pageId": 22}],
-                ["bridge", "take_screenshot", {"filePath": "/tmp/shot.png"}],
-                ["bridge", "select_page", {"pageId": 22}],
-                ["axi", "screenshot", "--full-page", "/tmp/full.png"],
-            ],
-        )
-
+class RuntimeTests(unittest.TestCase):
     def test_surf_agent_home_overrides_all_default_roots(self):
         with (
             TemporaryDirectory() as tmp,
@@ -250,101 +64,22 @@ class AxiBackendTests(unittest.TestCase):
             self.assertEqual(surf_agent_config_dir(), home)
             self.assertEqual(surf_agent_state_dir(), home)
             self.assertEqual(surf_agent_data_dir(), home)
-            self.assertEqual(backend_config_file(), home / "config.json")
-            self.assertEqual(default_state_dir(), home / "threads")
-            self.assertEqual(default_chrome_profile_dir(), home / "profiles" / "chrome")
+            self.assertEqual(config_file(), home / "config.json")
+            self.assertEqual(default_patchright_profile_dir(), home / "profiles" / "chrome")
 
     def test_platformdirs_fallback_replaces_package_local_data_dir(self):
         with patch.dict("os.environ", {}, clear=True):
             package_local = Path(__file__).resolve().parents[1] / ".surf-agent"
             self.assertEqual(
-                backend_config_file(), Path(APP_DIRS.user_config_dir) / "config.json"
+                config_file(), Path(APP_DIRS.user_config_dir) / "config.json"
             )
             self.assertEqual(
-                default_state_dir(), Path(APP_DIRS.user_state_dir) / "threads"
-            )
-            self.assertEqual(
-                default_chrome_profile_dir(),
+                default_patchright_profile_dir(),
                 Path(APP_DIRS.user_data_dir) / "profiles" / "chrome",
             )
             self.assertNotEqual(
-                default_chrome_profile_dir(), package_local / "profiles" / "chrome"
+                default_patchright_profile_dir(), package_local / "profiles" / "chrome"
             )
-
-    def test_state_with_no_thread_does_not_create_or_query_page(self):
-        with TemporaryDirectory() as tmp:
-            agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json")
-            output = io.StringIO()
-            with redirect_stdout(output):
-                opened = agent.browser_backend.is_open()
-
-        self.assertFalse(opened)
-        self.assertEqual(agent.calls, [])
-
-    def test_axi_cli_start_embeds_dedicated_profile_env(self):
-        with (
-            TemporaryDirectory() as tmp,
-            patch.dict(
-                "os.environ",
-                {"SURF_AGENT_CHROME_PROFILE_DIR": str(Path(tmp) / "profile")},
-                clear=True,
-            ),
-        ):
-            agent = FakeAxiAgent(["ok\n"])
-            self.assertEqual(agent.browser_backend._run_axi_cli_text(["start"]), "ok\n")
-
-        env = agent.calls[0][1]["env"]
-        self.assertNotIn("CHROME_DEVTOOLS_AXI_AUTO_CONNECT", env)
-        self.assertNotIn("CHROME_DEVTOOLS_AXI_USER_DATA_DIR", env)
-        self.assertEqual(
-            env["CHROME_DEVTOOLS_AXI_BROWSER_URL"], "http://127.0.0.1:9336"
-        )
-        self.assertEqual(env["CHROME_DEVTOOLS_AXI_PORT"], "9335")
-
-    def test_auto_connect_env_explicitly_overrides_dedicated_profile(self):
-        with patch.dict(
-            "os.environ", {"CHROME_DEVTOOLS_AXI_AUTO_CONNECT": "1"}, clear=True
-        ):
-            agent = FakeAxiAgent(["ok\n"])
-            self.assertEqual(agent.browser_backend._run_axi_cli_text(["start"]), "ok\n")
-
-        env = agent.calls[0][1]["env"]
-        self.assertEqual(env["CHROME_DEVTOOLS_AXI_AUTO_CONNECT"], "1")
-        self.assertNotIn("CHROME_DEVTOOLS_AXI_USER_DATA_DIR", env)
-
-    def test_axi_user_data_dir_env_overrides_default_profile_dir(self):
-        with patch.dict(
-            "os.environ",
-            {"CHROME_DEVTOOLS_AXI_USER_DATA_DIR": "/tmp/custom-surf-profile"},
-            clear=True,
-        ):
-            agent = FakeAxiAgent(["ok\n"])
-            self.assertEqual(agent.browser_backend._run_axi_cli_text(["start"]), "ok\n")
-
-        env = agent.calls[0][1]["env"]
-        self.assertEqual(
-            env["CHROME_DEVTOOLS_AXI_USER_DATA_DIR"], "/tmp/custom-surf-profile"
-        )
-        self.assertEqual(
-            env["CHROME_DEVTOOLS_AXI_BROWSER_URL"], "http://127.0.0.1:9336"
-        )
-        self.assertEqual(agent.chrome_profile_dir, Path("/tmp/custom-surf-profile"))
-
-    def test_patchright_defaults_to_chrome_profile_family(self):
-        with (
-            TemporaryDirectory() as tmp,
-            patch.dict(
-                "os.environ",
-                {
-                    "SURF_AGENT_BACKEND": "patchright",
-                    "SURF_AGENT_CHROME_PROFILE_DIR": str(Path(tmp) / "chrome-profile"),
-                },
-                clear=True,
-            ),
-        ):
-            agent = FakeAxiAgent([], state_file=Path(tmp) / "thread.json")
-
-        self.assertEqual(agent.patchright_profile_dir, Path(tmp) / "chrome-profile")
 
     def test_default_profiles_live_under_surf_agent_data_dir(self):
         with (
@@ -352,81 +87,8 @@ class AxiBackendTests(unittest.TestCase):
             patch.dict("os.environ", {"SURF_AGENT_HOME": tmp}, clear=True),
         ):
             self.assertEqual(
-                default_chrome_profile_dir(), skill_data_dir() / "profiles" / "chrome"
+                default_patchright_profile_dir(), skill_data_dir() / "profiles" / "chrome"
             )
-
-    def test_bridge_profile_mismatch_rejects_old_auto_connect_bridge(self):
-        client = AxiBridgeClient(
-            timeout_s=1,
-            expected_profile_dir=Path("/tmp/surf-profile"),
-            expected_chrome_class="surf-agent",
-        )
-
-        mismatch = client._bridge_env_mismatch(
-            {"CHROME_DEVTOOLS_AXI_AUTO_CONNECT": "1"}
-        )
-
-        self.assertIn("explicit/user Chrome connection", mismatch)
-
-    def test_bridge_profile_match_accepts_owned_browser_url(self):
-        client = AxiBridgeClient(
-            timeout_s=1,
-            expected_profile_dir=Path("/tmp/surf-profile"),
-            expected_chrome_class="surf-agent",
-            expected_browser_url="http://127.0.0.1:9336",
-        )
-
-        mismatch = client._bridge_env_mismatch(
-            {"CHROME_DEVTOOLS_AXI_BROWSER_URL": "http://127.0.0.1:9336"}
-        )
-
-        self.assertIsNone(mismatch)
-
-    def test_bridge_profile_mismatch_rejects_wrong_browser_url(self):
-        client = AxiBridgeClient(
-            timeout_s=1,
-            expected_profile_dir=Path("/tmp/surf-profile"),
-            expected_chrome_class="surf-agent",
-            expected_browser_url="http://127.0.0.1:9336",
-        )
-
-        mismatch = client._bridge_env_mismatch(
-            {"CHROME_DEVTOOLS_AXI_BROWSER_URL": "http://127.0.0.1:9222"}
-        )
-
-        self.assertIn("expected 'http://127.0.0.1:9336'", mismatch)
-
-    def test_profile_open_uses_profile_without_debug_port(self):
-        with TemporaryDirectory() as tmp:
-            profile = Path(tmp) / "profile"
-            agent = FakeAxiAgent([""], chrome_profile_dir=profile)
-            with patch.object(
-                agent, "_chrome_debug_endpoint_ready", return_value=False
-            ):
-                self.assertEqual(agent.profile_open("https://x.test"), 0)
-
-        self.assertEqual(
-            [call[0] for call in agent.calls],
-            [
-                [
-                    "chrome",
-                    "--class=surf-agent",
-                    f"--user-data-dir={profile}",
-                    "--new-window",
-                    "https://x.test",
-                ]
-            ],
-        )
-
-    def test_profile_open_fails_when_automation_chrome_is_running(self):
-        agent = FakeAxiAgent([])
-        with patch.object(agent, "_chrome_debug_endpoint_ready", return_value=True):
-            with self.assertRaisesRegex(
-                SurfAgentError, "automated Surf Agent Chrome is running"
-            ):
-                agent.profile_open()
-
-        self.assertEqual(agent.calls, [])
 
     def test_patchright_profile_open_uses_patchright_profile_dir_and_class(self):
         with (
@@ -434,7 +96,6 @@ class AxiBackendTests(unittest.TestCase):
             patch.dict(
                 "os.environ",
                 {
-                    "SURF_AGENT_BACKEND": "patchright",
                     "SURF_AGENT_PATCHRIGHT_APP_ID": "surf-agent-test",
                     "SURF_AGENT_PATCHRIGHT_CLASS": "surf-agent-window",
                 },
@@ -442,9 +103,7 @@ class AxiBackendTests(unittest.TestCase):
             ),
         ):
             profile = Path(tmp) / "patchright-profile"
-            agent = FakeAxiAgent(
-                [], state_file=Path(tmp) / "thread.json", patchright_profile_dir=profile
-            )
+            agent = make_agent(tmp, patchright_profile_dir=profile)
             pops = []
             with patch(
                 "surf_agent.backends.local_bridge.subprocess.Popen",
@@ -1205,260 +864,6 @@ class AxiBackendTests(unittest.TestCase):
         )
         self.assertEqual(command[6], str(profile_dir))
 
-    def test_bridge_unavailable_starts_once_then_uses_http(self):
-        agent = FakeAxiAgent(
-            [
-                AxiBridgeUnavailable("down"),
-                "started\n",
-                "## Pages\n1: Example (https://example.test/)\n",
-            ]
-        )
-
-        self.assertEqual(
-            agent.browser_backend._run_axi_text(["pages"]),
-            "## Pages\n1: Example (https://example.test/)\n",
-        )
-        commands = [call[0] for call in agent.calls]
-        self.assertEqual(
-            commands,
-            [
-                ["bridge", "list_pages", {}],
-                ["axi", "start"],
-                ["bridge", "list_pages", {}],
-            ],
-        )
-
-    def test_new_command_opens_welcome_after_short_app_bootstrap(self):
-        with TemporaryDirectory() as tmp:
-            state_file = Path(tmp) / "thread.json"
-            agent = FakeAxiAgent(
-                [
-                    "",
-                    "",
-                    "22,Surf Agent,false\n",
-                    "selected\n",
-                    axi_identity_result(),
-                    "selected\n",
-                    "opened welcome\n",
-                    "22,Surf Agent,false\n",
-                ],
-                state_file=state_file,
-            )
-            output = io.StringIO()
-            with redirect_stdout(output):
-                page = agent.browser_backend.ensure_page(force_new=True)
-
-            self.assertEqual(page.page_id, 22)
-            commands = [call[0] for call in agent.calls]
-            self.assertEqual(
-                commands[1],
-                [
-                    "chrome",
-                    "--class=surf-agent",
-                    f"--user-data-dir={agent.chrome_profile_dir}",
-                    "--new-window",
-                    "data:text/html,%3Ctitle%3ESurf%20Agent%3C%2Ftitle%3ESurf%20Agent",
-                ],
-            )
-            self.assertEqual(
-                commands[2:6],
-                [
-                    ["bridge", "list_pages", {}],
-                    ["bridge", "select_page", {"pageId": 22}],
-                    [
-                        "bridge",
-                        "evaluate_script",
-                        {
-                            "function": "() => (JSON.stringify({title:document.title,href:location.href}))"
-                        },
-                    ],
-                    ["bridge", "select_page", {"pageId": 22}],
-                ],
-            )
-            self.assertEqual(commands[6][0:2], ["bridge", "navigate_page"])
-            self.assertIn("Thread%28name%29.open%28url%29", commands[6][2]["url"])
-
-    def test_state_without_axi_backend_is_ignored_and_not_closed(self):
-        with TemporaryDirectory() as tmp:
-            state_file = Path(tmp) / "thread.json"
-            state_file.write_text(json.dumps({"page_id": 22}))
-            agent = FakeAxiAgent([], state_file=state_file)
-
-            self.assertEqual(agent.browser_backend.close(), 0)
-            self.assertEqual(agent.calls, [])
-
-    def test_focus_selects_page_and_brings_to_front(self):
-        with TemporaryDirectory() as tmp:
-            state_file = Path(tmp) / "thread.json"
-            state_file.write_text(json.dumps(page_state(22)))
-            agent = FakeAxiAgent(["selected\n", "focused\n"], state_file=state_file)
-
-            self.assertEqual(agent.browser_backend.focus(), 0)
-
-            self.assertEqual(
-                [call[0] for call in agent.calls],
-                [
-                    ["bridge", "select_page", {"pageId": 22}],
-                    ["bridge", "select_page", {"pageId": 22, "bringToFront": True}],
-                ],
-            )
-
-    def test_close_starts_idle_shutdown_recheck(self):
-        with TemporaryDirectory() as tmp:
-            state_file = Path(tmp) / "thread.json"
-            state_file.write_text(json.dumps(page_state(22)))
-            agent = FakeAxiAgent(["closed\n"], state_file=state_file)
-            with patch.object(
-                agent.browser_backend, "_stop_idle_bridge_if_needed"
-            ) as idle:
-                self.assertEqual(agent.browser_backend.close(), 0)
-
-        self.assertEqual(
-            [call[0] for call in agent.calls],
-            [["bridge", "close_page", {"pageId": 22}]],
-        )
-        idle.assert_called_once_with()
-        self.assertFalse(state_file.exists())
-
-    def test_stale_page_state_is_cleared_without_creating_page(self):
-        with TemporaryDirectory() as tmp:
-            state_file = Path(tmp) / "thread.json"
-            state_file.write_text(json.dumps(page_state(22)))
-            agent = FakeAxiAgent(["No pages open\n"], state_file=state_file)
-            output = io.StringIO()
-            with redirect_stdout(output):
-                opened = agent.browser_backend.is_open()
-
-            self.assertFalse(opened)
-            self.assertEqual(
-                [call[0] for call in agent.calls], [["bridge", "list_pages", {}]]
-            )
-            self.assertFalse(state_file.exists())
-
-    def test_close_keeps_state_when_close_page_fails(self):
-        with TemporaryDirectory() as tmp:
-            state_file = Path(tmp) / "thread.json"
-            state_file.write_text(json.dumps(page_state(22)))
-            failed_close = subprocess.CompletedProcess(
-                ["axi", "closepage", "22"], 1, stdout="", stderr="bridge unavailable"
-            )
-            agent = FakeAxiAgent([failed_close], state_file=state_file)
-
-            self.assertEqual(agent.browser_backend.close(), 1)
-
-            self.assertTrue(state_file.exists())
-            self.assertEqual(
-                [call[0] for call in agent.calls],
-                [["bridge", "close_page", {"pageId": 22}]],
-            )
-
-    def test_close_matching_closes_only_matching_remembered_axi_pages(self):
-        with TemporaryDirectory() as tmp:
-            state_dir = Path(tmp)
-            (state_dir / "agent-a-1.json").write_text(json.dumps(page_state(101)))
-            (state_dir / "agent-a-2.json").write_text(json.dumps(page_state(102)))
-            (state_dir / "agent-b-1.json").write_text(json.dumps(page_state(201)))
-            (state_dir / "agent-a-stale.json").write_text(json.dumps(page_state(999)))
-            agent = FakeAxiAgent(
-                ["closed\n", "closed\n", "closed\n"],
-                state_file=state_dir / "unused.json",
-            )
-
-            output = io.StringIO()
-            with (
-                patch.object(
-                    agent.browser_backend, "_stop_idle_bridge_if_needed"
-                ) as idle,
-                redirect_stdout(output),
-            ):
-                exit_code = agent.browser_backend.close_matching("agent-a-*")
-
-            self.assertEqual(output.getvalue(), "")
-            commands = [call[0] for call in agent.calls]
-            self.assertEqual(exit_code, 0)
-            self.assertEqual(
-                commands,
-                [
-                    ["bridge", "close_page", {"pageId": 101}],
-                    ["bridge", "close_page", {"pageId": 102}],
-                    ["bridge", "close_page", {"pageId": 999}],
-                ],
-            )
-            idle.assert_called_once_with()
-            self.assertFalse((state_dir / "agent-a-1.json").exists())
-            self.assertFalse((state_dir / "agent-a-2.json").exists())
-            self.assertTrue((state_dir / "agent-b-1.json").exists())
-            self.assertFalse((state_dir / "agent-a-stale.json").exists())
-
-    def test_timeout_raises_clear_axi_error(self):
-        agent = FakeAxiAgent([subprocess.TimeoutExpired(["axi", "eval", "1"], 1)])
-        with self.assertRaisesRegex(
-            Exception, "browser command timed out after 1s: eval 1.*browser bridge"
-        ):
-            agent.browser_backend._run_axi_cli_text(["eval", "1"])
-
-    def test_bridge_stop_is_explicit_only(self):
-        agent = FakeAxiAgent(["stopped\n"])
-        output = io.StringIO()
-        with (
-            patch("surf_agent.runtime.stop_axi_chrome_runtime") as stop_chrome,
-            redirect_stdout(output),
-        ):
-            self.assertEqual(agent.browser_backend.bridge_stop(), 0)
-        self.assertEqual([call[0] for call in agent.calls], [["axi", "stop"]])
-        self.assertEqual(output.getvalue(), "")
-        stop_chrome.assert_called_once_with(
-            agent.chrome_profile_dir, debug_port=agent.chrome_debug_port
-        )
-
-    def test_parse_axi_pages_accepts_json_human_lines_and_empty_message(self):
-        self.assertEqual(
-            parse_axi_pages('{"pages":[{"id":7,"url":"https://x.test/","title":"X"}]}'),
-            [AgentPage(7, "https://x.test/", "X")],
-        )
-        self.assertEqual(
-            parse_axi_pages("* [8] Title https://y.test/\n"),
-            [AgentPage(8, "https://y.test/", "Title")],
-        )
-        self.assertEqual(parse_axi_pages("No pages open\n"), [])
-
-    def test_parse_axi_pages_accepts_cli_csv_and_empty_header(self):
-        output = "pages[2]{id,url,selected}:\n1,https://x.test/,false\n2,about:blank,true\nhelp[selectpage]...\n"
-        self.assertEqual(
-            parse_axi_pages(output),
-            [AgentPage(1, "https://x.test/"), AgentPage(2, "about:blank")],
-        )
-        self.assertEqual(parse_axi_pages("pages[0]{id,url,selected}:\n"), [])
-
-    def test_parse_axi_pages_accepts_mcp_markdown(self):
-        output = "## Pages\n1: Example Domain (https://example.test/) [selected]\n2: Surf Agent (data:text/html,%3Ctitle%3ESurf%20Agent)\n"
-        self.assertEqual(
-            parse_axi_pages(output),
-            [
-                AgentPage(1, "https://example.test/", "Example Domain"),
-                AgentPage(2, "data:text/html,%3Ctitle%3ESurf%20Agent", "Surf Agent"),
-            ],
-        )
-
-    def test_navigation_output_strips_axi_page_list(self):
-        output = "Successfully navigated to https://example.test/.\n## Pages\n22: Example (https://example.test/) [selected]\n"
-        self.assertEqual(
-            strip_axi_page_list(output),
-            "Successfully navigated to https://example.test/.\n",
-        )
-
-    def test_navigation_output_strips_axi_csv_page_list(self):
-        output = "opened https://example.test/\npages[1]{id,url,selected}:\n22,https://example.test/,true\n"
-        self.assertEqual(strip_axi_page_list(output), "opened https://example.test/\n")
-
-    def test_extract_page_id_ignores_snapshot_uids(self):
-        from surf_agent.backends import extract_page_id
-
-        self.assertIsNone(
-            extract_page_id('snapshot:\nuid=g24:3_0 RootWebArea "Example Domain"\n')
-        )
-        self.assertEqual(extract_page_id("pageId: 39\n"), 39)
-
     def test_snapshot_diff_gates_fall_back_for_large_small_savings_and_many_hunks(self):
         cases = [
             (
@@ -1553,63 +958,7 @@ if __name__ == "__main__":
     unittest.main()
 
 
-class AxiIdleSafetyTests(unittest.TestCase):
-    def test_idle_inventory_failure_is_unknown_and_background_targets_do_not_count(
-        self,
-    ):
-        from surf_agent.backends.axi import parse_axi_user_visible_pages
-
-        self.assertEqual(
-            parse_axi_user_visible_pages(
-                '{"pages":[{"pageId":1,"type":"service_worker"}]}'
-            ),
-            [],
-        )
-        self.assertEqual(
-            [
-                page.page_id
-                for page in parse_axi_user_visible_pages(
-                    '{"pages":[{"pageId":2,"type":"page"}]}'
-                )
-            ],
-            [2],
-        )
-        with self.assertRaises(SurfAgentError):
-            parse_axi_user_visible_pages("unparseable bridge output")
-
-
 class LaunchPreflightTests(unittest.TestCase):
-    def test_axi_profile_open_runs_under_lifecycle_launch_guard(self):
-        class Guard:
-            def __init__(self):
-                self.events = []
-
-            def launch_guard(self, *, health_check):
-                from contextlib import contextmanager
-
-                @contextmanager
-                def guard():
-                    self.events.append("entered")
-                    self.assert_false(health_check())
-                    yield
-                    self.events.append("exited")
-
-                return guard()
-
-            @staticmethod
-            def assert_false(value):
-                assert value is False
-
-        with TemporaryDirectory() as tmp:
-            agent = FakeAxiAgent([""], chrome_profile_dir=Path(tmp) / "profile")
-            guard = Guard()
-            agent.lifecycle = guard
-            with patch.object(
-                agent, "_chrome_debug_endpoint_ready", return_value=False
-            ):
-                self.assertEqual(agent.profile_open(), 0)
-        self.assertEqual(guard.events, ["entered", "exited"])
-
     def test_patchright_profile_open_runs_under_lifecycle_launch_guard(self):
         class Guard:
             def __init__(self):
@@ -1627,11 +976,8 @@ class LaunchPreflightTests(unittest.TestCase):
 
                 return guard()
 
-        with (
-            TemporaryDirectory() as tmp,
-            patch.dict("os.environ", {"SURF_AGENT_BACKEND": "patchright"}, clear=True),
-        ):
-            agent = FakeAxiAgent([], patchright_profile_dir=Path(tmp) / "profile")
+        with TemporaryDirectory() as tmp:
+            agent = make_agent(tmp, patchright_profile_dir=Path(tmp) / "profile")
             guard = Guard()
             agent.lifecycle = guard
             with (
@@ -1646,43 +992,42 @@ class LaunchPreflightTests(unittest.TestCase):
 
 
 class LaunchFailureTests(unittest.TestCase):
-    def test_axi_profile_open_import_failure_prevents_browser_launch(self):
+    def test_profile_open_import_failure_prevents_browser_launch(self):
         class FailingImporter:
             def run(self, force):
                 raise SurfAgentError("import failed")
 
         with TemporaryDirectory() as tmp:
-            agent = FakeAxiAgent([], chrome_profile_dir=Path(tmp) / "profile")
+            agent = make_agent(tmp, patchright_profile_dir=Path(tmp) / "profile")
             from surf_agent.chrome_lifecycle import ChromeLifecycleCoordinator
 
             agent.lifecycle = ChromeLifecycleCoordinator(
-                destination_root=agent.chrome_profile_dir,
+                destination_root=agent.patchright_profile_dir,
                 state_root=Path(tmp) / "state",
                 importer=FailingImporter(),
                 process_inspector=lambda _path: False,
             )
             with (
-                patch.object(agent, "_chrome_debug_endpoint_ready", return_value=False),
+                patch.object(agent.patchright_client, "_health_ok", return_value=False),
+                patch("surf_agent.backends.patchright.backend.subprocess.Popen") as popen,
                 self.assertRaisesRegex(SurfAgentError, "import failed"),
             ):
                 agent.profile_open()
-        self.assertEqual(agent.calls, [])
+        popen.assert_not_called()
 
 
 class PatchrightExecutableTests(unittest.TestCase):
     def test_patchright_profile_open_rejects_non_chrome_executable(self):
-        with (
-            TemporaryDirectory() as tmp,
-            patch.dict("os.environ", {"SURF_AGENT_BACKEND": "patchright"}, clear=True),
-        ):
-            agent = FakeAxiAgent([], patchright_profile_dir=Path(tmp) / "profile")
+        with TemporaryDirectory() as tmp:
+            agent = make_agent(tmp, patchright_profile_dir=Path(tmp) / "profile")
             agent.chrome_bin = "chromium"
             with (
                 patch.object(agent.patchright_client, "_health_ok", return_value=False),
+                patch("surf_agent.backends.patchright.backend.subprocess.Popen") as popen,
                 self.assertRaisesRegex(SurfAgentError, "Google Chrome"),
             ):
                 agent.profile_open()
-        self.assertEqual(agent.calls, [])
+        popen.assert_not_called()
 
 
 def test_find_chrome_bin_finds_the_macos_app_bundle_as_one_command_word() -> None:

@@ -11,53 +11,27 @@ from surf_agent.config import (
     load_config,
     normalize_domains,
     resolve_cookie_source,
-    reset_backend,
-    resolve_backend_preference,
-    set_backend,
     write_config,
 )
 from surf_agent.errors import SurfAgentError
 
 
-def test_backend_preference_is_environment_then_persisted_then_default(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = tmp_path / "config.json"
-    assert resolve_backend_preference(path=path) == ("patchright", "default")
-    write_config(path, {"backend": "axi", "unknown": {"keep": True}})
-    assert resolve_backend_preference(path=path) == ("axi", "config")
-    monkeypatch.setenv("SURF_AGENT_BACKEND", "patchright")
-    assert resolve_backend_preference(path=path) == ("patchright", "env")
-
-
-def test_backend_mutations_preserve_unknown_top_level_keys(tmp_path: Path) -> None:
-    path = tmp_path / "config.json"
-    write_config(path, {"unknown": {"keep": True}})
-    set_backend("patchright", path=path)
-    assert load_config(path) == {"backend": "patchright", "unknown": {"keep": True}}
-    reset_backend(path=path)
-    assert load_config(path) == {"unknown": {"keep": True}}
-
-
-def test_backend_validation_describes_the_complete_supported_set(tmp_path: Path) -> None:
-    with pytest.raises(SurfAgentError, match="^backend must be 'axi' or 'patchright'$"):
-        set_backend("unsupported", path=tmp_path / "config.json")
-
-
 def test_atomic_write_failure_preserves_existing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     path = tmp_path / "config.json"
-    path.write_text('{"backend":"axi"}\n')
+    path.write_text('{"keep":true}\n')
 
     def fail_replace(source: str, destination: str) -> None:
         raise OSError("replace failed")
 
     monkeypatch.setattr("surf_agent.config.os.replace", fail_replace)
     with pytest.raises(SurfAgentError, match="could not write surf-agent config"):
-        write_config(path, {"backend": "patchright"})
-    assert json.loads(path.read_text()) == {"backend": "axi"}
+        write_config(path, {"keep": False})
+    assert json.loads(path.read_text()) == {"keep": True}
 
 
 def test_written_config_is_user_only(tmp_path: Path) -> None:
     path = tmp_path / "config.json"
-    write_config(path, {"backend": "axi"})
+    write_config(path, {"keep": True})
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
@@ -73,13 +47,6 @@ def test_scope_domains_are_normalized_and_reject_unsafe_values() -> None:
     for value in ("https://example.com", "example.com/a", "example.com:443", "*.example.com", "", "127.0.0.1", "com"):
         with pytest.raises(SurfAgentError):
             CookieScope.from_domains([value])
-
-
-def test_cookie_source_must_match_a_provable_destination_family(tmp_path: Path) -> None:
-    from surf_agent.chrome_lifecycle import destination_browser_family
-
-    assert destination_browser_family(backend="axi", executable="google-chrome") == "chrome"
-    assert destination_browser_family(backend="axi", executable="brave-browser") == "brave"
 
 
 def test_cookie_source_family_is_proven_from_macos_user_data_roots(tmp_path: Path) -> None:

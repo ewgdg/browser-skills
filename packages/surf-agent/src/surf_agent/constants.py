@@ -3,21 +3,12 @@ from __future__ import annotations
 from pathlib import Path
 
 DEFAULT_THREAD = "default"
-DEFAULT_AXI_BIN = "npx -y chrome-devtools-axi"
-DEFAULT_AXI_TIMEOUT_S = 15.0
-DEFAULT_AXI_PORT = "9335"
-DEFAULT_CHROME_DEBUG_PORT = "9336"
-DEFAULT_CHROME_CLASS = "surf-agent"
-AXI_BACKEND = "axi"
+DEFAULT_COMMAND_TIMEOUT_S = 15.0
 PATCHRIGHT_BACKEND = "patchright"
-DEFAULT_BACKEND = PATCHRIGHT_BACKEND
-SUPPORTED_BACKENDS = (AXI_BACKEND, PATCHRIGHT_BACKEND)
-SUPPORTED_BACKENDS_DESCRIPTION = " or ".join(f"'{backend}'" for backend in SUPPORTED_BACKENDS)
-SUPPORTED_BACKENDS_USAGE = "|".join(SUPPORTED_BACKENDS)
 DEFAULT_PATCHRIGHT_PORT = "9346"
 DEFAULT_PATCHRIGHT_APP_ID = "surf-agent"
-AXI_STATE_DIR = Path.home() / ".chrome-devtools-axi"
-AXI_BRIDGE_PID_FILE = AXI_STATE_DIR / "bridge.pid"
+# Patchright always launches the Chrome channel, so the destination profile is Chrome's.
+PATCHRIGHT_BROWSER_FAMILY = "chrome"
 SURF_AGENT_WINDOW_TITLE = "Surf Agent"
 CHROME_NEW_WINDOW_TIMEOUT_S = 10.0
 SNAPSHOT_DIFF_MAX_RATIO = 0.50

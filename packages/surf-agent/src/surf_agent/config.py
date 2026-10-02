@@ -11,7 +11,6 @@ from typing import Any, Iterable
 
 import tldextract
 
-from .constants import DEFAULT_BACKEND, SUPPORTED_BACKENDS, SUPPORTED_BACKENDS_DESCRIPTION
 from .errors import SurfAgentError
 
 # Use tldextract's packaged Public Suffix List snapshot.  Disabling network fetches
@@ -75,13 +74,6 @@ class CookieSourceConfig:
         if not isinstance(root, str) or not isinstance(profile, str) or not isinstance(family, str):
             raise SurfAgentError("cookie source configuration is incomplete")
         return cls(root=Path(root), profile=validate_profile_name(profile), family=validate_browser_family(family), scope=CookieScope.from_json(value.get("scope")))
-
-
-def validate_backend_name(value: str, *, source: str = "backend") -> str:
-    backend = value.strip().lower()
-    if backend not in SUPPORTED_BACKENDS:
-        raise SurfAgentError(f"{source} must be {SUPPORTED_BACKENDS_DESCRIPTION}", exit_code=2)
-    return backend
 
 
 def validate_browser_family(value: str) -> str:
@@ -202,35 +194,6 @@ def write_config(path: Path, config: dict[str, Any]) -> None:
                 temp_path.unlink()
             except FileNotFoundError:
                 pass
-
-
-def resolve_backend_preference(*, path: Path, environ: dict[str, str] | None = None) -> tuple[str, str]:
-    environment = os.environ if environ is None else environ
-    env_backend = environment.get("SURF_AGENT_BACKEND")
-    if env_backend:
-        return validate_backend_name(env_backend, source="SURF_AGENT_BACKEND"), "env"
-    configured = load_config(path).get("backend")
-    if isinstance(configured, str) and configured.strip():
-        return validate_backend_name(configured, source=str(path)), "config"
-    return DEFAULT_BACKEND, "default"
-
-
-def set_backend(backend: str, *, path: Path) -> None:
-    config = load_config(path)
-    config["backend"] = validate_backend_name(backend)
-    write_config(path, config)
-
-
-def reset_backend(*, path: Path) -> None:
-    config = load_config(path)
-    config.pop("backend", None)
-    if config:
-        write_config(path, config)
-    else:
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def get_cookie_source(*, path: Path) -> CookieSourceConfig | None:

@@ -7,7 +7,7 @@ description: Search the web through rendered Google Search and return compact st
 
 Search through `scripts/run.py`, then use the results for the requested research. Follow this workflow; open linked `docs/` only when the stated task or problem applies.
 
-Set `GOOGLE_SEARCH_SKILL` to the absolute directory containing this installed `SKILL.md`. The launcher installs the runtime pinned by the Surf skill installed beside it; for launcher or dependency failures, read [setup](docs/cli.md#setup). For browser startup or backend-selection problems, read [Surf backends](../surf/docs/backends.md).
+Set `GOOGLE_SEARCH_SKILL` to the absolute directory containing this installed `SKILL.md`. The launcher installs the runtime pinned by the Surf skill installed beside it; for launcher or dependency failures, read [setup](docs/cli.md#setup). For browser startup problems, read [Surf browser runtime](../surf/docs/patchright-backend.md).
 
 ## Search
 

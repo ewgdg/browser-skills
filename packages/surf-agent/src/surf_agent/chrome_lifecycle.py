@@ -149,12 +149,6 @@ def browser_executable_family(executable: str | None) -> str | None:
     return None
 
 
-def destination_browser_family(*, backend: str, executable: str | None) -> str | None:
-    """Prove the family of the executable that owns the destination profile."""
-    if backend == "patchright":
-        return "chrome"  # Patchright explicitly launches the Chrome channel.
-    return browser_executable_family(executable) if backend == "axi" else None
-
 def find_active_chrome_roots(profile_dir: Path, *, process_args: Callable[[], Sequence[tuple[int, Sequence[str]]]] | None = None) -> list[int]:
     """Find any browser root using exactly this resolved user-data root."""
     wanted = profile_dir.expanduser().resolve(strict=False)
@@ -173,10 +167,6 @@ def find_active_chrome_roots(profile_dir: Path, *, process_args: Callable[[], Se
         if candidate == wanted:
             found.append(pid)
     return found
-
-
-def axi_destination_identity_unprovable(environ: dict[str, str]) -> bool:
-    return environ.get("CHROME_DEVTOOLS_AXI_AUTO_CONNECT") == "1" or bool(environ.get("CHROME_DEVTOOLS_AXI_BROWSER_URL"))
 
 
 def _option_value(args: Sequence[str], option: str) -> str | None:
