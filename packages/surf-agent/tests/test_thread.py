@@ -277,7 +277,7 @@ def test_actions_use_real_local_backend_without_stdout(monkeypatch: pytest.Monke
     assert thread.type_text("hello") == "type ok\n"
     assert thread.press("Enter") == "press ok\n"
     assert thread.scroll("down") == "scroll ok\n"
-    assert thread.wait(250) == "wait ok\n"
+    assert thread.sleep(250) == "sleep ok\n"
     assert thread.wait("Loaded") == "wait-for ok\n"
     assert thread.back() == "back ok\n"
     assert thread.text() == "text ok\n"
@@ -285,42 +285,12 @@ def test_actions_use_real_local_backend_without_stdout(monkeypatch: pytest.Monke
     assert thread.evaluate("({ready: true})") == {"ready": True}
 
     assert [name for name, _args in client.calls] == [
-        "state", "click", "fill", "upload", "type", "press", "scroll", "wait", "wait-for", "back", "text", "screenshot", "eval"
+        "state", "click", "fill", "upload", "type", "press", "scroll", "sleep", "wait-for", "back", "text", "screenshot", "eval"
     ]
     assert client.calls[3][1]["paths"] == [str(resume)]
-    assert client.calls[7][1]["target"] == 250
+    assert client.calls[7][1]["milliseconds"] == 250
     assert client.calls[8][1]["text"] == "Loaded"
     assert capsys.readouterr().out == ""
-
-
-def test_wait_string_that_looks_numeric_is_text_not_duration(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    class StubClient:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, dict[str, object]]] = []
-
-        def call_tool(self, name: str, args: dict[str, object], **_transport: object) -> str:
-            self.calls.append((name, args))
-            return "waited\n"
-
-    class Agent:
-        thread = "research"
-
-    client = StubClient()
-    agent = Agent()
-    agent.stub_client = client
-    backend = LocalBridgeBackend(agent, client=client, welcome_url=lambda: "about:blank")
-    backend.client_attr = "stub_client"
-    backend.display_name = "Stub"
-    agent.browser_backend = backend
-    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
-
-    Thread("research").wait("123")
-
-    assert client.calls == [
-        ("wait-for", {"thread": "research", "text": "123", "gone": None, "url": None, "timeoutMs": None})
-    ]
 
 
 def test_upload_resolves_paths_in_caller_and_refuses_missing_files(

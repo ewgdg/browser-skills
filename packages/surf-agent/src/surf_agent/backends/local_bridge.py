@@ -300,8 +300,8 @@ class LocalBridgeBackend:
     def scroll(self, direction: str) -> str:
         return self._call("scroll", {"direction": direction})
 
-    def wait_ms(self, milliseconds: int) -> str:
-        return self._call_holding("wait", {"target": milliseconds}, milliseconds)
+    def sleep_ms(self, milliseconds: int) -> str:
+        return self._call_holding("sleep", {"milliseconds": milliseconds}, milliseconds)
 
     def wait_for(self, conditions: WaitConditions) -> str:
         payload = {

@@ -112,7 +112,7 @@ def test_sleep_transport_timeout_covers_the_sleep_duration(bridge_client) -> Non
     backend = LocalBridgeBackend(agent, client=bridge_client(slow_sleep, timeout_s=0.2), welcome_url=lambda: "about:blank")
     backend.client_attr = "unused"
 
-    assert backend.wait_ms(300) == "waited\n"
+    assert backend.sleep_ms(300) == "waited\n"
 
 
 class RecordingClient:
@@ -148,20 +148,29 @@ def test_wait_conditions_reach_the_bridge(local_thread) -> None:
     ]
 
 
-def test_wait_milliseconds_still_sleeps(local_thread) -> None:
+def test_sleep_reaches_the_bridge(local_thread) -> None:
     thread, client = local_thread
 
-    thread.wait(250)
+    thread.sleep(250)
 
-    assert client.calls == [("wait", {"thread": "research", "target": 250})]
+    assert client.calls == [("sleep", {"thread": "research", "milliseconds": 250})]
+
+
+@pytest.mark.parametrize(("milliseconds", "error"), [(-1, ValueError), (True, TypeError), ("250", TypeError)])
+def test_sleep_rejects_non_durations(local_thread, milliseconds, error) -> None:
+    thread, client = local_thread
+
+    with pytest.raises(error):
+        thread.sleep(milliseconds)
+
+    assert client.calls == []
 
 
 @pytest.mark.parametrize(
     ("args", "kwargs", "error"),
     [
         ((), {}, ValueError),
-        ((250,), {"gone": "x"}, TypeError),
-        ((250,), {"timeout_ms": 100}, TypeError),
+        ((250,), {}, TypeError),
         (("",), {}, ValueError),
         ((), {"gone": ""}, ValueError),
         (("x",), {"timeout_ms": 0}, ValueError),

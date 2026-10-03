@@ -119,7 +119,8 @@ thread.upload(target, paths) -> str  # target the <input type=file>, even if hid
 thread.type_text(text) -> str
 thread.press(key) -> str
 thread.scroll(direction) -> str  # up, down, top, bottom
-thread.wait(target=None, *, gone=None, url=None, timeout_ms=None) -> str  # int target sleeps ms; str waits for visible text
+thread.wait(text=None, *, gone=None, url=None, timeout_ms=None) -> str  # until text shows, gone text hides, url matches
+thread.sleep(milliseconds) -> str  # fixed pause; prefer wait()
 thread.back() -> str
 thread.text(target=None) -> str
 thread.screenshot(path, *, full_page=False) -> str

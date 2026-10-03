@@ -78,41 +78,43 @@ class Thread:
     def scroll(self, direction: str) -> str:
         return self._agent.browser_backend.scroll(direction)
 
+    def sleep(self, milliseconds: int) -> str:
+        """Pause for a fixed time; prefer ``wait()`` on a page condition."""
+        if isinstance(milliseconds, bool) or not isinstance(milliseconds, int):
+            raise TypeError("sleep milliseconds must be an int")
+        if milliseconds < 0:
+            raise ValueError("sleep milliseconds must not be negative")
+        return self._agent.browser_backend.sleep_ms(milliseconds)
+
     def wait(
         self,
-        target: int | str | None = None,
+        text: str | None = None,
         *,
         gone: str | None = None,
         url: str | None = None,
         timeout_ms: int | None = None,
     ) -> str:
-        """Sleep for integer milliseconds, or wait until every given page condition holds.
+        """Wait until every given page condition holds.
 
-        ``target`` text must become visible, ``gone`` text must stop being visible,
+        ``text`` must become visible, ``gone`` text must stop being visible,
         and ``url`` is a glob over the full page URL. Unmet conditions raise
         ``SurfAgentError`` with code ``wait_timeout`` naming the page state.
         """
-        if isinstance(target, bool):
-            raise TypeError("wait target must be milliseconds as int or visible text as str")
-        if isinstance(target, int):
-            if gone is not None or url is not None or timeout_ms is not None:
-                raise TypeError("wait(milliseconds) sleeps; pass conditions as text, gone= or url=")
-            if target < 0:
-                raise ValueError("wait milliseconds must not be negative")
-            return self._agent.browser_backend.wait_ms(target)
-        conditions = {"text": target, "gone": gone, "url": url}
+        if isinstance(text, int):
+            raise TypeError("wait takes page conditions; use sleep(milliseconds) for a fixed pause")
+        conditions = {"text": text, "gone": gone, "url": url}
         for label, value in conditions.items():
             if value is not None and (not isinstance(value, str) or not value):
                 raise ValueError(f"wait {label} condition must be a nonempty string")
         if all(value is None for value in conditions.values()):
-            raise ValueError("wait needs milliseconds or at least one of text, gone= or url=")
+            raise ValueError("wait needs at least one of text, gone= or url=")
         if timeout_ms is not None:
             if isinstance(timeout_ms, bool) or not isinstance(timeout_ms, int):
                 raise TypeError("wait timeout_ms must be an int")
             if timeout_ms <= 0:
                 raise ValueError("wait timeout_ms must be positive")
         return self._agent.browser_backend.wait_for(
-            WaitConditions(text=target, gone=gone, url=url, timeout_ms=timeout_ms)
+            WaitConditions(text=text, gone=gone, url=url, timeout_ms=timeout_ms)
         )
 
     def back(self) -> str:

@@ -48,9 +48,13 @@ Presses one key, such as `Enter`; action output.
 
 `direction` is `up`, `down`, `top`, or `bottom`.
 
-### `thread.wait(target=None, *, gone=None, url=None, timeout_ms=None) -> str`
+### `thread.wait(text=None, *, gone=None, url=None, timeout_ms=None) -> str`
 
-An `int` target sleeps that many nonnegative milliseconds and takes no other argument. Otherwise waits until every given condition holds: `target` text becomes visible (case-insensitive substring of an element's text, where child texts can join without the space a snapshot name shows), `gone` text stops being visible, `url` glob (`fnmatch`, full URL) matches. `timeout_ms` defaults to 10000. Failure raises code `wait_timeout` naming unmet conditions, current URL and title. Numeric strings are text, not durations. `gone`, `url` and `timeout_ms` are Patchright-only.
+Waits until every given condition holds: `text` becomes visible (case-insensitive substring of an element's text, where child texts can join without the space a snapshot name shows), `gone` text stops being visible, `url` glob (`fnmatch`, full URL) matches. `timeout_ms` defaults to 10000. Failure raises code `wait_timeout` naming unmet conditions, current URL and title. Needs at least one condition. `gone`, `url` and `timeout_ms` are Patchright-only.
+
+### `thread.sleep(milliseconds) -> str`
+
+Pauses for a fixed nonnegative number of milliseconds. Prefer `wait()` on a page condition; sleep only when no condition marks the change.
 
 ### `thread.back() -> str`
 

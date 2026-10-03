@@ -129,6 +129,12 @@ def test_intercepted_click_names_the_blocking_element(runtime, site):
     assert "cookie-banner" in message
 
 
+def test_sleep_pauses_for_fixed_milliseconds(runtime, site):
+    runtime.call("open", {"url": f"{site}/index.html"})
+
+    assert runtime.call("sleep", {"milliseconds": 50}) == "waited\n"
+
+
 def test_wait_for_text_and_gone_conditions(runtime, site):
     runtime.call("open", {"url": f"{site}/index.html"})
 

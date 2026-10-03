@@ -317,8 +317,8 @@ class PatchrightRuntime:
             else:
                 await self._maybe_await(slot.page.mouse.wheel(0, delta))
             return "scrolled\n"
-        if name == "wait":
-            await self._maybe_await(slot.page.wait_for_timeout(float(args["target"])))
+        if name == "sleep":
+            await self._maybe_await(slot.page.wait_for_timeout(float(args["milliseconds"])))
             return "waited\n"
         if name == "wait-for":
             await self._wait_for(
