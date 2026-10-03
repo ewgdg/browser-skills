@@ -24,6 +24,9 @@ class Context:
     def close(self) -> None:
         self.closed = True
 
+    def on(self, event: str, handler) -> None:
+        pass
+
 
 def test_patchright_launch_is_windowless_with_patchrights_own_flags(monkeypatch, tmp_path: Path) -> None:
     from surf_agent.backends.patchright import bridge
@@ -46,7 +49,7 @@ def test_patchright_launch_is_windowless_with_patchrights_own_flags(monkeypatch,
     class Chromium:
         async def launch_persistent_context(self, **kwargs):
             launch_options.update(kwargs)
-            return object()
+            return Context([])
 
     class Playwright:
         chromium = Chromium()

@@ -89,7 +89,8 @@ Build a wheel and skill archive (`npm pack --pack-destination /tmp/surf-release`
 SURF_INSTALLED_SKILL=/tmp/surf-release/package/skills/surf \
 SURF_AGENT_DEPENDENCY=/tmp/surf-wheels/surf_agent-0.1.0-py3-none-any.whl \
 SURF_TEST_LIVE_PATCHRIGHT=1 \
-uv run pytest tests/test_installed_workflow.py packages/surf-agent/tests/test_patchright_navigation.py
+uv run pytest tests/test_installed_workflow.py packages/surf-agent/tests/test_patchright_navigation.py \
+  packages/surf-agent/tests/test_patchright_network_capture.py
 ```
 
 The acceptance test uses isolated temporary profiles and a local website. It checks separate file/stdin invocations, browser reattachment, exact input, observations, navigation, persistent session retention, interpreter replacement with the browser preserved, and cleanup. Ordinary project imports and launcher failure/argument contracts are covered by `tests/test_skill_launcher.py`.

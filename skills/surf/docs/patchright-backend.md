@@ -19,6 +19,8 @@ Inspect actual settings with `Browser().profile()`.
 
 The bridge uses Patchright's async API with a persistent asyncio runner and a persistent Chrome context, without a fixed viewport. Color-scheme emulation is reset so pages follow the desktop theme. The application identifier uses `--name=<app_id>` so Chromium does not mistake it for a page target.
 
+Response capture (`thread.responses()`) listens on the browser context, so a thread window's first load is captured even though the window is created through raw CDP. Bodies stay in bridge memory, capped per page, are cleared on `open()` and bridge stop, and are released after the page closes. It adds no detection surface: Patchright already enables the CDP `Network` domain on every page, and reading a body is a browser-side call page scripts cannot observe.
+
 Chrome-extension behavior depends on the installed browser and profile; verify [1Password setup](1password-setup.md) with a live check rather than assuming extension compatibility.
 
 ## Cookies and shutdown

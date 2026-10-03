@@ -131,6 +131,21 @@ class Thread:
     def evaluate(self, code: str) -> Any:
         return self._agent.browser_backend.evaluate_value(code)
 
+    def responses(self) -> list[dict[str, Any]]:
+        """API responses this page received since the last ``open()``, oldest first.
+
+        Each entry has ``key``, ``method``, ``status``, ``url``, ``content_type``,
+        ``size``, and ``shape`` (a structure preview) or ``body_omitted``.
+        """
+        return self._agent.browser_backend.responses()
+
+    def response_body(self, key: str) -> Any:
+        """Full body of one captured response: parsed JSON, or text."""
+        detail = self._agent.browser_backend.response_body(key)
+        if detail.get("body_omitted"):
+            raise SurfAgentError(f"response {key} body was not kept: {detail['body_omitted']}")
+        return detail["body"]
+
     def snapshot(self) -> Snapshot:
         """Capture a complete snapshot value without changing emission state."""
         return self._capture()

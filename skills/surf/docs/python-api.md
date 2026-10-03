@@ -68,6 +68,14 @@ Saves a viewport or full-page image; returns backend output.
 
 Decoded JavaScript value: nested objects/arrays, strings, numbers, booleans, or `None`.
 
+### `thread.responses() -> list[dict[str, Any]]`
+
+API responses the page fetched since the last `open()`, oldest first, capped per page (oldest evicted). Keeps JSON, XML, plain-text and other API-like text responses; drops static assets, the page document and telemetry. Each entry: `key`, `method`, `status`, `url`, `content_type`, `size`, and `shape` (keys and value types, first list item as the sample) or `body_omitted` (`pending` while a long-poll or streaming body is still loading, `too_large`, or `unavailable: <reason>`). Capture is always on and read-only: it records what the page itself requested. Patchright only.
+
+### `thread.response_body(key) -> Any`
+
+Full body of one listed response: parsed JSON, or text. Raises `SurfAgentError` naming the reason when the body was not kept, and `not_found` when the key is gone.
+
 ### `thread.snapshot() -> Snapshot`
 
 Complete `Snapshot` with identity metadata and full `.text`; silent, without baseline changes. See [Snapshot output](#snapshot-output).
@@ -190,7 +198,7 @@ Closes remembered pages whose thread names match the glob.
 `SurfAgentError` signals Surf operational failures; invalid Python argument types/values can raise normal Python exceptions. Branch on `error.code` (an `ErrorCode`, or `None` when uncategorized), never on message text:
 
 - `stale_ref`: Ref is not in the current page. Take a new snapshot and use its refs.
-- `not_found`: Selector matches nothing. Snapshot and pick a real target.
+- `not_found`: Selector matches nothing, or a `response_body` key was cleared by `open()` or evicted. Snapshot and pick a real target, or list `responses()` again.
 - `not_visible`, `not_enabled`, `not_editable`: Element exists but cannot take the action. Reveal it, wait for it, or target the real control.
 - `intercepted`: Another element covers the target; the message names it (often a cookie banner or modal). Dismiss it first.
 - `action_timeout`: Element looked actionable but the action did not finish. Snapshot before retrying.

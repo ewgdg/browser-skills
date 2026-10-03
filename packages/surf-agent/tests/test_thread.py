@@ -615,3 +615,32 @@ def test_is_open_does_not_start_missing_local_bridge(monkeypatch: pytest.MonkeyP
     assert Thread("research").is_open() is False
     assert client.running_checks == 1
     assert client.started_calls == 0
+
+
+def test_responses_list_entries_and_response_body_refuses_omitted_bodies(monkeypatch: pytest.MonkeyPatch) -> None:
+    entry = {"key": "r1", "method": "GET", "status": 200, "url": "https://site.test/api", "content_type": "application/json", "size": 9}
+    replies = {
+        ("responses", None): {"responses": [{**entry, "shape": {"a": "int"}}]},
+        ("response-body", "r1"): {**entry, "body": {"a": 1}},
+        ("response-body", "r2"): {**entry, "key": "r2", "body_omitted": "too_large", "body": None},
+    }
+
+    class StubClient:
+        def call_tool(self, name: str, args: dict[str, object]) -> str:
+            return json.dumps(replies[name, args.get("key")]) + "\n"
+
+    class Agent:
+        thread = "research"
+
+    agent = Agent()
+    agent.stub_client = StubClient()
+    backend = LocalBridgeBackend(agent, client=agent.stub_client, welcome_url=lambda: "about:blank")
+    backend.client_attr = "stub_client"
+    agent.browser_backend = backend
+    monkeypatch.setattr("surf_agent.thread._create_agent", lambda _name: agent)
+    thread = Thread("research")
+
+    assert thread.responses() == [{**entry, "shape": {"a": "int"}}]
+    assert thread.response_body("r1") == {"a": 1}
+    with pytest.raises(SurfAgentError, match="r2.*too_large"):
+        thread.response_body("r2")

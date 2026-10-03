@@ -95,6 +95,8 @@ thread.emit(thread.snapshot())
 
 Confirm an action's effect with `wait(text)`, `wait(gone=...)` or `wait(url=...)` rather than a fixed sleep. Text conditions match the page's own text, where child elements can join without the space a snapshot name shows: for `option "Cloud Run run.googleapis.com"`, wait for `"Cloud Run"`, one child's text. Read one region by its snapshot ref, `thread.text("@e5")`, and the whole page with `thread.text()`; a CSS selector such as `"main"` matches HTML tags, which apps often replace with ARIA roles. When a call fails, branch on `error.code` ([codes](docs/python-api.md#errors)): `intercepted` names the covering element, `outcome_unknown` means the action may already have happened.
 
+When a feed, list, search result or dashboard loads its data from an API, read that data before scraping the page: `thread.responses()` lists what the page fetched since `open()` with a `shape` preview, and `thread.response_body(key)` returns one body as a Python value to filter in code. Load more by driving the page (scroll, next page, a filter) at its normal pace, then read the new entries. Capture is read-only: let the page make every request, because a request Surf sends itself lacks the page's signed headers and request pattern and exposes the bot. Server-rendered pages fetch nothing; read those with `text()` or snapshots.
+
 Actions and observations are silent; print only useful results. `snapshot().text` is complete. `emit(snapshot)` outputs a numbered observation with explicit BEGIN/END boundaries: full text first, then useful diffs; `emit(snapshot, full=True)` forces full output. Multiple emissions appear in order in the same script output, not separate agent turns. End the script when the next action requires a decision. Read [snapshot semantics](docs/python-api.md#snapshot-output) for the format, baselines or custom sinks.
 
 Pass a Python file or `-` for stdin; subsequent arguments reach `sys.argv`. For large text or JavaScript, read files in Python rather than nesting shell quoting:
@@ -122,6 +124,8 @@ thread.back() -> str
 thread.text(target=None) -> str
 thread.screenshot(path, *, full_page=False) -> str
 thread.evaluate(code) -> Any
+thread.responses() -> list[dict[str, Any]]  # API responses since open(): key, url, status, shape
+thread.response_body(key) -> Any  # parsed JSON or text
 thread.snapshot() -> Snapshot
 thread.emit(snapshot, *, full=False, sink=None) -> None
 thread.close() -> None

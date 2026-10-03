@@ -18,6 +18,7 @@ from ...constants import DEFAULT_PATCHRIGHT_APP_ID, DEFAULT_WAIT_TIMEOUT_MS, PAT
 from ...errors import ErrorCode
 from .constants import CONTEXT_RESTART_REQUIRED
 from .launch_args import STARTUP_PAGE_ARG, capture_default_args
+from .network_capture import NetworkCapture
 from ..bridge_common import (
     CLOSED_TARGET_MESSAGE,
     NATIVE_ARIA_REF_PATTERN,
@@ -73,6 +74,7 @@ class PatchrightRuntime:
         self.manager: Any | None = None
         self.browser_or_context: Any | None = None
         self.pages: dict[str, PageSlot] = {}
+        self.network = NetworkCapture()
         self._next_page_id = 1
         self._runner: asyncio.Runner | None = None
         self.shutdown_requested = False
@@ -165,6 +167,7 @@ class PatchrightRuntime:
                 args=[*chrome_args, *launch_args, NO_STARTUP_WINDOW_ARG],
             )
         )
+        self.network.attach(self.browser_or_context)
 
     async def _stop_async(self) -> str:
         if self.manager is not None:
@@ -175,6 +178,7 @@ class PatchrightRuntime:
         self.manager = None
         self.browser_or_context = None
         self.pages.clear()
+        self.network = NetworkCapture()
         self._cancel_shutdown_request()
         return "stopped\n"
 
@@ -246,6 +250,7 @@ class PatchrightRuntime:
                 return self._format_opened(slot.page)
 
             async def open_page(slot: PageSlot) -> str:
+                self.network.clear(slot.page)
                 await self._maybe_await(slot.page.goto(url, wait_until="domcontentloaded"))
                 return self._format_opened(slot.page)
 
@@ -335,6 +340,19 @@ class PatchrightRuntime:
         if name == "focus":
             await self._maybe_await(slot.page.bring_to_front())
             return "focused\n"
+        if name == "responses":
+            return json.dumps({"responses": await self.network.responses(slot.page)}, ensure_ascii=False) + "\n"
+        if name == "response-body":
+            key = str(args.get("key") or "")
+            try:
+                entry = await self.network.response(slot.page, key)
+            except KeyError:
+                raise BridgeCodedError(
+                    ErrorCode.NOT_FOUND, f"no captured response {key!r}; open() clears capture and old entries are evicted"
+                ) from None
+            detail = {**entry.summary(), "body": entry.body}
+            detail.pop("shape", None)
+            return json.dumps(detail, ensure_ascii=False) + "\n"
         raise RuntimeError(f"unsupported Patchright command: {name}")
 
     def after_response(self, name: str) -> None:

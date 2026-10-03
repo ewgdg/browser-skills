@@ -332,6 +332,19 @@ class LocalBridgeBackend:
         except json.JSONDecodeError as exc:
             raise SurfAgentError(f"{self.display_name} bridge returned invalid evaluation JSON") from exc
 
+    def responses(self) -> list[dict[str, Any]]:
+        return self._call_json("responses")["responses"]
+
+    def response_body(self, key: str) -> dict[str, Any]:
+        return self._call_json("response-body", {"key": key})
+
+    def _call_json(self, name: str, payload: dict[str, Any] | None = None) -> Any:
+        output = self._call(name, payload)
+        try:
+            return json.loads(output)
+        except json.JSONDecodeError as exc:
+            raise SurfAgentError(f"{self.display_name} bridge returned invalid {name} JSON") from exc
+
     def _call(self, name: str, payload: dict[str, Any] | None = None) -> str:
         return self.client.call_tool(name, self._thread_args(payload))
 
