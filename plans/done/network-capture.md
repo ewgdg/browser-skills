@@ -44,7 +44,7 @@ Feeds, lists and dashboards render from JSON the page already received. Reading 
 - [x] Step 2: `Thread.responses()` / `Thread.response_body(key)`; verified end to end through a real bridge process with an isolated `SURF_AGENT_HOME`.
 - [x] Step 3: unit tests with fake responses (filters, entry and byte caps, oversized body, stale-document drop; mutation-checked).
 - [x] Step 4: skill guidance, Python API reference, runtime note, README acceptance command.
-- [ ] Step 5
+- [x] Step 5: runtime commit `edd443f`, pinned in the next commit.
 
 ## Surprises & Discoveries
 
@@ -55,3 +55,9 @@ Feeds, lists and dashboards render from JSON the page already received. Reading 
 ## Decisions
 
 - See issue #24 for the capture-start, read-only and memory-only decisions.
+
+## Outcomes & Retrospective
+
+- Shipped as designed; the first-load question was settled by the red/green live test rather than a separate spike.
+- An independent review caught four defects the first green suite missed: listing before queued events were dispatched, an unbounded wait on streaming bodies, listener exceptions resurfacing on the next call, and unknown charsets. Each now has a regression test; the queued-event case needed a live test with an idle gap between calls.
+- Accepted: a navigating-away document can still log requests it starts after `open()` clears, until the new document commits.
