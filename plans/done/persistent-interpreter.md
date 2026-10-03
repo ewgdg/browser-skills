@@ -1,6 +1,6 @@
 # Persistent Python interpreter for Surf agent sessions
 
-Tracking issue: [#22](https://github.com/ewgdg/browser-skills/issues/22). Status: active; the execution seam, launcher path, guidance and acceptance test are in place. The retention benchmark rerun from the validation plan is not started. This plan is written for a fresh agent continuing the work with no prior conversation.
+Tracking issue: [#22](https://github.com/ewgdg/browser-skills/issues/22). Status: done; the execution seam, launcher path, guidance and acceptance test shipped. The retention benchmark rerun from the validation plan was dropped when the issue closed. This plan is written for a fresh agent continuing the work with no prior conversation.
 
 Session addressing and lifetime were replaced after this plan was written: sessions are now created explicitly and addressed by an id, with an idle timeout, `--kill-session` and `--list-sessions`. The plan `plans/active/explicit-sessions.md` records that design and its rationale; the bullets below that mention owner processes, session names, keys or a session log have been updated to current behaviour, and the runtime-evaluation numbers that mention owner-death reaping describe the mechanism of the time.
 
