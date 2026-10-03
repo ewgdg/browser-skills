@@ -45,7 +45,7 @@ Follow the [Google Search skill](skills/surf-google-search/SKILL.md) for retriev
 
 Surf uses a dedicated Chrome profile, separate from the user's main tabs. For manual login, extension setup, or existing Chrome cookie access, use the [Surf skill](skills/surf/SKILL.md) and [cookie setup](skills/surf/docs/cookie-import.md).
 
-Cookie import requires explicit scope consent and an inactive, verifiably owned destination. It refreshes changed sources before startup, not on a timer. Source Chrome may remain open. Same Chrome family, OS user, and encryption metadata are required. Imports upsert cookies without propagating source deletions; disabling imports does not remove already imported cookies.
+Cookie import requires explicit scope consent and an inactive, verifiably owned destination. It refreshes changed sources before startup, not on a timer. Source Chrome may remain open. Same Chrome family, OS user, and encryption metadata are required. Imports upsert unexpired cookies without propagating source deletions; disabling imports does not remove already imported cookies.
 
 To set up cookie import yourself, add `cookie_source` to Surf's `config.json` (`~/.config/surf-agent/` on Linux, `~/Library/Application Support/surf-agent/` on macOS):
 

@@ -8,6 +8,7 @@ import sqlite3
 import stat
 import sys
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -20,6 +21,8 @@ DESTINATION_PROFILE = "Default"
 _COOKIE_CANDIDATES = (Path("Cookies"), Path("Network") / "Cookies")
 _SIDECARS = ("-wal", "-journal", "-shm")
 UNSUPPORTED_PLATFORM_MESSAGE = "live cookie import is supported only on Linux and macOS"
+# Chrome stores cookie times as microseconds since 1601-01-01 UTC.
+_CHROME_EPOCH_OFFSET_S = 11_644_473_600
 
 
 def supports_live_cookie_import(platform_name: str = sys.platform) -> bool:
@@ -291,9 +294,10 @@ class CookieImporter:
             try:
                 columns = cookie_columns_connection(connection)
                 usable_unique_index_connection(connection, columns)
-                if "host_key" not in columns:
-                    raise SurfAgentError("cookie schema does not contain host_key")
-                rows_to_remove = [row[0] for row in connection.execute("SELECT rowid, host_key FROM cookies") if not scope_matches(str(row[1] or ""), self.config)]
+                if "host_key" not in columns or "expires_utc" not in columns:
+                    raise SurfAgentError("cookie schema does not contain host_key and expires_utc")
+                now = chrome_time_now()
+                rows_to_remove = [row[0] for row in connection.execute("SELECT rowid, host_key, expires_utc FROM cookies") if not should_import(row[1], row[2], self.config, now)]
                 connection.execute("BEGIN IMMEDIATE")
                 try:
                     connection.executemany("DELETE FROM cookies WHERE rowid=?", ((rowid,) for rowid in rows_to_remove))
@@ -485,10 +489,14 @@ def usable_unique_index_connection(connection: sqlite3.Connection, columns: tupl
 def iter_scoped_rows(path: Path, columns: tuple[str, ...], config: CookieSourceConfig) -> Iterable[tuple[Any, ...]]:
     connection = sqlite3.connect(f"file:{quote(str(path))}?mode=ro", uri=True)
     try:
+        if "expires_utc" not in columns:
+            raise SurfAgentError("cookie schema does not contain expires_utc")
         host_index = columns.index("host_key")
+        expires_index = columns.index("expires_utc")
+        now = chrome_time_now()
         query = f"SELECT {', '.join(identifier(column) for column in columns)} FROM cookies"
         for row in connection.execute(query):
-            if scope_matches(str(row[host_index] or ""), config):
+            if should_import(row[host_index], row[expires_index], config, now):
                 yield tuple(row)
     except sqlite3.Error as exc:
         raise SurfAgentError("could not read staged cookie rows") from exc
@@ -499,6 +507,17 @@ def iter_scoped_rows(path: Path, columns: tuple[str, ...], config: CookieSourceC
 def count_scoped_rows(path: Path, config: CookieSourceConfig) -> int:
     columns = cookie_columns(path)
     return sum(1 for _ in iter_scoped_rows(path, columns, config))
+
+
+def chrome_time_now() -> int:
+    return (int(time.time()) + _CHROME_EPOCH_OFFSET_S) * 1_000_000
+
+
+def should_import(host_key: Any, expires_utc: Any, config: CookieSourceConfig, now: int) -> bool:
+    # An expired source row would otherwise overwrite a still-valid Surf cookie
+    # with the same identity. Zero is a session cookie, which never expires.
+    expired = bool(expires_utc) and int(expires_utc) <= now
+    return scope_matches(str(host_key or ""), config) and not expired
 
 
 def scope_matches(host_key: str, config: CookieSourceConfig) -> bool:

@@ -6,7 +6,7 @@ Read this for initial setup, missing login state, or cookie-import startup failu
 
 Live cookie import runs on Linux and macOS, is opt-in, and limited to explicitly allowed domains unless the user deliberately consents to all-domain exposure. Do not set, broaden, or reset access without user intent.
 
-Before starting an inactive dedicated profile, Surf imports configured cookies only when the source fingerprint changed. There is no timed refresh. Imports upsert matching identities; destination-only cookies survive. Logging out in source Chrome therefore does not delete the corresponding Surf cookie, but same-named cookies a logged-out source still holds overwrite Surf's and can break a login made in Surf. Use one login source per site: a site the user logs in to inside Surf stays out of the import scope.
+Before starting an inactive dedicated profile, Surf imports configured cookies only when the source fingerprint changed. There is no timed refresh. Imports upsert matching identities and skip source cookies that have already expired; destination-only cookies survive. Logging out in source Chrome therefore does not delete the corresponding Surf cookie, but same-named cookies a logged-out source still holds overwrite Surf's and can break a login made in Surf. Use one login source per site: a site the user logs in to inside Surf stays out of the import scope.
 
 Inspect configuration without exposing cookie values:
 

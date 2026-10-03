@@ -15,6 +15,10 @@ from surf_agent.errors import SurfAgentError
 
 COLUMNS = "host_key TEXT NOT NULL, name TEXT NOT NULL, value TEXT, encrypted_value BLOB, path TEXT NOT NULL, expires_utc INTEGER, is_secure INTEGER, top_frame_site_key TEXT NOT NULL DEFAULT '', source_scheme INTEGER NOT NULL DEFAULT 0"
 UNIQUE = "CREATE UNIQUE INDEX cookies_unique ON cookies(host_key, name, path, top_frame_site_key, source_scheme)"
+# Chrome stores expiry as microseconds since 1601-01-01 UTC; 0 marks a session cookie.
+FUTURE_EXPIRY = (4_102_444_800 + 11_644_473_600) * 1_000_000  # 2100-01-01
+PAST_EXPIRY = (946_684_800 + 11_644_473_600) * 1_000_000  # 2000-01-01
+SESSION_EXPIRY = 0
 
 
 def make_profile(root: Path, *, network: bool = False) -> Path:
@@ -31,11 +35,11 @@ def make_profile(root: Path, *, network: bool = False) -> Path:
     return db
 
 
-def put(db: Path, host: str, name: str, value: str, *, partition: str = "") -> None:
+def put(db: Path, host: str, name: str, value: str, *, partition: str = "", expires_utc: int = FUTURE_EXPIRY) -> None:
     connection = sqlite3.connect(db)
     connection.execute(
         "INSERT INTO cookies(host_key,name,value,encrypted_value,path,expires_utc,is_secure,top_frame_site_key,source_scheme) VALUES(?,?,?,?,?,?,?,?,?)",
-        (host, name, value, value.encode(), "/", 10, 1, partition, 0),
+        (host, name, value, value.encode(), "/", expires_utc, 1, partition, 0),
     )
     connection.commit()
     connection.close()
@@ -59,7 +63,7 @@ def test_online_backup_reads_committed_live_wal_source_and_merges_scoped_rows(tm
     source = make_profile(source_root)
     live = sqlite3.connect(source)
     live.execute("PRAGMA journal_mode=WAL")
-    live.execute("INSERT INTO cookies(host_key,name,value,encrypted_value,path,expires_utc,is_secure,top_frame_site_key,source_scheme) VALUES(?,?,?,?,?,?,?,?,?)", (".example.com", "session", "secret-source", b"secret-source", "/", 10, 1, "", 0))
+    live.execute("INSERT INTO cookies(host_key,name,value,encrypted_value,path,expires_utc,is_secure,top_frame_site_key,source_scheme) VALUES(?,?,?,?,?,?,?,?,?)", (".example.com", "session", "secret-source", b"secret-source", "/", FUTURE_EXPIRY, 1, "", 0))
     live.commit()
     destination = tmp_path / "destination"
     result = importer(tmp_path, source_root, destination).run(force=True)
@@ -93,6 +97,28 @@ def test_upsert_preserves_destination_only_rows_and_partition_columns(tmp_path: 
     importer(tmp_path, source_root, destination).run(force=True)
 
     assert rows(dest) == [(".example.com", "same", "new", "https://top.example"), (".other.test", "keep", "destination", "")]
+
+
+@pytest.mark.parametrize("destination_exists", [False, True])
+def test_expired_source_cookies_are_not_imported(tmp_path: Path, destination_exists: bool) -> None:
+    source_root = tmp_path / "google-chrome"
+    source = make_profile(source_root)
+    put(source, ".example.com", "expired", "stale", expires_utc=PAST_EXPIRY)
+    put(source, ".example.com", "persistent", "fresh")
+    put(source, ".example.com", "session", "fresh", expires_utc=SESSION_EXPIRY)
+    destination = tmp_path / "destination"
+    if destination_exists:
+        put(make_profile(destination), ".example.com", "expired", "still-valid")
+
+    result = importer(tmp_path, source_root, destination).run(force=True)
+
+    assert result.imported_rows == 2
+    surviving_expired = [(".example.com", "expired", "still-valid", "")] if destination_exists else []
+    assert rows(destination / "Default" / "Cookies") == [
+        *surviving_expired,
+        (".example.com", "persistent", "fresh", ""),
+        (".example.com", "session", "fresh", ""),
+    ]
 
 
 def test_all_domains_is_still_upsert_only(tmp_path: Path) -> None:
