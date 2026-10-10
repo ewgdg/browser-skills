@@ -52,7 +52,7 @@ def dependency_requirement(
     revision = RUNTIME_PIN.read_text().strip()
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         print(
-            "This Surf skill has a missing or invalid runtime pin, so it is not "
+            "This browser skill has a missing or invalid runtime pin, so it is not "
             "correctly installed; update or reinstall it. For local development, "
             f"set {override_variable} to an absolute built-wheel path.",
             file=sys.stderr,

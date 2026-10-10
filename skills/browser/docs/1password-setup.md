@@ -13,7 +13,7 @@ Chrome native messaging lookup follows `--user-data-dir`. The dedicated Surf pro
 Use the [skill launcher](../SKILL.md) to resolve the actual profile:
 
 ```bash
-PROFILE_DIR=$(python3 "$SURF_SKILL/scripts/run.py" - <<'PY'
+PROFILE_DIR=$(python3 "$BROWSER_SKILL/scripts/run.py" - <<'PY'
 from surf_agent import Browser
 print(Browser().profile().profile_dir)
 PY

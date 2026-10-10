@@ -1,6 +1,6 @@
 """Opt-in acceptance test against a copied skill and built/released dependency.
 
-Set SURF_INSTALLED_SKILL to the installed surf directory and
+Set BROWSER_INSTALLED_SKILL to the installed browser skill directory and
 SURF_AGENT_DEPENDENCY to its validation wheel requirement (omit for release).
 Requires Chrome and a graphical session; never uses a user's Surf profile.
 """
@@ -22,9 +22,9 @@ import psutil
 import pytest
 
 
-@pytest.mark.skipif(not os.environ.get("SURF_INSTALLED_SKILL"), reason="installed skill acceptance is opt-in")
+@pytest.mark.skipif(not os.environ.get("BROWSER_INSTALLED_SKILL"), reason="installed skill acceptance is opt-in")
 def test_installed_skill_across_fresh_invocations(tmp_path, short_tmp_path):
-    skill = Path(os.environ["SURF_INSTALLED_SKILL"]).resolve()
+    skill = Path(os.environ["BROWSER_INSTALLED_SKILL"]).resolve()
     launcher = skill / "scripts" / "run.py"
     checkout = Path(__file__).resolve().parents[1]
     assert not skill.is_relative_to(checkout), "validate a copied installation, not the checkout"

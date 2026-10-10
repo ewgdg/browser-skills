@@ -18,7 +18,7 @@ def install_skills(destination: Path, *names: str) -> Path:
     for name in names:
         shutil.copytree(ROOT / "skills" / name, destination / name,
                         ignore=shutil.ignore_patterns(".*", "__pycache__"))
-    return destination / "surf-google-search/scripts/run.py"
+    return destination / "google-search/scripts/run.py"
 
 
 def environment_without_overrides() -> dict[str, str]:
@@ -28,22 +28,22 @@ def environment_without_overrides() -> dict[str, str]:
     return env
 
 
-def test_requires_the_sibling_surf_skill(tmp_path):
-    launcher = install_skills(tmp_path / "skills", "surf-google-search")
+def test_requires_the_sibling_browser_skill(tmp_path):
+    launcher = install_skills(tmp_path / "skills", "google-search")
     result = subprocess.run(
         [sys.executable, str(launcher), "query"],
         text=True, capture_output=True, cwd=tmp_path,
         env=environment_without_overrides(), timeout=10,
     )
     assert result.returncode == 2
-    assert "Surf skill" in result.stderr
+    assert "browser skill" in result.stderr
     assert result.stdout == ""
 
 
 def test_shares_the_surf_runtime_pin(tmp_path):
     skills = tmp_path / "skills"
-    launcher = install_skills(skills, "surf", "surf-google-search")
-    (skills / "surf/runtime-revision").write_text("not-a-commit\n")
+    launcher = install_skills(skills, "browser", "google-search")
+    (skills / "browser/runtime-revision").write_text("not-a-commit\n")
     result = subprocess.run(
         [sys.executable, str(launcher), "query"],
         text=True, capture_output=True, cwd=tmp_path,
@@ -69,7 +69,7 @@ def local_wheels(tmp_path_factory):
 
 
 def test_routes_arguments_to_the_installed_cli(tmp_path, local_wheels):
-    launcher = install_skills(tmp_path / "skills", "surf", "surf-google-search")
+    launcher = install_skills(tmp_path / "skills", "browser", "google-search")
     working = tmp_path / "unrelated project"
     working.mkdir()
     # Neither the caller's project config nor a same-named module in its working

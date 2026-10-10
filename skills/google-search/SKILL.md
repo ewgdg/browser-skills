@@ -1,13 +1,13 @@
 ---
-name: surf-google-search
+name: google-search
 description: Search the web through rendered Google Search and return compact structured organic results. Use for web search, explicit Google requests, and tasks where live Google ranking or rendered results matter.
 ---
 
-# surf-google-search
+# Google Search
 
 Search through `scripts/run.py`, then use the results for the requested research. Follow this workflow; open linked `docs/` only when the stated task or problem applies.
 
-Set `GOOGLE_SEARCH_SKILL` to the absolute directory containing this installed `SKILL.md`. The launcher installs the runtime pinned by the Surf skill installed beside it; for launcher or dependency failures, read [setup](docs/cli.md#setup). For browser startup problems, read [Surf browser runtime](../surf/docs/patchright-backend.md).
+Set `GOOGLE_SEARCH_SKILL` to the absolute directory containing this installed `SKILL.md`. The launcher installs the runtime pinned by the browser skill installed beside it; for launcher or dependency failures, read [setup](docs/cli.md#setup). For browser startup problems, read [Surf browser runtime](../browser/docs/patchright-backend.md).
 
 ## Search
 
@@ -33,4 +33,4 @@ python3 "$GOOGLE_SEARCH_SKILL/scripts/run.py" --thread '<thread>' "same query"
 
 Report affirmed zero results as a valid result. Treat `ui_changed` as a compatibility failure, not an empty result set or permission to substitute another provider. For other errors, report the returned type and hint; do not present failed retrieval as a completed search.
 
-Each search cleans up its ordinary threads automatically. A challenge thread remains open for the human handoff; when abandoning it, use [Surf cleanup](../surf/SKILL.md#cleanup) for that thread only.
+Each search cleans up its ordinary threads automatically. A challenge thread remains open for the human handoff; when abandoning it, use [browser skill cleanup](../browser/SKILL.md#cleanup) for that thread only.

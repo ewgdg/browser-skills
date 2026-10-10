@@ -9,9 +9,9 @@ import subprocess
 import pytest
 
 
-def test_shipped_surf_skill_has_an_immutable_runtime_pin():
+def test_shipped_browser_skill_has_an_immutable_runtime_pin():
     root = Path(__file__).resolve().parents[1]
-    revision = (root / "skills/surf/runtime-revision").read_text().strip()
+    revision = (root / "skills/browser/runtime-revision").read_text().strip()
     assert re.fullmatch(r"[0-9a-f]{40}", revision), (
         "Publish the tested runtime and pin its full commit before distributing the skill"
     )
@@ -34,9 +34,9 @@ def test_skill_distribution_contains_executable_payload():
         for path in root.glob(pattern)
     }
     assert documents | {
-        "skills/surf/scripts/run.py",
-        "skills/surf/runtime-revision",
-        "skills/surf-google-search/scripts/run.py",
+        "skills/browser/scripts/run.py",
+        "skills/browser/runtime-revision",
+        "skills/google-search/scripts/run.py",
     } <= paths
     assert not any(path.startswith("packages/") for path in paths), "the skill installs its runtime, not bundled source"
 

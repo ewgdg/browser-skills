@@ -1,24 +1,26 @@
 ---
-name: surf
-description: "Operate websites in a real browser for the user: act on a site (their account, a dashboard, a form, a support ticket), get past a login, read JavaScript-rendered pages, or test, screenshot and debug pages. Prefer direct APIs, CLIs and fetch tools when they reach the same result in fewer calls and tokens; switch here when they cannot, or when a fetch result is summarized unasked or otherwise lower fidelity than the task needs."
+name: browser
+description: "Drive a real Chrome browser: open any URL, local file or dev server; click, type and press keys; screenshot; read the rendered page; log in and act in the user's accounts. Use for JavaScript-rendered pages, testing and debugging UI, screenshots of pages you build, and whenever a fetch result comes back summarized or lower fidelity than the task needs."
 ---
 
-# Surf
+# Browser
 
-Follow the workflow below; open linked `docs/` only when the stated task or problem applies.
+Follow the workflow below; open linked `docs/` only when the stated task or problem applies. The skill drives Chrome through the Surf runtime (`surf_agent`).
+
+For static content a plain fetch already returns in full, or an API the task can call directly, fetch is cheaper; use the browser for everything that needs a rendered page or interaction.
 
 Run Python through `scripts/run.py`. Named browser threads persist between calls; Python variables, handles and their emission baselines live with the interpreter that ran the code.
 
 ## Prepare
 
-Set `SURF_SKILL` to the absolute directory containing this installed `SKILL.md`, not the working directory. Runs on Linux and macOS; Windows is unsupported. Requires Python 3, `uv`, and Google Chrome; the launcher manages Python dependencies.
+Set `BROWSER_SKILL` to the absolute directory containing this installed `SKILL.md`, not the working directory. Runs on Linux and macOS; Windows is unsupported. Requires Python 3, `uv`, and Google Chrome; the launcher manages Python dependencies.
 
 The launcher installs the runtime pinned by this skill. If it reports a missing or invalid pin, the skill is incorrectly installed; report that instead of working around it. For dependency failures, read [launcher setup](docs/launcher.md).
 
 Run setup once, or after installation changes:
 
 ```bash
-python3 "$SURF_SKILL/scripts/run.py" - <<'PY'
+python3 "$BROWSER_SKILL/scripts/run.py" - <<'PY'
 from surf_agent import Browser
 
 browser = Browser()
@@ -39,7 +41,7 @@ Choose one mode per task:
 A session is one Python process kept alive between calls, as in a notebook: each call is a cell. The first cell imports, binds `thread = Thread(name)` and opens the page; every later cell calls the bound `thread` and earlier helpers directly, with no import line. Create the session once and keep its id: `--new-session` prints it as the first stdout output of that call.
 
 ```bash
-python3 "$SURF_SKILL/scripts/run.py" --new-session --name research - <<'PY'
+python3 "$BROWSER_SKILL/scripts/run.py" --new-session --name research - <<'PY'
 from surf_agent import Thread
 
 thread = Thread("research")
@@ -51,7 +53,7 @@ PY
 ```
 
 ```bash
-python3 "$SURF_SKILL/scripts/run.py" --session research-1f3a9c02 - <<'PY'
+python3 "$BROWSER_SKILL/scripts/run.py" --session research-1f3a9c02 - <<'PY'
 thread.click("@e6")  # ref from the snapshot above; `thread` is still bound
 thread.emit(thread.snapshot())  # a diff against the observation above
 PY
@@ -102,7 +104,7 @@ Actions and observations are silent; print only useful results. `snapshot().text
 Pass a Python file or `-` for stdin; subsequent arguments reach `sys.argv`. For large text or JavaScript, read files in Python rather than nesting shell quoting:
 
 ```bash
-python3 "$SURF_SKILL/scripts/run.py" /tmp/surf-step.py /tmp/body.txt /tmp/inspect.js
+python3 "$BROWSER_SKILL/scripts/run.py" /tmp/surf-step.py /tmp/body.txt /tmp/inspect.js
 ```
 
 ### Thread API
@@ -133,7 +135,7 @@ thread.close() -> None
 thread.focus() -> None
 ```
 
-For one method's contract, `Browser` administration and error codes, grep [Python API](docs/python-api.md): each method is a heading holding its signature, such as `grep -n -A3 '^### .*wait(' "$SURF_SKILL/docs/python-api.md"`.
+For one method's contract, `Browser` administration and error codes, grep [Python API](docs/python-api.md): each method is a heading holding its signature, such as `grep -n -A3 '^### .*wait(' "$BROWSER_SKILL/docs/python-api.md"`.
 
 ## Login and human unblock
 
