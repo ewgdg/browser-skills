@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # macOS support (issue #23)
 
 ## Goal

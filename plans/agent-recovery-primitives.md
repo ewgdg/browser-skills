@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Agent recovery primitives: error codes, conditional wait, scoped text
 
 ## Goal

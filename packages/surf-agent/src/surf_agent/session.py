@@ -9,7 +9,7 @@ The worker is a detached process: it never inherits the caller's stdout pipe.
 Its own fd 1 and 2 start on a pipe the launcher reads only when startup fails,
 then point at /dev/null, and cell output travels back over the control socket.
 
-See `plans/active/explicit-sessions.md` for the settled contracts.
+See `plans/explicit-sessions.md` for the settled contracts.
 """
 
 from __future__ import annotations

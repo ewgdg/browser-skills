@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Windowless Patchright launch
 
 ## Goal

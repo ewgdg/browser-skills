@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Issue 12: Patchright default and explicit AXI
 
 ## Goal

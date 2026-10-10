@@ -4,7 +4,7 @@ status: accepted
 
 # Keep sessions behind the CLI, not a local MCP server
 
-Sessions end on an idle timeout because nothing tells the worker that the task using it has ended (`plans/active/explicit-sessions.md`). A local MCP server was proposed as that signal and as a place to keep state. It is neither: MCP is a message protocol with no persistence or conversation lifecycle, so it would add a second front end and leave the timeout in place.
+Sessions end on an idle timeout because nothing tells the worker that the task using it has ended (`plans/explicit-sessions.md`). A local MCP server was proposed as that signal and as a place to keep state. It is neither: MCP is a message protocol with no persistence or conversation lifecycle, so it would add a second front end and leave the timeout in place.
 
 ## Considered options
 
@@ -20,4 +20,4 @@ Sessions end on an idle timeout because nothing tells the worker that the task u
 
 ## Consequences
 
-Sessions stay behind `run.py`. The idle timeout (`--ttl`) bounds how long an interpreter can outlive its task, and `--kill-session` ends one explicitly. State that must survive the interpreter belongs on disk, through the deferred checkpoint design in `plans/active/explicit-sessions.md`. Revisit if MCP gains a conversation-end notification that clients implement, since that would give a harness-agnostic end signal.
+Sessions stay behind `run.py`. The idle timeout (`--ttl`) bounds how long an interpreter can outlive its task, and `--kill-session` ends one explicitly. State that must survive the interpreter belongs on disk, through the deferred checkpoint design in `plans/explicit-sessions.md`. Revisit if MCP gains a conversation-end notification that clients implement, since that would give a harness-agnostic end signal.

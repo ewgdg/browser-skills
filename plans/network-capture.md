@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Capture page API responses (issue #24)
 
 ## Goal

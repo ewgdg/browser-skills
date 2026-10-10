@@ -1,8 +1,12 @@
+---
+status: done
+---
+
 # Persistent Python interpreter for Surf agent sessions
 
 Tracking issue: [#22](https://github.com/ewgdg/browser-skills/issues/22). Status: done; the execution seam, launcher path, guidance and acceptance test shipped. The retention benchmark rerun from the validation plan was dropped when the issue closed. This plan is written for a fresh agent continuing the work with no prior conversation.
 
-Session addressing and lifetime were replaced after this plan was written: sessions are now created explicitly and addressed by an id, with an idle timeout, `--kill-session` and `--list-sessions`. The plan `plans/active/explicit-sessions.md` records that design and its rationale; the bullets below that mention owner processes, session names, keys or a session log have been updated to current behaviour, and the runtime-evaluation numbers that mention owner-death reaping describe the mechanism of the time.
+Session addressing and lifetime were replaced after this plan was written: sessions are now created explicitly and addressed by an id, with an idle timeout, `--kill-session` and `--list-sessions`. The plan `plans/explicit-sessions.md` records that design and its rationale; the bullets below that mention owner processes, session names, keys or a session log have been updated to current behaviour, and the runtime-evaluation numbers that mention owner-death reaping describe the mechanism of the time.
 
 ## Goal
 
@@ -88,7 +92,7 @@ Rules:
 
 The seam lives in `packages/surf-agent/src/surf_agent/session.py` (worker plus client protocol); the agent-facing path is `skills/surf/scripts/run.py`.
 
-- **Session addressing belongs to `plans/active/explicit-sessions.md`.** The launcher owns the command-line grammar and hands the runtime one JSON request; session cells always come from stdin, exactly like `run.py -`, and a file argument is rejected because it would silently change `__file__`, `sys.path[0]` and relative imports.
+- **Session addressing belongs to `plans/explicit-sessions.md`.** The launcher owns the command-line grammar and hands the runtime one JSON request; session cells always come from stdin, exactly like `run.py -`, and a file argument is rejected because it would silently change `__file__`, `sys.path[0]` and relative imports.
 - **Deadline enforcement is in the interpreter, not only the caller.** The worker starts a timer for the cell it is running and exits when it fires, so an interrupted or killed caller cannot leave a session stuck busy. The caller waits for the reply with a grace period and kills the recorded pid as a backstop when native code blocks the worker's own timer; when this host cannot confirm that the pid still owns the socket, nothing is signalled and the call reports an interpreter that was not stopped rather than claiming a replacement. Both paths report the same replacement contract.
 - **Framing goes to stderr; cell bytes go to stdout/stderr.** A cell's `print()`/`emit()` output is relayed verbatim on stdout, its traceback on stderr, and launcher frames (identity, cell counter, created-vs-attached, replacement) on stderr, so stdout stays ordinary script output.
 - **Cell output is captured per cell and relayed as bytes.** Python-level `sys.stdout`/`sys.stderr` are proxied through a byte buffer so binary writes survive; output is delivered only with the completed reply, so a cell that dies mid-execution prints nothing, as the replay contract requires.
@@ -99,7 +103,7 @@ Design reference, not an implementation dependency: installed Codex bundle `26.9
 
 ## Evidence from the first benchmark
 
-`docs/benchmarks/code-mode-pilot.md`, protocol in `plans/done/code-mode-benchmark.md`.
+`docs/benchmarks/code-mode-pilot.md`, protocol in `plans/code-mode-benchmark.md`.
 
 - Fresh Python 356,608 cumulative tokens; persistent Python 384,108 (+7.7%); CLI 655,546.
 - The extra cost was **workflow**, not persistence overhead: 21 vs 17 model calls, four extra submission/pagination calls, one extra cleanup call, one fewer lookup call. Tool-result text was actually smaller for persistent.

@@ -1,10 +1,14 @@
+---
+status: done
+---
+
 # Explicit sessions: create, reuse, expire
 
 Tracking issue: [#22](https://github.com/ewgdg/browser-skills/issues/22), still open.
 
 Status: active and released: implemented in the runtime and the launcher, pinned at `a81b446` and pushed, with the test suites passing and the pinned revision validated without a dependency override.
 
-Supersedes every earlier revision of this plan and the keying recommendation in `plans/proposed/session-identity.md`, which stays for its identity analysis only. Shape: sessions are created explicitly, addressed by an id the launcher prints, and die on an idle timeout or an explicit kill.
+Supersedes every earlier revision of this plan and the keying recommendation in `plans/session-identity.md`, which stays for its identity analysis only. Shape: sessions are created explicitly, addressed by an id the launcher prints, and die on an idle timeout or an explicit kill.
 
 ## Goal
 
@@ -117,7 +121,7 @@ If TTL expiry or a lost id is observed to cost real re-derivation in practice, t
 - [x] CLI: create, reuse, kill, list, TTL (`packages/surf-agent/src/surf_agent/session.py`, `skills/surf/scripts/run.py`).
 - [x] Ownership machinery deleted: ancestry walk, owner reference, harness identity, session key, log file and lock file.
 - [x] Tests: `packages/surf-agent/tests/test_session.py` (36 tests) and `tests/test_skill_launcher.py`; full suite 293 passed, 4 skipped.
-- [x] Docs updated: `skills/surf/SKILL.md`, `skills/surf/docs/launcher.md`, `README.md`, and the session-addressing bullets in `plans/done/persistent-interpreter.md`.
+- [x] Docs updated: `skills/surf/SKILL.md`, `skills/surf/docs/launcher.md`, `README.md`, and the session-addressing bullets in `plans/persistent-interpreter.md`.
 - [x] Runtime pin updated to `a81b446` and pushed (`a8d47f0`); a copied install resolved the pinned revision and ran `--new-session` with no dependency override.
 - [x] Wedged-interpreter recovery: attach refuses a silent interpreter, `--kill-session` kills it, `--list-sessions` lists it as unresponsive and keeps its socket, and the process table is read through `ps` where `/proc` is absent.
 - [x] Socket ownership instead of command-line matching: the process that may be signalled is the one holding the session's socket open, with the command-line scan kept only for a host without `/proc`.

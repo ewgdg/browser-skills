@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Delegate native ARIA refs
 
 ## Goal

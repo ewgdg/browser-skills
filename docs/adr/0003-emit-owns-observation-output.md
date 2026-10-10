@@ -14,7 +14,7 @@ status: accepted
 
 **Remove `emit()` and print values instead (`print(snap)`, `print(snap2.diff(snap1))`).** Rejected: the diff-versus-full decision needs both snapshot texts and four rules that live in `packages/surf-agent/src/surf_agent/constants.py` — ratio at most `SNAPSHOT_DIFF_MAX_RATIO` (0.50), savings of at least `SNAPSHOT_DIFF_MIN_SAVED_CHARS` (250), at most `SNAPSHOT_DIFF_MAX_HUNKS` (8) hunks, and full output whenever page id or origin changes. A call site has neither snapshot in hand, so it either diffs blind — producing a full diff across a navigation, the largest possible output — or reads both snapshots to decide, which is the cost the gate exists to avoid. It also needs `__str__` or an explicit `.text` on `Snapshot` and hand-written boundaries, and it loses the observation number, which is how a diff names its base across cells and how `full=True` re-anchors after interpreter replacement. Today `print(snap)` emits the dataclass repr.
 
-**REPL echo** is a separate decision, already rejected in `plans/done/persistent-interpreter.md`; this ADR does not reopen it.
+**REPL echo** is a separate decision, already rejected in `plans/persistent-interpreter.md`; this ADR does not reopen it.
 
 ## Consequences
 

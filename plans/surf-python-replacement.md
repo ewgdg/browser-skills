@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Surf Python replacement
 
 Tracking issue: [#21 — Replace Surf command CLI with a Python-first skill and Thread handles](https://github.com/ewgdg/browser-skills/issues/21). Installation, skill migration, CLI removal and the published pinned runtime are verified.

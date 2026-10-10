@@ -8,7 +8,7 @@ status: accepted
 
 ## Considered options
 
-**Bare `FILE` as the cell source.** Rejected: a cell is `exec`'d, not run as a script, so the same token would silently change `__file__`, `sys.path[0]` and relative imports — the reason recorded when sessions were built (`plans/done/persistent-interpreter.md`). Reading a path as a cell is only honest once the caller states that it is one.
+**Bare `FILE` as the cell source.** Rejected: a cell is `exec`'d, not run as a script, so the same token would silently change `__file__`, `sys.path[0]` and relative imports — the reason recorded when sessions were built (`plans/persistent-interpreter.md`). Reading a path as a cell is only honest once the caller states that it is one.
 
 **A `--file PATH` option.** Deferred, not rejected: it names the intent, so no token changes meaning, and it removes the dead end entirely. Deferred because the friction it removes measured one refusal in 112 session cells over 45 days of pi transcripts, with no organic use of the redirect in that window, and it pays for that with a second source form and a divergence from script semantics that must be documented where it is used.
 

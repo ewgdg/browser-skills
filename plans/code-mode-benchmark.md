@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Three-mode Surf benchmark
 
 ## Goal and intention

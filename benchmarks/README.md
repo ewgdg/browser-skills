@@ -102,7 +102,7 @@ uv run python benchmarks/analyze.py --pretty evaluate /path/to/manifest.json
 
 The manifest has a `modes` array. Each record supplies `name`, `transcript`, `expectedStageCount: 4`, `correctness` (five booleans), `recovery` (three booleans), and `simplicity` (CLI 5, fresh Python 4, persistent Python 2). Transcript stage count is measured automatically; missing expected count is not assumed complete. Alternatively supply sanitized `usage`, `activeElapsedSeconds`, and `stageCount` instead of `transcript`.
 
-Weights, gates and limitations are frozen in `plans/done/code-mode-benchmark.md`. Results and interpretation are in `docs/benchmarks/code-mode-pilot.md`. Scores are descriptive pilot results, not proof of architectural superiority. An efficiency score does not override failed correctness or recovery.
+Weights, gates and limitations are frozen in `plans/code-mode-benchmark.md`. Results and interpretation are in `docs/benchmarks/code-mode-pilot.md`. Scores are descriptive pilot results, not proof of architectural superiority. An efficiency score does not override failed correctness or recovery.
 
 ## Verification
 

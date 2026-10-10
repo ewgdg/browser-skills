@@ -126,7 +126,7 @@ Keep the tested Python seam and benchmark worker separate. Before implementing p
 
 - Runner instructions: `benchmarks/README.md`.
 - Exact task turns: `benchmarks/tasks.md`.
-- Frozen weights/protocol and retrospective: `plans/done/code-mode-benchmark.md`.
+- Frozen weights/protocol and retrospective: `plans/code-mode-benchmark.md`.
 - Evidence directory: `~/.agents/artifacts/outputs/browser-skills/2026-09-16/code-mode-benchmark/`.
 - Evidence includes `environment.json`, `manifest.json`, `matrix.json`, per-mode sanitized usage/actions, independent oracle/page/cleanup observations, and `recovery-observations.json`. Original transcripts remain private at the paths recorded by the manifest; no encrypted reasoning was copied.
 - Validation: `uv run pytest benchmarks -q` — **12 passed**; `uv run ruff check benchmarks` and `git diff --check` passed. Production code was unchanged.
