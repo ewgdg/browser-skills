@@ -1,9 +1,9 @@
 ---
-name: surf-google-search
+name: google-search
 description: Search the web through rendered Google Search and return compact structured organic results. Use for web search, explicit Google requests, and tasks where live Google ranking or rendered results matter.
 ---
 
-# surf-google-search
+# Google Search
 
 Search through `scripts/run.py`, then use the results for the requested research. Follow this workflow; open linked `docs/` only when the stated task or problem applies.
 

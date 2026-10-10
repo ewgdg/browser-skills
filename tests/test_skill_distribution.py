@@ -36,7 +36,7 @@ def test_skill_distribution_contains_executable_payload():
     assert documents | {
         "skills/browser/scripts/run.py",
         "skills/browser/runtime-revision",
-        "skills/surf-google-search/scripts/run.py",
+        "skills/google-search/scripts/run.py",
     } <= paths
     assert not any(path.startswith("packages/") for path in paths), "the skill installs its runtime, not bundled source"
 

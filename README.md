@@ -3,7 +3,7 @@
 Pi package for agent browser automation:
 
 - `browser`: Python browser control through an agent-owned page/window.
-- `surf-google-search`: compact structured results from rendered Google Search.
+- `google-search`: compact structured results from rendered Google Search.
 
 ## Install skills
 
@@ -33,13 +33,13 @@ PY
 
 ## Google Search CLI
 
-Google Search runs through `skills/surf-google-search/scripts/run.py`, which installs its package at the browser skill's `runtime-revision`; install both skills together. See [setup](skills/surf-google-search/docs/cli.md#setup).
+Google Search runs through `skills/google-search/scripts/run.py`, which installs its package at the browser skill's `runtime-revision`; install both skills together. See [setup](skills/google-search/docs/cli.md#setup).
 
 ```bash
 python3 "$GOOGLE_SEARCH_SKILL/scripts/run.py" "latest Patchright documentation"
 ```
 
-Follow the [Google Search skill](skills/surf-google-search/SKILL.md) for retrieval and human handoff. Consult its [CLI reference](skills/surf-google-search/docs/cli.md#request-and-output) for pagination, result eligibility, output fields and errors.
+Follow the [Google Search skill](skills/google-search/SKILL.md) for retrieval and human handoff. Consult its [CLI reference](skills/google-search/docs/cli.md#request-and-output) for pagination, result eligibility, output fields and errors.
 
 ## Profiles and login
 
