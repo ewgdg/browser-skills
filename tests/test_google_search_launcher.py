@@ -28,7 +28,7 @@ def environment_without_overrides() -> dict[str, str]:
     return env
 
 
-def test_requires_the_sibling_surf_skill(tmp_path):
+def test_requires_the_sibling_browser_skill(tmp_path):
     launcher = install_skills(tmp_path / "skills", "google-search")
     result = subprocess.run(
         [sys.executable, str(launcher), "query"],

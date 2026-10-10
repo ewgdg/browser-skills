@@ -9,7 +9,7 @@ import subprocess
 import pytest
 
 
-def test_shipped_surf_skill_has_an_immutable_runtime_pin():
+def test_shipped_browser_skill_has_an_immutable_runtime_pin():
     root = Path(__file__).resolve().parents[1]
     revision = (root / "skills/browser/runtime-revision").read_text().strip()
     assert re.fullmatch(r"[0-9a-f]{40}", revision), (
