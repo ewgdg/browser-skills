@@ -52,7 +52,7 @@ Only when deliberately testing local runtime changes, supply an existing built w
 
 ```bash
 export SURF_AGENT_DEPENDENCY=/absolute/path/surf_agent-0.1.0-py3-none-any.whl
-python3 "$SURF_SKILL/scripts/run.py" - <<'PY'
+python3 "$BROWSER_SKILL/scripts/run.py" - <<'PY'
 from surf_agent import Browser
 Browser().setup()
 PY

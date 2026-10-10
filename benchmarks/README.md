@@ -39,12 +39,12 @@ Give participants only their URL, mode, thread name, isolated environment, API/C
 
 ## Persistent session
 
-Export `SURF_SKILL` to the installed skill directory and keep the participant's isolated
+Export `BROWSER_SKILL` to the installed skill directory and keep the participant's isolated
 `SURF_AGENT_HOME` and unique `SURF_AGENT_PATCHRIGHT_PORT` in the environment, then create the
 session once:
 
 ```sh
-python3 "$SURF_SKILL/scripts/run.py" --new-session --name bench - <<'PY'
+python3 "$BROWSER_SKILL/scripts/run.py" --new-session --name bench - <<'PY'
 from surf_agent import Thread
 thread = Thread('benchmark-persistent')
 values = []
@@ -56,7 +56,7 @@ PY
 Later cells pass that id back and read their source from stdin, exactly like `run.py -`:
 
 ```sh
-python3 "$SURF_SKILL/scripts/run.py" --session bench-xxxxxxxx - <<'PY'
+python3 "$BROWSER_SKILL/scripts/run.py" --session bench-xxxxxxxx - <<'PY'
 values.append(42)
 print(values)
 PY

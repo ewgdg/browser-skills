@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""Run the Google Search CLI with the runtime pinned by the sibling Surf skill."""
+"""Run the Google Search CLI with the runtime pinned by the sibling browser skill."""
 
 import importlib.util
 import os
 from pathlib import Path
 import sys
 
-# Sharing Surf's launcher and pin keeps both skills on one surf-agent revision,
+# Sharing the browser skill's launcher and pin keeps both skills on one surf-agent revision,
 # since they drive the same browser and state without a version handshake.
-SURF_LAUNCHER = Path(__file__).resolve().parents[2] / "surf" / "scripts" / "run.py"
+SURF_LAUNCHER = Path(__file__).resolve().parents[2] / "browser" / "scripts" / "run.py"
 
 
 def load_surf_launcher():
     if not SURF_LAUNCHER.is_file():
-        print(f"Google Search requires the Surf skill installed beside it at "
+        print(f"Google Search requires the browser skill installed beside it at "
               f"{SURF_LAUNCHER.parents[1]}.", file=sys.stderr)
         return None
     specification = importlib.util.spec_from_file_location("surf_launcher", SURF_LAUNCHER)

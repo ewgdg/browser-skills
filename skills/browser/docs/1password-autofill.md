@@ -6,7 +6,7 @@ Pre-condition: 1Password desktop app unlocked.
 
 ## Automated fill workflow
 
-1Password inline suggestions may not appear as clickable elements in snapshots (shadow DOM, ARIA live regions), so drive them with the keyboard. Work on the task's existing thread and interpreter mode from the [Surf workflow](../SKILL.md); these steps assume `thread` already shows the login page with an emitted snapshot (in a fresh script, rebuild it as `Thread(<task thread name>)`).
+1Password inline suggestions may not appear as clickable elements in snapshots (shadow DOM, ARIA live regions), so drive them with the keyboard. Work on the task's existing thread and interpreter mode from the [browser skill workflow](../SKILL.md); these steps assume `thread` already shows the login page with an emitted snapshot (in a fresh script, rebuild it as `Thread(<task thread name>)`).
 
 1. Click the observed username field and emit a snapshot:
 

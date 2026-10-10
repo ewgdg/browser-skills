@@ -1,4 +1,4 @@
-"""Process-level contracts for the independently installed Surf skill."""
+"""Process-level contracts for the independently installed browser skill."""
 
 import importlib.util
 import json
@@ -21,7 +21,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_missing_or_invalid_pin_fails_before_running_script(tmp_path):
     skill = tmp_path / "installed skill"
-    shutil.copytree(ROOT / "skills/surf", skill, ignore=shutil.ignore_patterns(".*"))
+    shutil.copytree(ROOT / "skills/browser", skill, ignore=shutil.ignore_patterns(".*"))
     (skill / "runtime-revision").write_text("not-a-commit\n")
     env = os.environ.copy()
     env.pop("SURF_AGENT_DEPENDENCY", None)
@@ -78,7 +78,7 @@ def test_wheel_is_importable_without_skill_or_cli(tmp_path, local_wheel):
 @pytest.fixture
 def installed_skill(tmp_path, local_wheel):
     skill = tmp_path / "installed skill"
-    shutil.copytree(ROOT / "skills/surf", skill, ignore=shutil.ignore_patterns(".*"))
+    shutil.copytree(ROOT / "skills/browser", skill, ignore=shutil.ignore_patterns(".*"))
     working = tmp_path / "unrelated project"
     working.mkdir()
     # An unrelated project's invalid config must not affect the skill runtime.
@@ -358,7 +358,7 @@ def test_options_after_the_source_belong_to_python(installed_skill):
 def load_launcher():
     """Import the launcher for its pure argument handling, without resolving dependencies."""
     spec = importlib.util.spec_from_file_location(
-        "surf_launcher", ROOT / "skills/surf/scripts/run.py"
+        "surf_launcher", ROOT / "skills/browser/scripts/run.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

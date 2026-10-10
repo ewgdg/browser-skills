@@ -9,8 +9,8 @@ import pytest
 from surf_agent import Browser, Thread
 
 ROOT = Path(__file__).resolve().parents[1]
-PYTHON_API = ROOT / "skills/surf/docs/python-api.md"
-SKILL = ROOT / "skills/surf/SKILL.md"
+PYTHON_API = ROOT / "skills/browser/docs/python-api.md"
+SKILL = ROOT / "skills/browser/SKILL.md"
 HANDLES = {"thread": Thread, "browser": Browser}
 
 

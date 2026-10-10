@@ -2,6 +2,6 @@
 
 The maintained API reference ships with the installed skill:
 
-- [Python API](../skills/surf/docs/python-api.md): Thread, Browser, snapshot output and errors.
-- [Surf workflow](../skills/surf/SKILL.md): fresh Python scripts, persistent sessions, launcher, human handoff, cleanup.
-- [Launcher setup](../skills/surf/docs/launcher.md): dependency failures, release pin and local-wheel validation.
+- [Python API](../skills/browser/docs/python-api.md): Thread, Browser, snapshot output and errors.
+- [browser skill workflow](../skills/browser/SKILL.md): fresh Python scripts, persistent sessions, launcher, human handoff, cleanup.
+- [Launcher setup](../skills/browser/docs/launcher.md): dependency failures, release pin and local-wheel validation.

@@ -93,8 +93,8 @@ Settled by this decision:
 4. Pre-implementation checks (must be answered, not assumed):
    - spawn two durable sub-agents and compare their ancestor chains — if they are separate `pi` processes, anchor keying separates them automatically; if they share one process, the override is required for them;
    - establish how pi's client-server or multilane mode is expected to deliver session identity per lane: whether `PI_SESSION_ID` stays per-session or becomes per-server. That answer decides whether the explicit path is sufficient for pi's next architecture or whether the launcher of each call must supply the identity.
-5. Documentation: `skills/surf/docs/launcher.md` (what owns the interpreter, what the override is for), `skills/surf/SKILL.md` only if guidance changes (it should not: the agent still picks one name per task), and a note wherever `PI_SESSION_ID` is mentioned.
-6. Release gate: publish a runtime revision, update `skills/surf/runtime-revision`, and confirm `tests/test_skill_distribution.py` passes. Requires explicit authorization.
+5. Documentation: `skills/browser/docs/launcher.md` (what owns the interpreter, what the override is for), `skills/browser/SKILL.md` only if guidance changes (it should not: the agent still picks one name per task), and a note wherever `PI_SESSION_ID` is mentioned.
+6. Release gate: publish a runtime revision, update `skills/browser/runtime-revision`, and confirm `tests/test_skill_distribution.py` passes. Requires explicit authorization.
 
 ## Validation
 
